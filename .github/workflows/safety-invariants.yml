@@ -1,0 +1,36 @@
+name: Tabora Safety Invariants
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  safety-invariants:
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Window observation safety
+        run: swift test --filter WindowSafetyPolicyTests
+
+      - name: Split and group safety
+        run: |
+          swift test --filter SplitLayoutTests
+          swift test --filter SnapGroupTests
+
+      - name: Mission Control authorization safety
+        run: swift test --filter MissionControlGroupProxyTests
+
+      - name: Migration identity guard
+        run: |
+          test "$(cat VERSION)" = "1.0.0"
+          grep -q 'name: "Tabora"' Package.swift
+          grep -q 'dev.pent.Tabora' Config/OfficialSigning.plist
+          ! grep -R -n --exclude=safety-invariants.yml -E 'SnapFlow|snapflow|dev\.pent\.SnapFlow|Pentagon22GIT/SnapFlow' \
+            Package.swift Config Scripts Sources Tests .github

@@ -1,0 +1,705 @@
+import CoreGraphics
+import Foundation
+
+struct SnapGroupID: Hashable, Codable {
+    let rawValue: UUID
+
+    init(rawValue: UUID = UUID()) {
+        self.rawValue = rawValue
+    }
+}
+
+struct SnapGroupLayout: Equatable {
+    var zonesByMemberID: [String: SnapZone]
+}
+
+enum SnapGroupState: Equatable {
+    case active
+    case occludedByMaximizedLayer(windowID: String)
+    case suspendedForSpaceTransition
+    case degraded(missingMemberIDs: Set<String>)
+}
+
+struct SnapGroup: Equatable {
+    let id: SnapGroupID
+    let creationOrder: UInt64
+    var displayID: CGDirectDisplayID
+    var memberIDs: Set<String>
+    var layout: SnapGroupLayout
+    var state: SnapGroupState
+    var preferredMemberID: String
+    var revision: UInt64
+}
+
+struct SnapGroupDissolution: Equatable {
+    let groupIDs: Set<SnapGroupID>
+    let memberIDs: Set<String>
+}
+
+struct SnapGroupPolicy {
+    var maximumActiveSplitGroups: Int
+
+    // Groups are session-scoped and bounded naturally by the number of live
+    // application windows. Do not evict an unrelated group merely because a
+    // new independent split is created.
+    static let current = SnapGroupPolicy(
+        maximumActiveSplitGroups: Int.max
+    )
+}
+
+enum SystemWindowSelectionDisposition: Equatable {
+    case preserveCurrentAuthorization
+    case presentSelectedMemberOnly
+}
+
+enum GroupFrontmostEvaluation: Equatable {
+    case verifiedFrontmost
+    case occluded
+    case indeterminate
+}
+
+enum GroupFrontmostEvaluationPolicy {
+    static func evaluate(
+        memberSelections: Set<WindowServerSelectionSnapshot>,
+        snapshot: [WindowOcclusionSnapshot]
+    ) -> GroupFrontmostEvaluation {
+        guard !memberSelections.isEmpty, !snapshot.isEmpty else {
+            return .indeterminate
+        }
+        let members = snapshot.filter { surface in
+            surface.layer == 0
+                && memberSelections.contains(
+                    WindowServerSelectionSnapshot(
+                        pid: surface.pid,
+                        windowID: surface.windowID
+                    )
+                )
+        }
+        guard members.count == memberSelections.count,
+              let first = members.first,
+              let rearmostIndex = members.map(\.zIndex).max() else {
+            return .indeterminate
+        }
+        let groupBounds = members.dropFirst().reduce(first.frame) {
+            $0.union($1.frame)
+        }
+        let hasOccluder = snapshot.contains { surface in
+            let surfaceSelection = WindowServerSelectionSnapshot(
+                pid: surface.pid,
+                windowID: surface.windowID
+            )
+            guard surface.layer == 0,
+                  surface.zIndex < rearmostIndex,
+                  !memberSelections.contains(surfaceSelection) else { return false }
+            let intersection = groupBounds.intersection(surface.frame)
+            return !intersection.isNull
+                && intersection.width > 1
+                && intersection.height > 1
+        }
+        return hasOccluder ? .occluded : .verifiedFrontmost
+    }
+}
+
+enum GroupForegroundSelectionPolicy {
+    /// System application/window switchers do not carry an explicit Tabora
+    /// group identity. They may acknowledge a group that is already entirely
+    /// frontmost, but they never authorize bringing missing companions up.
+    static func disposition(
+        groupIsAlreadyFrontmost: Bool
+    ) -> SystemWindowSelectionDisposition {
+        groupIsAlreadyFrontmost
+            ? .preserveCurrentAuthorization
+            : .presentSelectedMemberOnly
+    }
+}
+
+enum SnapGroupPlacementEligibilityPolicy {
+    private struct WindowServerScene {
+        let orderedWindows: [SplitZOrderWindow]
+        let identityCounts: [String: Int]
+    }
+
+    static func frontmostGroupIDs(
+        groups: [SnapGroup],
+        draggedSurface: WindowServerSelectionSnapshot?,
+        bindings: [PersistedWindowBinding],
+        windowServerSnapshot: [WindowOcclusionSnapshot]
+    ) -> Set<SnapGroupID> {
+        // Replacement snapping ignores only the surface physically owned by
+        // the current drag. Every other Window Server surface remains in the
+        // scene, including same-app windows that AX cannot uniquely match.
+        // This is the distinction between invading one exposed group and
+        // constructing a new group in front of an already covered layout.
+        guard let draggedSurface else { return [] }
+        let scene = windowServerScene(
+            excluding: draggedSurface,
+            bindings: bindings,
+            snapshot: windowServerSnapshot
+        )
+        return Set(groups.compactMap { group in
+            guard group.memberIDs.allSatisfy({
+                scene.identityCounts[$0] == 1
+            }), SplitLayoutGeometry.connectedGroupIsFrontmost(
+                groupIDs: group.memberIDs,
+                orderedWindows: scene.orderedWindows
+            ) else { return nil }
+            return group.id
+        })
+    }
+
+    static func wasFrontmostAtPointerDown(
+        groupIDs: Set<String>,
+        draggedSurface: WindowServerSelectionSnapshot?,
+        bindings: [PersistedWindowBinding],
+        windowServerSnapshot: [WindowOcclusionSnapshot]
+    ) -> Bool {
+        guard !groupIDs.isEmpty, let draggedSurface else { return false }
+        let scene = windowServerScene(
+            excluding: draggedSurface,
+            bindings: bindings,
+            snapshot: windowServerSnapshot
+        )
+        guard groupIDs.allSatisfy({ scene.identityCounts[$0] == 1 }) else {
+            return false
+        }
+        return SplitLayoutGeometry.connectedGroupIsFrontmost(
+            groupIDs: groupIDs,
+            orderedWindows: scene.orderedWindows
+        )
+    }
+
+    private static func windowServerScene(
+        excluding draggedSurface: WindowServerSelectionSnapshot,
+        bindings: [PersistedWindowBinding],
+        snapshot: [WindowOcclusionSnapshot]
+    ) -> WindowServerScene {
+        var identityCounts: [String: Int] = [:]
+        let orderedWindows = snapshot.sorted {
+            $0.zIndex < $1.zIndex
+        }.compactMap { surface
+            -> SplitZOrderWindow? in
+            guard surface.layer == 0,
+                  surface.pid != draggedSurface.pid
+                    || surface.windowID != draggedSurface.windowID else {
+                return nil
+            }
+            let stableIdentity: String
+            switch PersistedWindowBindingPolicy.resolve(
+                pid: surface.pid,
+                windowID: surface.windowID,
+                bindings: bindings
+            ) {
+            case .matched(let identity):
+                stableIdentity = identity
+                identityCounts[identity, default: 0] += 1
+            case .unavailable, .conflicting:
+                // Unregistered same-application windows and conflicting
+                // identity claims remain real occluders. They need no AX
+                // identity to prove that a stored group was not frontmost.
+                stableIdentity = "window-server:\(surface.pid):\(surface.windowID)"
+            }
+            return SplitZOrderWindow(
+                stableIdentity: stableIdentity,
+                frame: surface.frame
+            )
+        }
+        return WindowServerScene(
+            orderedWindows: orderedWindows,
+            identityCounts: identityCounts
+        )
+    }
+
+    static func canAbsorbPlacement(
+        wasFrontmostAtPointerDown: Bool?,
+        isFrontmostNow: Bool,
+        isComplete: Bool
+    ) -> Bool {
+        (wasFrontmostAtPointerDown ?? true)
+            && isFrontmostNow
+            && isComplete
+    }
+
+    static func relationshipRank(
+        hasLogicalConflict: Bool,
+        canExtend: Bool
+    ) -> Int? {
+        if hasLogicalConflict { return 0 }
+        if canExtend { return 1 }
+        return nil
+    }
+}
+
+enum SnapGroupDeparturePolicy {
+    static func retirementMemberIDs(
+        captured: Set<String>,
+        current: Set<String>
+    ) -> Set<String> {
+        captured.union(current)
+    }
+
+    static func connectionsAfterRetirement(
+        existing: Set<SplitConnectionKey>,
+        retiredMemberIDs: Set<String>
+    ) -> Set<SplitConnectionKey> {
+        Set(existing.filter { connection in
+            retiredMemberIDs.allSatisfy { !connection.contains($0) }
+        })
+    }
+}
+
+struct GroupWindowServerEvidence {
+    let stableIdentity: String
+    let pid: pid_t
+    let windowID: CGWindowID?
+    let expectedFrame: CGRect
+}
+
+struct GroupDegradationFingerprint: Equatable {
+    let missingMemberIDs: Set<String>
+    let geometryDisconnected: Bool
+}
+
+struct GroupDegradationEvidence: Equatable {
+    let fingerprint: GroupDegradationFingerprint
+    let firstObservedAt: TimeInterval
+    let firstObservationEpoch: UInt64
+    let latestObservationEpoch: UInt64
+}
+
+struct GroupDegradationObservation {
+    let evidence: GroupDegradationEvidence
+    let isConfirmed: Bool
+}
+
+enum GroupDegradationConfirmationPolicy {
+    static let minimumSettleInterval: TimeInterval = 0.06
+
+    static func observe(
+        previous: GroupDegradationEvidence?,
+        fingerprint: GroupDegradationFingerprint,
+        epoch: UInt64,
+        now: TimeInterval,
+        minimumSettleInterval: TimeInterval = minimumSettleInterval
+    ) -> GroupDegradationObservation {
+        guard let previous, previous.fingerprint == fingerprint else {
+            return GroupDegradationObservation(
+                evidence: GroupDegradationEvidence(
+                    fingerprint: fingerprint,
+                    firstObservedAt: now,
+                    firstObservationEpoch: epoch,
+                    latestObservationEpoch: epoch
+                ),
+                isConfirmed: false
+            )
+        }
+        let isFreshEpoch = epoch != previous.latestObservationEpoch
+        let updated = GroupDegradationEvidence(
+            fingerprint: fingerprint,
+            firstObservedAt: previous.firstObservedAt,
+            firstObservationEpoch: previous.firstObservationEpoch,
+            latestObservationEpoch: isFreshEpoch
+                ? epoch
+                : previous.latestObservationEpoch
+        )
+        let confirmed = isFreshEpoch
+            && epoch != previous.firstObservationEpoch
+            && now - previous.firstObservedAt >= minimumSettleInterval
+        return GroupDegradationObservation(
+            evidence: updated,
+            isConfirmed: confirmed
+        )
+    }
+}
+
+enum GroupPresentationTransitionPolicy {
+    static let defaultMinimumScaleDelta: CGFloat = 0.08
+
+    static func unresolvedMembersRemainLive(
+        evidence: [GroupWindowServerEvidence],
+        visibleMemberIDs: Set<String>,
+        snapshot: [WindowOcclusionSnapshot]
+    ) -> Bool {
+        let unresolved = evidence.filter {
+            !visibleMemberIDs.contains($0.stableIdentity)
+        }
+        guard !unresolved.isEmpty else { return false }
+        return unresolved.allSatisfy { member in
+            guard let windowID = member.windowID else { return false }
+            return snapshot.contains {
+                $0.windowID == windowID
+                    && $0.pid == member.pid
+                    && $0.layer == 0
+            }
+        }
+    }
+
+    /// Mission Control temporarily scales managed windows in WindowServer
+    /// while Accessibility continues to describe their desktop geometry.
+    /// Preserve the last validated presentation only when every AX-missing
+    /// group member is still the same live layer-zero window and has acquired
+    /// a materially different scale. A moved, closed, or minimized window does
+    /// not satisfy this policy and therefore continues through normal
+    /// fail-closed degradation.
+    static func shouldPreserveLastPresentation(
+        evidence: [GroupWindowServerEvidence],
+        visibleMemberIDs: Set<String>,
+        snapshot: [WindowOcclusionSnapshot],
+        minimumScaleDelta: CGFloat =
+            GroupPresentationTransitionPolicy.defaultMinimumScaleDelta
+    ) -> Bool {
+        let missing = evidence.filter {
+            !visibleMemberIDs.contains($0.stableIdentity)
+        }
+        guard unresolvedMembersRemainLive(
+            evidence: evidence,
+            visibleMemberIDs: visibleMemberIDs,
+            snapshot: snapshot
+        ) else { return false }
+
+        return missing.allSatisfy { member in
+            guard let windowID = member.windowID,
+                  member.expectedFrame.width > 1,
+                  member.expectedFrame.height > 1,
+                  let serverWindow = snapshot.first(where: {
+                      $0.windowID == windowID
+                          && $0.pid == member.pid
+                          && $0.layer == 0
+                  }) else { return false }
+            let widthScale = serverWindow.frame.width
+                / member.expectedFrame.width
+            let heightScale = serverWindow.frame.height
+                / member.expectedFrame.height
+            return abs(widthScale - 1) >= minimumScaleDelta
+                || abs(heightScale - 1) >= minimumScaleDelta
+        }
+    }
+}
+
+/// Session-only identity for split groups. Geometry is accepted as evidence
+/// when an explicit placement or connection mutation occurs; ordinary refresh
+/// passes never manufacture a new group identity.
+struct SnapGroupStore {
+    private(set) var groupsByID: [SnapGroupID: SnapGroup] = [:]
+    private(set) var groupIDByMemberID: [String: SnapGroupID] = [:]
+    private(set) var maximizedLayerByDisplayID: [CGDirectDisplayID: String] = [:]
+    private var nextCreationOrder: UInt64 = 0
+    let policy: SnapGroupPolicy
+
+    init(policy: SnapGroupPolicy = .current) {
+        self.policy = policy
+    }
+
+    var groups: [SnapGroup] {
+        groupsByID.values.sorted {
+            if $0.creationOrder != $1.creationOrder {
+                return $0.creationOrder < $1.creationOrder
+            }
+            return $0.id.rawValue.uuidString < $1.id.rawValue.uuidString
+        }
+    }
+
+    var connectedMemberCount: Int {
+        groupsByID.values.reduce(0) { $0 + $1.memberIDs.count }
+    }
+
+    func group(containing memberID: String) -> SnapGroup? {
+        guard let groupID = groupIDByMemberID[memberID] else { return nil }
+        return groupsByID[groupID]
+    }
+
+    func group(id: SnapGroupID) -> SnapGroup? {
+        groupsByID[id]
+    }
+
+    mutating func registerMaximizedLayer(
+        windowID: String,
+        displayID: CGDirectDisplayID
+    ) {
+        _ = dissolveGroup(containing: windowID)
+        maximizedLayerByDisplayID = maximizedLayerByDisplayID.filter {
+            $0.value != windowID
+        }
+        maximizedLayerByDisplayID[displayID] = windowID
+        updateOcclusionStates()
+    }
+
+    mutating func clearMaximizedLayer(windowID: String) {
+        maximizedLayerByDisplayID = maximizedLayerByDisplayID.filter {
+            $0.value != windowID
+        }
+        updateOcclusionStates()
+    }
+
+    mutating func removeWindow(_ memberID: String) {
+        _ = dissolveGroup(containing: memberID)
+        clearMaximizedLayer(windowID: memberID)
+    }
+
+    /// Removing one visible member invalidates the visual group as a whole.
+    /// Individual placement locks remain controller-owned, but no subset keeps
+    /// the previous group identity.
+    @discardableResult
+    mutating func dissolveGroup(containing memberID: String) -> Set<String> {
+        guard let group = group(containing: memberID) else { return [] }
+        removeGroup(group.id)
+        return group.memberIDs
+    }
+
+    @discardableResult
+    mutating func dissolveGroup(id groupID: SnapGroupID) -> Set<String> {
+        guard let group = group(id: groupID) else { return [] }
+        removeGroup(groupID)
+        return group.memberIDs
+    }
+
+    /// Dissolves every current group reached from the supplied member set.
+    /// This closes the race where an interaction captured an old group ID but
+    /// a pending layout transaction remapped one of those members before the
+    /// departure was committed.
+    mutating func dissolveGroups(
+        intersecting seedMemberIDs: Set<String>
+    ) -> SnapGroupDissolution {
+        var pendingMemberIDs = seedMemberIDs
+        var resolvedMemberIDs = seedMemberIDs
+        var dissolvedGroupIDs = Set<SnapGroupID>()
+
+        while let memberID = pendingMemberIDs.first {
+            pendingMemberIDs.remove(memberID)
+            guard let currentGroup = group(containing: memberID),
+                  dissolvedGroupIDs.insert(currentGroup.id).inserted else {
+                continue
+            }
+            let currentMembers = dissolveGroup(id: currentGroup.id)
+            pendingMemberIDs.formUnion(
+                currentMembers.subtracting(resolvedMemberIDs)
+            )
+            resolvedMemberIDs.formUnion(currentMembers)
+        }
+        return SnapGroupDissolution(
+            groupIDs: dissolvedGroupIDs,
+            memberIDs: resolvedMemberIDs
+        )
+    }
+
+    /// Returns the other members that must remain disconnected from the
+    /// detached window in the legacy adjacency graph.
+    @discardableResult
+    mutating func detachMember(_ memberID: String) -> Set<String> {
+        guard let group = group(containing: memberID) else { return [] }
+        let peers = group.memberIDs.subtracting([memberID])
+        removeGroup(group.id)
+        return peers
+    }
+
+    mutating func setPreferredMember(_ memberID: String) {
+        guard let groupID = groupIDByMemberID[memberID],
+              var group = groupsByID[groupID],
+              group.preferredMemberID != memberID else { return }
+        group.preferredMemberID = memberID
+        group.revision &+= 1
+        groupsByID[groupID] = group
+    }
+
+    mutating func suspendForSpaceTransition() {
+        for groupID in Array(groupsByID.keys) {
+            guard var group = groupsByID[groupID] else { continue }
+            group.state = .suspendedForSpaceTransition
+            group.revision &+= 1
+            groupsByID[groupID] = group
+        }
+    }
+
+    mutating func markActiveAfterSpaceTransition() {
+        updateOcclusionStates(forceRevision: true)
+    }
+
+    mutating func markDegraded(
+        groupID: SnapGroupID,
+        missingMemberIDs: Set<String>
+    ) {
+        guard var group = groupsByID[groupID] else { return }
+        let state: SnapGroupState = missingMemberIDs.isEmpty
+            ? activeState(for: group.displayID)
+            : .degraded(missingMemberIDs: missingMemberIDs)
+        guard group.state != state else { return }
+        group.state = state
+        group.revision &+= 1
+        groupsByID[groupID] = group
+    }
+
+    mutating func clear() {
+        groupsByID.removeAll()
+        groupIDByMemberID.removeAll()
+        maximizedLayerByDisplayID.removeAll()
+        nextCreationOrder = 0
+    }
+
+    /// Reconciles only after a user-visible layout mutation (snap, detach, or
+    /// completed linked resize). This preserves group identity across passive
+    /// geometry refreshes while still using adjacency as fail-closed evidence.
+    @discardableResult
+    mutating func reconcileAfterLayoutMutation(
+        preferredMemberID: String,
+        displayID: CGDirectDisplayID,
+        placements: [SplitPlacementGeometry],
+        detachedConnections: Set<SplitConnectionKey>,
+        targetGroupID: SnapGroupID? = nil
+    ) -> SnapGroup? {
+        // Reconciliation is transactional: rejection must leave the previous
+        // group intact so the controller can either roll back the placement or
+        // retire every captured member atomically. Destroying membership here
+        // loses the only authoritative list while peer locks still exist.
+        guard policy.maximumActiveSplitGroups > 0 else { return nil }
+        let splitPlacements = placements.filter {
+            $0.zone != .maximize
+        }
+        guard splitPlacements.contains(where: {
+            $0.stableIdentity == preferredMemberID
+        }) else { return nil }
+
+        let handles = SplitLayoutGeometry.resizeHandleGeometries(
+            placements: splitPlacements,
+            detachedConnections: detachedConnections
+        )
+        let connectedIDs = SplitLayoutGeometry.connectedParticipantIDs(
+            startingWith: preferredMemberID,
+            handles: handles
+        )
+        guard connectedIDs.count >= 2 else { return nil }
+        if targetGroupID != nil {
+            // A targeted replacement is atomic only when every placement in
+            // the declared successor scope belongs to the same connected
+            // component. Never commit a partial successor and silently leave
+            // one of its intended members outside the group.
+            let intendedIDs = Set(splitPlacements.map(\.stableIdentity))
+            guard connectedIDs == intendedIDs else { return nil }
+        }
+
+        let intersectingGroupIDs = Set(connectedIDs.compactMap {
+            groupIDByMemberID[$0]
+        })
+        let foreignGroupIDs = targetGroupID.map { targetID in
+            intersectingGroupIDs.subtracting([targetID])
+        } ?? []
+        // Moving members between groups must be an explicit departure and a
+        // separate placement transaction. Geometry alone never authorizes an
+        // implicit merge or the deletion of a foreign group.
+        guard foreignGroupIDs.isEmpty else { return nil }
+        guard intersectingGroupIDs.count <= 1 || targetGroupID != nil else {
+            return nil
+        }
+        if let targetGroupID {
+            guard groupsByID[targetGroupID] != nil else { return nil }
+        }
+
+        let wouldRetainOnlyASubset = targetGroupID == nil
+            && intersectingGroupIDs.contains { groupID in
+            guard let existing = groupsByID[groupID] else { return false }
+            return !existing.memberIDs.isSubset(of: connectedIDs)
+        }
+        if wouldRetainOnlyASubset {
+            return nil
+        }
+        let retainedGroupID = targetGroupID
+            ?? groupIDByMemberID[preferredMemberID]
+            ?? intersectingGroupIDs.first
+            ?? SnapGroupID()
+
+        if groupsByID[retainedGroupID] == nil,
+           groupsByID.count >= max(policy.maximumActiveSplitGroups, 0) {
+            return nil
+        }
+
+        let zonesByID = Dictionary(
+            uniqueKeysWithValues: splitPlacements.compactMap { placement in
+                connectedIDs.contains(placement.stableIdentity)
+                    ? (placement.stableIdentity, placement.zone)
+                    : nil
+            }
+        )
+        let previous = groupsByID[retainedGroupID]
+
+        guard connectedIDs.allSatisfy({ memberID in
+            guard let existingGroupID = groupIDByMemberID[memberID] else {
+                return true
+            }
+            return existingGroupID == retainedGroupID
+        }) else { return nil }
+
+        // Atomic replacement keeps the group identity while retiring the
+        // displaced member mappings only after the complete successor layout
+        // has been proven connected.
+        if let previous {
+            for removedMemberID in previous.memberIDs.subtracting(connectedIDs)
+                where groupIDByMemberID[removedMemberID] == retainedGroupID {
+                groupIDByMemberID.removeValue(forKey: removedMemberID)
+            }
+        }
+
+        maximizedLayerByDisplayID = maximizedLayerByDisplayID.filter {
+            !connectedIDs.contains($0.value)
+        }
+        updateOcclusionStates()
+        for memberID in connectedIDs {
+            groupIDByMemberID[memberID] = retainedGroupID
+        }
+
+        let nextState = activeState(for: displayID)
+        let layout = SnapGroupLayout(zonesByMemberID: zonesByID)
+        let didChange = previous?.displayID != displayID
+            || previous?.memberIDs != connectedIDs
+            || previous?.layout != layout
+            || previous?.state != nextState
+            || previous?.preferredMemberID != preferredMemberID
+        let revision = didChange
+            ? ((previous?.revision ?? 0) &+ 1)
+            : (previous?.revision ?? 1)
+        let creationOrder: UInt64
+        if let previous {
+            creationOrder = previous.creationOrder
+        } else {
+            nextCreationOrder &+= 1
+            creationOrder = nextCreationOrder
+        }
+        let group = SnapGroup(
+            id: retainedGroupID,
+            creationOrder: creationOrder,
+            displayID: displayID,
+            memberIDs: connectedIDs,
+            layout: layout,
+            state: nextState,
+            preferredMemberID: preferredMemberID,
+            revision: revision
+        )
+        groupsByID[retainedGroupID] = group
+        return group
+    }
+
+    private mutating func removeGroup(_ groupID: SnapGroupID) {
+        guard let removed = groupsByID.removeValue(forKey: groupID) else {
+            return
+        }
+        for memberID in removed.memberIDs where
+            groupIDByMemberID[memberID] == groupID {
+            groupIDByMemberID.removeValue(forKey: memberID)
+        }
+    }
+
+    private func activeState(for displayID: CGDirectDisplayID) -> SnapGroupState {
+        if let maximizedWindowID = maximizedLayerByDisplayID[displayID] {
+            return .occludedByMaximizedLayer(windowID: maximizedWindowID)
+        }
+        return .active
+    }
+
+    private mutating func updateOcclusionStates(forceRevision: Bool = false) {
+        for groupID in Array(groupsByID.keys) {
+            guard var group = groupsByID[groupID] else { continue }
+            let state = activeState(for: group.displayID)
+            guard forceRevision || group.state != state else { continue }
+            group.state = state
+            group.revision &+= 1
+            groupsByID[groupID] = group
+        }
+    }
+}

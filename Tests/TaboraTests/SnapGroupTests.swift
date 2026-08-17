@@ -1,0 +1,1289 @@
+import CoreGraphics
+import XCTest
+@testable import Tabora
+
+final class SnapGroupTests: XCTestCase {
+    func testDegradationDoesNotConfirmTwiceInSameEpoch() {
+        let fingerprint = GroupDegradationFingerprint(
+            missingMemberIDs: ["middle"],
+            geometryDisconnected: true
+        )
+        let first = GroupDegradationConfirmationPolicy.observe(
+            previous: nil, fingerprint: fingerprint, epoch: 10, now: 1.0
+        )
+        let repeated = GroupDegradationConfirmationPolicy.observe(
+            previous: first.evidence,
+            fingerprint: fingerprint,
+            epoch: 10,
+            now: 2.0
+        )
+        XCTAssertFalse(first.isConfirmed)
+        XCTAssertFalse(repeated.isConfirmed)
+    }
+
+    func testDegradationRequiresFreshEpochAfterSettleInterval() {
+        let fingerprint = GroupDegradationFingerprint(
+            missingMemberIDs: ["middle"],
+            geometryDisconnected: true
+        )
+        let first = GroupDegradationConfirmationPolicy.observe(
+            previous: nil, fingerprint: fingerprint, epoch: 10, now: 1.0
+        )
+        let tooSoon = GroupDegradationConfirmationPolicy.observe(
+            previous: first.evidence,
+            fingerprint: fingerprint,
+            epoch: 11, now: 1.01
+        )
+        let confirmed = GroupDegradationConfirmationPolicy.observe(
+            previous: tooSoon.evidence,
+            fingerprint: fingerprint,
+            epoch: 12, now: 1.08
+        )
+        XCTAssertFalse(tooSoon.isConfirmed)
+        XCTAssertTrue(confirmed.isConfirmed)
+    }
+
+    func testDegradationFingerprintChangeResetsEvidence() {
+        let firstFingerprint = GroupDegradationFingerprint(
+            missingMemberIDs: ["middle"],
+            geometryDisconnected: true
+        )
+        let secondFingerprint = GroupDegradationFingerprint(
+            missingMemberIDs: ["right"],
+            geometryDisconnected: true
+        )
+        let first = GroupDegradationConfirmationPolicy.observe(
+            previous: nil, fingerprint: firstFingerprint, epoch: 1, now: 1
+        )
+        let changed = GroupDegradationConfirmationPolicy.observe(
+            previous: first.evidence,
+            fingerprint: secondFingerprint, epoch: 2, now: 2
+        )
+        XCTAssertFalse(changed.isConfirmed)
+        XCTAssertEqual(changed.evidence.firstObservationEpoch, 2)
+    }
+
+    func testFrontmostEvaluationUsesWindowServerOccluders() {
+        let members: Set<WindowServerSelectionSnapshot> = [
+            WindowServerSelectionSnapshot(pid: 100, windowID: 10),
+            WindowServerSelectionSnapshot(pid: 200, windowID: 20)
+        ]
+        let memberA = WindowOcclusionSnapshot(
+            windowID: 10, pid: 100,
+            frame: CGRect(x: 0, y: 0, width: 500, height: 900),
+            zIndex: 1, layer: 0
+        )
+        let memberB = WindowOcclusionSnapshot(
+            windowID: 20, pid: 200,
+            frame: CGRect(x: 500, y: 0, width: 500, height: 900),
+            zIndex: 2, layer: 0
+        )
+        let popup = WindowOcclusionSnapshot(
+            windowID: 99, pid: 300,
+            frame: CGRect(x: 400, y: 200, width: 250, height: 250),
+            zIndex: 0, layer: 0
+        )
+        XCTAssertEqual(
+            GroupFrontmostEvaluationPolicy.evaluate(
+                memberSelections: members, snapshot: [memberA, memberB]
+            ),
+            .verifiedFrontmost
+        )
+        XCTAssertEqual(
+            GroupFrontmostEvaluationPolicy.evaluate(
+                memberSelections: members,
+                snapshot: [popup, memberA, memberB]
+            ),
+            .occluded
+        )
+    }
+
+    func testFrontmostEvaluationSupportsSingleProvisionalPlacement() {
+        let member = WindowServerSelectionSnapshot(pid: 100, windowID: 10)
+        let window = WindowOcclusionSnapshot(
+            windowID: 10, pid: 100,
+            frame: CGRect(x: 0, y: 0, width: 500, height: 900),
+            zIndex: 0, layer: 0
+        )
+        XCTAssertEqual(
+            GroupFrontmostEvaluationPolicy.evaluate(
+                memberSelections: [member], snapshot: [window]
+            ),
+            .verifiedFrontmost
+        )
+    }
+
+    func testFrontmostEvaluationFailsIndeterminateOnMissingMemberEvidence() {
+        let members: Set<WindowServerSelectionSnapshot> = [
+            WindowServerSelectionSnapshot(pid: 100, windowID: 10),
+            WindowServerSelectionSnapshot(pid: 200, windowID: 20)
+        ]
+        let onlyOne = WindowOcclusionSnapshot(
+            windowID: 10, pid: 100,
+            frame: CGRect(x: 0, y: 0, width: 500, height: 900),
+            zIndex: 0, layer: 0
+        )
+        XCTAssertEqual(
+            GroupFrontmostEvaluationPolicy.evaluate(
+                memberSelections: members, snapshot: [onlyOne]
+            ),
+            .indeterminate
+        )
+    }
+
+    private let displayID: CGDirectDisplayID = 1
+    private let left = SplitPlacementGeometry(
+        stableIdentity: "left",
+        zone: .leftHalf,
+        frame: CGRect(x: 0, y: 0, width: 720, height: 900)
+    )
+    private let right = SplitPlacementGeometry(
+        stableIdentity: "right",
+        zone: .rightHalf,
+        frame: CGRect(x: 720, y: 0, width: 720, height: 900)
+    )
+
+    func testSystemWindowSelectionNeverAuthorizesCompanionRaise() {
+        XCTAssertEqual(GroupForegroundMode.defaultMode, .disabled)
+        XCTAssertEqual(
+            GroupForegroundSelectionPolicy.disposition(
+                groupIsAlreadyFrontmost: false
+            ),
+            .presentSelectedMemberOnly
+        )
+        XCTAssertEqual(
+            GroupForegroundSelectionPolicy.disposition(
+                groupIsAlreadyFrontmost: true
+            ),
+            .preserveCurrentAuthorization
+        )
+    }
+
+    func testDirectClickDoesNotUnlockSystemIsolatedGroup() {
+        XCTAssertEqual(
+            GroupForegroundAuthorizationPolicy.directClickDisposition(
+                for: .soloPresented(memberID: "selected")
+            ),
+            .preserveSystemIsolation
+        )
+        XCTAssertEqual(
+            GroupForegroundAuthorizationPolicy.directClickDisposition(
+                for: .disabled
+            ),
+            .evaluateExplicitGroupRaise
+        )
+        XCTAssertEqual(
+            GroupForegroundAuthorizationPolicy.directClickDisposition(
+                for: .automatic
+            ),
+            .evaluateExplicitGroupRaise
+        )
+    }
+
+    func testOwnedForegroundMutationFiltersOnlyExactMemberSurfaces() {
+        let groupID = SnapGroupID()
+        let mutation = OwnedForegroundMutation(
+            generation: 7,
+            groupID: groupID,
+            memberIdentities: ["first", "second"],
+            memberSelections: [
+                WindowServerSelectionSnapshot(pid: 100, windowID: 41),
+                WindowServerSelectionSnapshot(pid: 100, windowID: 42)
+            ]
+        )
+
+        XCTAssertTrue(ForegroundMutationSelectionPolicy.isOwnedSelection(
+            WindowServerSelectionSnapshot(pid: 100, windowID: 42),
+            mutation: mutation
+        ))
+        XCTAssertFalse(ForegroundMutationSelectionPolicy.isOwnedSelection(
+            WindowServerSelectionSnapshot(pid: 100, windowID: 43),
+            mutation: mutation
+        ))
+        XCTAssertFalse(ForegroundMutationSelectionPolicy.isOwnedSelection(
+            WindowServerSelectionSnapshot(pid: 200, windowID: 42),
+            mutation: mutation
+        ))
+        XCTAssertEqual(
+            ForegroundMutationSelectionPolicy.processNotificationDisposition(
+                expectedPID: 100,
+                accessibilitySelection: ActiveWindowIdentitySnapshot(
+                    pid: 100,
+                    focusedIdentity: "second",
+                    mainIdentity: "first"
+                ),
+                mutation: mutation
+            ),
+            .ownedMutation
+        )
+        XCTAssertEqual(
+            ForegroundMutationSelectionPolicy.processNotificationDisposition(
+                expectedPID: 100,
+                accessibilitySelection: ActiveWindowIdentitySnapshot(
+                    pid: 100,
+                    focusedIdentity: "other",
+                    mainIdentity: "other"
+                ),
+                mutation: mutation
+            ),
+            .externalSelection
+        )
+        XCTAssertEqual(
+            ForegroundMutationSelectionPolicy.processNotificationDisposition(
+                expectedPID: 100,
+                accessibilitySelection: nil,
+                mutation: mutation
+            ),
+            .awaitExactWindowIdentity
+        )
+    }
+
+    func testPlacementCannotAbsorbAGroupThatWasCoveredAtPointerDown() {
+        XCTAssertFalse(
+            SnapGroupPlacementEligibilityPolicy.canAbsorbPlacement(
+                wasFrontmostAtPointerDown: false,
+                isFrontmostNow: true,
+                isComplete: true
+            )
+        )
+        XCTAssertTrue(
+            SnapGroupPlacementEligibilityPolicy.canAbsorbPlacement(
+                wasFrontmostAtPointerDown: true,
+                isFrontmostNow: true,
+                isComplete: true
+            )
+        )
+        XCTAssertEqual(
+            SnapGroupPlacementEligibilityPolicy.relationshipRank(
+                hasLogicalConflict: true,
+                canExtend: true
+            ),
+            0
+        )
+        XCTAssertEqual(
+            SnapGroupPlacementEligibilityPolicy.relationshipRank(
+                hasLogicalConflict: false,
+                canExtend: true
+            ),
+            1
+        )
+        XCTAssertNil(
+            SnapGroupPlacementEligibilityPolicy.relationshipRank(
+                hasLogicalConflict: false,
+                canExtend: false
+            )
+        )
+    }
+
+    func testDraggedSurfaceAloneDoesNotBlockReplacementSnap() {
+        let bindings = [
+            PersistedWindowBinding(
+                stableIdentity: "left",
+                pid: 100,
+                windowID: 10
+            ),
+            PersistedWindowBinding(
+                stableIdentity: "right",
+                pid: 200,
+                windowID: 20
+            )
+        ]
+        let snapshot = [
+            WindowOcclusionSnapshot(
+                windowID: 30,
+                pid: 300,
+                frame: CGRect(x: 0, y: 0, width: 1_440, height: 900),
+                zIndex: 0,
+                layer: 0
+            ),
+            WindowOcclusionSnapshot(
+                windowID: 10,
+                pid: 100,
+                frame: left.frame,
+                zIndex: 1,
+                layer: 0
+            ),
+            WindowOcclusionSnapshot(
+                windowID: 20,
+                pid: 200,
+                frame: right.frame,
+                zIndex: 2,
+                layer: 0
+            )
+        ]
+
+        XCTAssertTrue(
+            SnapGroupPlacementEligibilityPolicy
+                .wasFrontmostAtPointerDown(
+                    groupIDs: ["left", "right"],
+                    draggedSurface: WindowServerSelectionSnapshot(
+                        pid: 300,
+                        windowID: 30
+                    ),
+                    bindings: bindings,
+                    windowServerSnapshot: snapshot
+                )
+        )
+    }
+
+    func testFrontmostGroupStillAcceptsAnExplicitSpatialInvasion() {
+        let bindings = [
+            PersistedWindowBinding(
+                stableIdentity: "left",
+                pid: 100,
+                windowID: 10
+            ),
+            PersistedWindowBinding(
+                stableIdentity: "right",
+                pid: 200,
+                windowID: 20
+            )
+        ]
+        let snapshot = [
+            WindowOcclusionSnapshot(
+                windowID: 30,
+                pid: 300,
+                frame: CGRect(x: 1_600, y: 0, width: 300, height: 300),
+                zIndex: 0,
+                layer: 0
+            ),
+            WindowOcclusionSnapshot(
+                windowID: 10,
+                pid: 100,
+                frame: left.frame,
+                zIndex: 1,
+                layer: 0
+            ),
+            WindowOcclusionSnapshot(
+                windowID: 20,
+                pid: 200,
+                frame: right.frame,
+                zIndex: 2,
+                layer: 0
+            )
+        ]
+
+        XCTAssertTrue(
+            SnapGroupPlacementEligibilityPolicy
+                .wasFrontmostAtPointerDown(
+                    groupIDs: ["left", "right"],
+                    draggedSurface: WindowServerSelectionSnapshot(
+                        pid: 300,
+                        windowID: 30
+                    ),
+                    bindings: bindings,
+                    windowServerSnapshot: snapshot
+                )
+        )
+    }
+
+    func testUnregisteredSameApplicationCoverCreatesIndependentGroup() {
+        let bindings = [
+            PersistedWindowBinding(
+                stableIdentity: "left",
+                pid: 100,
+                windowID: 10
+            ),
+            PersistedWindowBinding(
+                stableIdentity: "right",
+                pid: 100,
+                windowID: 20
+            )
+        ]
+        let snapshot = [
+            WindowOcclusionSnapshot(
+                windowID: 30,
+                pid: 100,
+                frame: left.frame,
+                zIndex: 0,
+                layer: 0
+            ),
+            WindowOcclusionSnapshot(
+                windowID: 31,
+                pid: 100,
+                frame: right.frame,
+                zIndex: 1,
+                layer: 0
+            ),
+            WindowOcclusionSnapshot(
+                windowID: 10,
+                pid: 100,
+                frame: left.frame,
+                zIndex: 2,
+                layer: 0
+            ),
+            WindowOcclusionSnapshot(
+                windowID: 20,
+                pid: 100,
+                frame: right.frame,
+                zIndex: 3,
+                layer: 0
+            )
+        ]
+
+        XCTAssertFalse(
+            SnapGroupPlacementEligibilityPolicy
+                .wasFrontmostAtPointerDown(
+                    groupIDs: ["left", "right"],
+                    draggedSurface: WindowServerSelectionSnapshot(
+                        pid: 100,
+                        windowID: 30
+                    ),
+                    bindings: bindings,
+                    windowServerSnapshot: snapshot
+                )
+        )
+    }
+
+    func testReplacementTargetsOnlyTheTopmostOverlappingGroup() {
+        var store = SnapGroupStore()
+        let first = store.reconcileAfterLayoutMutation(
+            preferredMemberID: "first-right",
+            displayID: displayID,
+            placements: [
+                SplitPlacementGeometry(
+                    stableIdentity: "first-left",
+                    zone: .leftHalf,
+                    frame: left.frame
+                ),
+                SplitPlacementGeometry(
+                    stableIdentity: "first-right",
+                    zone: .rightHalf,
+                    frame: right.frame
+                )
+            ],
+            detachedConnections: []
+        )
+        let second = store.reconcileAfterLayoutMutation(
+            preferredMemberID: "second-right",
+            displayID: displayID,
+            placements: [
+                SplitPlacementGeometry(
+                    stableIdentity: "second-left",
+                    zone: .leftHalf,
+                    frame: left.frame
+                ),
+                SplitPlacementGeometry(
+                    stableIdentity: "second-right",
+                    zone: .rightHalf,
+                    frame: right.frame
+                )
+            ],
+            detachedConnections: []
+        )
+        let bindings = [
+            PersistedWindowBinding(
+                stableIdentity: "first-left",
+                pid: 100,
+                windowID: 10
+            ),
+            PersistedWindowBinding(
+                stableIdentity: "first-right",
+                pid: 100,
+                windowID: 11
+            ),
+            PersistedWindowBinding(
+                stableIdentity: "second-left",
+                pid: 100,
+                windowID: 20
+            ),
+            PersistedWindowBinding(
+                stableIdentity: "second-right",
+                pid: 100,
+                windowID: 21
+            )
+        ]
+        let snapshot = [
+            WindowOcclusionSnapshot(
+                windowID: 99,
+                pid: 200,
+                frame: left.frame.union(right.frame),
+                zIndex: 0,
+                layer: 0
+            ),
+            WindowOcclusionSnapshot(
+                windowID: 20,
+                pid: 100,
+                frame: left.frame,
+                zIndex: 1,
+                layer: 0
+            ),
+            WindowOcclusionSnapshot(
+                windowID: 21,
+                pid: 100,
+                frame: right.frame,
+                zIndex: 2,
+                layer: 0
+            ),
+            WindowOcclusionSnapshot(
+                windowID: 10,
+                pid: 100,
+                frame: left.frame,
+                zIndex: 3,
+                layer: 0
+            ),
+            WindowOcclusionSnapshot(
+                windowID: 11,
+                pid: 100,
+                frame: right.frame,
+                zIndex: 4,
+                layer: 0
+            )
+        ]
+
+        let frontmost = SnapGroupPlacementEligibilityPolicy
+            .frontmostGroupIDs(
+                groups: store.groups,
+                draggedSurface: WindowServerSelectionSnapshot(
+                    pid: 200,
+                    windowID: 99
+                ),
+                bindings: bindings,
+                windowServerSnapshot: snapshot
+            )
+
+        XCTAssertEqual(frontmost, Set([try! XCTUnwrap(second?.id)]))
+        XCTAssertFalse(frontmost.contains(try! XCTUnwrap(first?.id)))
+    }
+
+    func testSinglePlacementDoesNotCreateAGroup() {
+        var store = SnapGroupStore()
+        let result = store.reconcileAfterLayoutMutation(
+            preferredMemberID: "left",
+            displayID: displayID,
+            placements: [left],
+            detachedConnections: []
+        )
+
+        XCTAssertNil(result)
+        XCTAssertTrue(store.groups.isEmpty)
+        XCTAssertEqual(store.connectedMemberCount, 0)
+    }
+
+    func testAdjacentPlacementsCreateOneExplicitGroup() {
+        var store = SnapGroupStore()
+        let result = store.reconcileAfterLayoutMutation(
+            preferredMemberID: "right",
+            displayID: displayID,
+            placements: [left, right],
+            detachedConnections: []
+        )
+
+        XCTAssertEqual(result?.memberIDs, ["left", "right"])
+        XCTAssertEqual(store.groups.count, 1)
+        XCTAssertEqual(store.connectedMemberCount, 2)
+        XCTAssertEqual(store.group(containing: "left")?.id, result?.id)
+        XCTAssertEqual(store.group(containing: "right")?.id, result?.id)
+    }
+
+    func testIndependentGroupsWithOverlappingGeometryCoexist() {
+        var store = SnapGroupStore()
+        let first = store.reconcileAfterLayoutMutation(
+            preferredMemberID: "right",
+            displayID: displayID,
+            placements: [left, right],
+            detachedConnections: []
+        )
+        let secondLeft = SplitPlacementGeometry(
+            stableIdentity: "second-left",
+            zone: .leftHalf,
+            frame: left.frame
+        )
+        let secondRight = SplitPlacementGeometry(
+            stableIdentity: "second-right",
+            zone: .rightHalf,
+            frame: right.frame
+        )
+        let second = store.reconcileAfterLayoutMutation(
+            preferredMemberID: "second-right",
+            displayID: displayID,
+            placements: [secondLeft, secondRight],
+            detachedConnections: []
+        )
+
+        XCTAssertNotEqual(first?.id, second?.id)
+        XCTAssertEqual(store.groups.count, 2)
+        XCTAssertEqual(store.group(containing: "left")?.id, first?.id)
+        XCTAssertEqual(
+            store.group(containing: "second-left")?.id,
+            second?.id
+        )
+        XCTAssertEqual(store.groups.first?.id, first?.id)
+        XCTAssertEqual(store.groups.last?.id, second?.id)
+    }
+
+    func testThirdIndependentGroupDoesNotEvictEarlierGroups() {
+        var store = SnapGroupStore()
+        var createdIDs: [SnapGroupID] = []
+
+        for suffix in ["one", "two", "three"] {
+            let group = store.reconcileAfterLayoutMutation(
+                preferredMemberID: "right-\(suffix)",
+                displayID: displayID,
+                placements: [
+                    SplitPlacementGeometry(
+                        stableIdentity: "left-\(suffix)",
+                        zone: .leftHalf,
+                        frame: left.frame
+                    ),
+                    SplitPlacementGeometry(
+                        stableIdentity: "right-\(suffix)",
+                        zone: .rightHalf,
+                        frame: right.frame
+                    )
+                ],
+                detachedConnections: []
+            )
+            XCTAssertNotNil(group)
+            if let group { createdIDs.append(group.id) }
+        }
+
+        XCTAssertEqual(store.groups.count, 3)
+        XCTAssertEqual(store.groups.map(\.id), createdIDs)
+        XCTAssertEqual(store.connectedMemberCount, 6)
+    }
+
+    func testTargetedReplacementPreservesGroupIDAndOtherGroups() {
+        var store = SnapGroupStore()
+        let first = store.reconcileAfterLayoutMutation(
+            preferredMemberID: "right",
+            displayID: displayID,
+            placements: [left, right],
+            detachedConnections: []
+        )
+        let otherLeft = SplitPlacementGeometry(
+            stableIdentity: "other-left",
+            zone: .leftHalf,
+            frame: left.frame
+        )
+        let otherRight = SplitPlacementGeometry(
+            stableIdentity: "other-right",
+            zone: .rightHalf,
+            frame: right.frame
+        )
+        let other = store.reconcileAfterLayoutMutation(
+            preferredMemberID: "other-right",
+            displayID: displayID,
+            placements: [otherLeft, otherRight],
+            detachedConnections: []
+        )
+        let replacement = SplitPlacementGeometry(
+            stableIdentity: "replacement",
+            zone: .rightHalf,
+            frame: right.frame
+        )
+
+        let rebuilt = store.reconcileAfterLayoutMutation(
+            preferredMemberID: "replacement",
+            displayID: displayID,
+            placements: [left, replacement],
+            detachedConnections: [],
+            targetGroupID: first?.id
+        )
+
+        XCTAssertEqual(rebuilt?.id, first?.id)
+        XCTAssertNil(store.group(containing: "right"))
+        XCTAssertEqual(
+            store.group(containing: "replacement")?.id,
+            first?.id
+        )
+        XCTAssertEqual(store.group(containing: "other-left")?.id, other?.id)
+        XCTAssertEqual(store.groups.count, 2)
+    }
+
+    func testTargetedReconciliationCannotStealForeignMember() {
+        var store = SnapGroupStore()
+        let first = store.reconcileAfterLayoutMutation(
+            preferredMemberID: "right",
+            displayID: displayID,
+            placements: [left, right],
+            detachedConnections: []
+        )
+        let otherLeft = SplitPlacementGeometry(
+            stableIdentity: "other-left",
+            zone: .leftHalf,
+            frame: left.frame
+        )
+        let otherRight = SplitPlacementGeometry(
+            stableIdentity: "other-right",
+            zone: .rightHalf,
+            frame: right.frame
+        )
+        let other = store.reconcileAfterLayoutMutation(
+            preferredMemberID: "other-right",
+            displayID: displayID,
+            placements: [otherLeft, otherRight],
+            detachedConnections: []
+        )
+
+        let result = store.reconcileAfterLayoutMutation(
+            preferredMemberID: "other-right",
+            displayID: displayID,
+            placements: [left, otherRight],
+            detachedConnections: [],
+            targetGroupID: first?.id
+        )
+
+        XCTAssertNil(result)
+        XCTAssertEqual(store.group(containing: "left")?.id, first?.id)
+        XCTAssertEqual(
+            store.group(containing: "other-right")?.id,
+            other?.id
+        )
+        XCTAssertEqual(store.groups.count, 2)
+    }
+
+    func testFailedTargetedReconciliationDoesNotMutateExistingGroup() {
+        var store = SnapGroupStore()
+        let group = store.reconcileAfterLayoutMutation(
+            preferredMemberID: "right",
+            displayID: displayID,
+            placements: [left, right],
+            detachedConnections: []
+        )
+
+        let result = store.reconcileAfterLayoutMutation(
+            preferredMemberID: "left",
+            displayID: displayID,
+            placements: [left],
+            detachedConnections: [],
+            targetGroupID: group?.id
+        )
+
+        XCTAssertNil(result)
+        XCTAssertEqual(store.group(containing: "left")?.id, group?.id)
+        XCTAssertEqual(store.group(containing: "right")?.id, group?.id)
+        XCTAssertEqual(store.groups.count, 1)
+    }
+
+    func testTargetedReconciliationRejectsDisconnectedSuccessorMember() {
+        var store = SnapGroupStore()
+        let group = store.reconcileAfterLayoutMutation(
+            preferredMemberID: "right",
+            displayID: displayID,
+            placements: [left, right],
+            detachedConnections: []
+        )
+        let disconnected = SplitPlacementGeometry(
+            stableIdentity: "disconnected",
+            zone: .topLeft,
+            frame: CGRect(x: 2000, y: 2000, width: 300, height: 300)
+        )
+
+        let result = store.reconcileAfterLayoutMutation(
+            preferredMemberID: "right",
+            displayID: displayID,
+            placements: [left, right, disconnected],
+            detachedConnections: [],
+            targetGroupID: group?.id
+        )
+
+        XCTAssertNil(result)
+        XCTAssertEqual(store.group(containing: "left")?.id, group?.id)
+        XCTAssertEqual(store.group(containing: "right")?.id, group?.id)
+        XCTAssertNil(store.group(containing: "disconnected"))
+    }
+
+    func testStaleTargetGroupIDCannotManufactureAGroup() {
+        var store = SnapGroupStore()
+        let result = store.reconcileAfterLayoutMutation(
+            preferredMemberID: "right",
+            displayID: displayID,
+            placements: [left, right],
+            detachedConnections: [],
+            targetGroupID: SnapGroupID()
+        )
+
+        XCTAssertNil(result)
+        XCTAssertTrue(store.groups.isEmpty)
+    }
+
+    func testPassiveEquivalentReconciliationPreservesIdentityAndRevision() {
+        var store = SnapGroupStore()
+        let first = store.reconcileAfterLayoutMutation(
+            preferredMemberID: "right",
+            displayID: displayID,
+            placements: [left, right],
+            detachedConnections: []
+        )
+        let second = store.reconcileAfterLayoutMutation(
+            preferredMemberID: "right",
+            displayID: displayID,
+            placements: [left, right],
+            detachedConnections: []
+        )
+
+        XCTAssertEqual(second?.id, first?.id)
+        XCTAssertEqual(second?.revision, first?.revision)
+    }
+
+    func testDetachDissolvesTwoMemberGroupWithoutChangingPlacementData() {
+        var store = SnapGroupStore()
+        _ = store.reconcileAfterLayoutMutation(
+            preferredMemberID: "right",
+            displayID: displayID,
+            placements: [left, right],
+            detachedConnections: []
+        )
+
+        let peers = store.detachMember("left")
+
+        XCTAssertEqual(peers, ["right"])
+        XCTAssertTrue(store.groups.isEmpty)
+        XCTAssertNil(store.group(containing: "left"))
+        XCTAssertNil(store.group(containing: "right"))
+    }
+
+    func testDetachedLegacyEdgeDoesNotRecreateGroup() {
+        var store = SnapGroupStore()
+        let result = store.reconcileAfterLayoutMutation(
+            preferredMemberID: "right",
+            displayID: displayID,
+            placements: [left, right],
+            detachedConnections: [SplitConnectionKey("left", "right")]
+        )
+
+        XCTAssertNil(result)
+        XCTAssertTrue(store.groups.isEmpty)
+    }
+
+    func testMaximizedLayerIsSeparateFromSplitMembership() {
+        var store = SnapGroupStore()
+        let group = store.reconcileAfterLayoutMutation(
+            preferredMemberID: "right",
+            displayID: displayID,
+            placements: [left, right],
+            detachedConnections: []
+        )
+
+        store.registerMaximizedLayer(
+            windowID: "cover",
+            displayID: displayID
+        )
+
+        XCTAssertEqual(store.group(containing: "left")?.id, group?.id)
+        XCTAssertEqual(
+            store.group(containing: "left")?.state,
+            .occludedByMaximizedLayer(windowID: "cover")
+        )
+        XCTAssertNil(store.group(containing: "cover"))
+    }
+
+    func testRemovingOneMemberFromThreeDissolvesTheWholeGroup() {
+        let topRight = SplitPlacementGeometry(
+            stableIdentity: "top-right",
+            zone: .topRight,
+            frame: CGRect(x: 720, y: 450, width: 720, height: 450)
+        )
+        let bottomRight = SplitPlacementGeometry(
+            stableIdentity: "bottom-right",
+            zone: .bottomRight,
+            frame: CGRect(x: 720, y: 0, width: 720, height: 450)
+        )
+        var store = SnapGroupStore()
+        _ = store.reconcileAfterLayoutMutation(
+            preferredMemberID: "top-right",
+            displayID: displayID,
+            placements: [left, topRight, bottomRight],
+            detachedConnections: []
+        )
+
+        let peers = store.detachMember("left")
+
+        XCTAssertEqual(peers, ["top-right", "bottom-right"])
+        XCTAssertNil(store.group(containing: "left"))
+        XCTAssertNil(store.group(containing: "top-right"))
+        XCTAssertNil(store.group(containing: "bottom-right"))
+        XCTAssertTrue(store.groups.isEmpty)
+    }
+
+    func testRemovingAPlacementLockDissolvesTheWholeGroup() {
+        var store = SnapGroupStore()
+        _ = store.reconcileAfterLayoutMutation(
+            preferredMemberID: "right",
+            displayID: displayID,
+            placements: [left, right],
+            detachedConnections: []
+        )
+
+        store.removeWindow("left")
+
+        XCTAssertTrue(store.groups.isEmpty)
+        XCTAssertNil(store.group(containing: "right"))
+    }
+
+    func testReplacingOneMemberBuildsANewGroupFromTheRetainedPeer() {
+        var store = SnapGroupStore()
+        _ = store.reconcileAfterLayoutMutation(
+            preferredMemberID: "right",
+            displayID: displayID,
+            placements: [left, right],
+            detachedConnections: []
+        )
+
+        store.removeWindow("right")
+        let replacement = SplitPlacementGeometry(
+            stableIdentity: "replacement",
+            zone: .rightHalf,
+            frame: right.frame
+        )
+        let rebuilt = store.reconcileAfterLayoutMutation(
+            preferredMemberID: "replacement",
+            displayID: displayID,
+            placements: [left, replacement],
+            detachedConnections: []
+        )
+
+        XCTAssertEqual(rebuilt?.memberIDs, ["left", "replacement"])
+        XCTAssertEqual(store.groups.count, 1)
+        XCTAssertNotNil(store.group(containing: "left"))
+        XCTAssertNotNil(store.group(containing: "replacement"))
+        XCTAssertNil(store.group(containing: "right"))
+    }
+
+    func testMaximizingAGroupMemberDissolvesItsSplitGroup() {
+        var store = SnapGroupStore()
+        _ = store.reconcileAfterLayoutMutation(
+            preferredMemberID: "right",
+            displayID: displayID,
+            placements: [left, right],
+            detachedConnections: []
+        )
+
+        store.registerMaximizedLayer(
+            windowID: "left",
+            displayID: displayID
+        )
+
+        XCTAssertTrue(store.groups.isEmpty)
+        XCTAssertNil(store.group(containing: "right"))
+    }
+
+    func testRemovingAProvisionalMaximizedWindowReleasesItsLayer() {
+        var store = SnapGroupStore()
+        store.registerMaximizedLayer(
+            windowID: "cover",
+            displayID: displayID
+        )
+        XCTAssertEqual(store.maximizedLayerByDisplayID[displayID], "cover")
+
+        store.removeWindow("cover")
+
+        XCTAssertNil(store.maximizedLayerByDisplayID[displayID])
+    }
+
+    func testRejectedSubsetReconciliationPreservesOriginalGroupForRetirement() {
+        let topRight = SplitPlacementGeometry(
+            stableIdentity: "top-right",
+            zone: .topRight,
+            frame: CGRect(x: 720, y: 450, width: 720, height: 450)
+        )
+        let bottomRight = SplitPlacementGeometry(
+            stableIdentity: "bottom-right",
+            zone: .bottomRight,
+            frame: CGRect(x: 720, y: 0, width: 720, height: 450)
+        )
+        var store = SnapGroupStore()
+        let original = store.reconcileAfterLayoutMutation(
+            preferredMemberID: "top-right",
+            displayID: displayID,
+            placements: [left, topRight, bottomRight],
+            detachedConnections: []
+        )
+
+        let replacement = store.reconcileAfterLayoutMutation(
+            preferredMemberID: "top-right",
+            displayID: displayID,
+            placements: [topRight, bottomRight],
+            detachedConnections: []
+        )
+
+        XCTAssertNil(replacement)
+        XCTAssertEqual(store.groups.count, 1)
+        XCTAssertEqual(
+            store.group(containing: "left")?.id,
+            original?.id
+        )
+        XCTAssertEqual(
+            store.group(containing: "top-right")?.id,
+            original?.id
+        )
+        XCTAssertEqual(
+            store.group(containing: "bottom-right")?.id,
+            original?.id
+        )
+    }
+
+    func testWholeGroupRetirementRemovesStaleConnectionMarkers() {
+        let unrelated = SplitConnectionKey("other-left", "other-right")
+        let connections = SnapGroupDeparturePolicy.connectionsAfterRetirement(
+            existing: [
+                SplitConnectionKey("left", "top-right"),
+                SplitConnectionKey("left", "bottom-right"),
+                SplitConnectionKey("top-right", "bottom-right"),
+                SplitConnectionKey("left", "unrelated-window"),
+                unrelated
+            ],
+            retiredMemberIDs: ["left", "top-right", "bottom-right"]
+        )
+
+        XCTAssertEqual(connections, [unrelated])
+    }
+
+    func testRetirementKeepsCapturedMembersAfterLateStoreLoss() {
+        XCTAssertEqual(
+            SnapGroupDeparturePolicy.retirementMemberIDs(
+                captured: ["left", "right"],
+                current: []
+            ),
+            ["left", "right"]
+        )
+        XCTAssertEqual(
+            SnapGroupDeparturePolicy.retirementMemberIDs(
+                captured: ["left", "right"],
+                current: ["right", "bottom-right"]
+            ),
+            ["left", "right", "bottom-right"]
+        )
+    }
+
+    func testGroupCanBeRetiredByCapturedIdentity() {
+        var store = SnapGroupStore()
+        let group = store.reconcileAfterLayoutMutation(
+            preferredMemberID: "left",
+            displayID: displayID,
+            placements: [left, right],
+            detachedConnections: []
+        )
+        let groupID = try! XCTUnwrap(group?.id)
+
+        XCTAssertEqual(store.dissolveGroup(id: groupID), ["left", "right"])
+        XCTAssertTrue(store.groups.isEmpty)
+        XCTAssertNil(store.group(containing: "left"))
+        XCTAssertNil(store.group(containing: "right"))
+    }
+
+    func testRetiredMembersCanJoinANewGroupAgain() {
+        var store = SnapGroupStore()
+        let first = store.reconcileAfterLayoutMutation(
+            preferredMemberID: "left",
+            displayID: displayID,
+            placements: [left, right],
+            detachedConnections: []
+        )
+        let firstID = try! XCTUnwrap(first?.id)
+        XCTAssertEqual(store.dissolveGroup(id: firstID), ["left", "right"])
+
+        let replacement = store.reconcileAfterLayoutMutation(
+            preferredMemberID: "right",
+            displayID: displayID,
+            placements: [left, right],
+            detachedConnections: []
+        )
+
+        XCTAssertNotNil(replacement)
+        XCTAssertNotEqual(replacement?.id, firstID)
+        XCTAssertEqual(store.group(containing: "left")?.id, replacement?.id)
+        XCTAssertEqual(store.group(containing: "right")?.id, replacement?.id)
+    }
+
+    func testCapturedMembersDissolveAReplacementGroupIdentity() {
+        var store = SnapGroupStore()
+        let original = store.reconcileAfterLayoutMutation(
+            preferredMemberID: "left",
+            displayID: displayID,
+            placements: [left, right],
+            detachedConnections: []
+        )
+        let originalID = try! XCTUnwrap(original?.id)
+        _ = store.dissolveGroup(id: originalID)
+        let replacement = store.reconcileAfterLayoutMutation(
+            preferredMemberID: "right",
+            displayID: displayID,
+            placements: [left, right],
+            detachedConnections: []
+        )
+        let replacementID = try! XCTUnwrap(replacement?.id)
+
+        let dissolution = store.dissolveGroups(
+            intersecting: ["left", "right"]
+        )
+
+        XCTAssertEqual(dissolution.groupIDs, Set([replacementID]))
+        XCTAssertEqual(dissolution.memberIDs, Set(["left", "right"]))
+        XCTAssertTrue(store.groups.isEmpty)
+        XCTAssertNil(store.group(containing: "left"))
+        XCTAssertNil(store.group(containing: "right"))
+    }
+
+    func testCapturedMembersDissolveEveryReachedSuccessorGroup() {
+        var store = SnapGroupStore()
+        let first = store.reconcileAfterLayoutMutation(
+            preferredMemberID: "right",
+            displayID: displayID,
+            placements: [left, right],
+            detachedConnections: []
+        )
+        let secondLeft = SplitPlacementGeometry(
+            stableIdentity: "second-left",
+            zone: .leftHalf,
+            frame: left.frame
+        )
+        let secondRight = SplitPlacementGeometry(
+            stableIdentity: "second-right",
+            zone: .rightHalf,
+            frame: right.frame
+        )
+        let second = store.reconcileAfterLayoutMutation(
+            preferredMemberID: "second-right",
+            displayID: displayID,
+            placements: [secondLeft, secondRight],
+            detachedConnections: []
+        )
+        let firstID = try! XCTUnwrap(first?.id)
+        let secondID = try! XCTUnwrap(second?.id)
+
+        let dissolution = store.dissolveGroups(
+            intersecting: ["left", "second-left"]
+        )
+
+        XCTAssertEqual(dissolution.groupIDs, Set([firstID, secondID]))
+        XCTAssertEqual(
+            dissolution.memberIDs,
+            Set(["left", "right", "second-left", "second-right"])
+        )
+        XCTAssertTrue(store.groups.isEmpty)
+    }
+
+    func testDepartureFromOneOverlappingGroupPreservesTheOtherGroup() {
+        var store = SnapGroupStore()
+        let first = store.reconcileAfterLayoutMutation(
+            preferredMemberID: "right",
+            displayID: displayID,
+            placements: [left, right],
+            detachedConnections: []
+        )
+        let secondLeft = SplitPlacementGeometry(
+            stableIdentity: "second-left",
+            zone: .leftHalf,
+            frame: left.frame
+        )
+        let secondRight = SplitPlacementGeometry(
+            stableIdentity: "second-right",
+            zone: .rightHalf,
+            frame: right.frame
+        )
+        let second = store.reconcileAfterLayoutMutation(
+            preferredMemberID: "second-right",
+            displayID: displayID,
+            placements: [secondLeft, secondRight],
+            detachedConnections: []
+        )
+        let firstID = try! XCTUnwrap(first?.id)
+        let secondID = try! XCTUnwrap(second?.id)
+
+        let dissolution = store.dissolveGroups(intersecting: ["left"])
+
+        XCTAssertEqual(dissolution.groupIDs, Set([firstID]))
+        XCTAssertEqual(dissolution.memberIDs, Set(["left", "right"]))
+        XCTAssertNil(store.group(containing: "left"))
+        XCTAssertNil(store.group(containing: "right"))
+        XCTAssertEqual(store.group(containing: "second-left")?.id, secondID)
+        XCTAssertEqual(store.group(containing: "second-right")?.id, secondID)
+    }
+
+    func testMissionControlScalePreservesLastGroupPresentation() {
+        let evidence = [
+            GroupWindowServerEvidence(
+                stableIdentity: "left",
+                pid: 10,
+                windowID: 101,
+                expectedFrame: left.frame
+            ),
+            GroupWindowServerEvidence(
+                stableIdentity: "right",
+                pid: 20,
+                windowID: 202,
+                expectedFrame: right.frame
+            )
+        ]
+        let snapshot = [
+            WindowOcclusionSnapshot(
+                windowID: 101,
+                pid: 10,
+                frame: CGRect(x: 80, y: 80, width: 500, height: 625),
+                zIndex: 0,
+                layer: 0
+            ),
+            WindowOcclusionSnapshot(
+                windowID: 202,
+                pid: 20,
+                frame: CGRect(x: 580, y: 80, width: 500, height: 625),
+                zIndex: 1,
+                layer: 0
+            )
+        ]
+
+        XCTAssertTrue(
+            GroupPresentationTransitionPolicy.shouldPreserveLastPresentation(
+                evidence: evidence,
+                visibleMemberIDs: [],
+                snapshot: snapshot
+            )
+        )
+    }
+
+    func testMovedOrClosedWindowDoesNotMasqueradeAsMissionControl() {
+        let evidence = [
+            GroupWindowServerEvidence(
+                stableIdentity: "left",
+                pid: 10,
+                windowID: 101,
+                expectedFrame: left.frame
+            )
+        ]
+        let movedWithoutScaling = WindowOcclusionSnapshot(
+            windowID: 101,
+            pid: 10,
+            frame: left.frame.offsetBy(dx: 100, dy: 100),
+            zIndex: 0,
+            layer: 0
+        )
+
+        XCTAssertFalse(
+            GroupPresentationTransitionPolicy.shouldPreserveLastPresentation(
+                evidence: evidence,
+                visibleMemberIDs: ["left"],
+                snapshot: [movedWithoutScaling]
+            )
+        )
+        XCTAssertTrue(
+            GroupPresentationTransitionPolicy.unresolvedMembersRemainLive(
+                evidence: evidence,
+                visibleMemberIDs: [],
+                snapshot: [movedWithoutScaling]
+            )
+        )
+        XCTAssertFalse(
+            GroupPresentationTransitionPolicy.shouldPreserveLastPresentation(
+                evidence: evidence,
+                visibleMemberIDs: [],
+                snapshot: [movedWithoutScaling]
+            )
+        )
+        XCTAssertFalse(
+            GroupPresentationTransitionPolicy.shouldPreserveLastPresentation(
+                evidence: evidence,
+                visibleMemberIDs: [],
+                snapshot: []
+            )
+        )
+        XCTAssertFalse(
+            GroupPresentationTransitionPolicy.unresolvedMembersRemainLive(
+                evidence: evidence,
+                visibleMemberIDs: [],
+                snapshot: []
+            )
+        )
+    }
+}

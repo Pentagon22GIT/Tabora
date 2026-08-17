@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>BundleIdentifier</key>
+	<string>dev.pent.Tabora</string>
+	<key>CertificateSHA1</key>
+	<string>B931AC85747B9B12E32751D3776AAFD3430E5A12</string>
+</dict>
+</plist>

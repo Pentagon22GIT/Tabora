@@ -1,4 +1,4 @@
-# Contributing to Tabora
+# TaboraへのContribution
 
 Contributionを歓迎します。別途明示しない限り、提出されたContributionはApache License 2.0の条件でTaboraへ提供されます。
 

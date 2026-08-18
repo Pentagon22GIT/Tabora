@@ -1,68 +1,68 @@
-# SnapFlow Final → Tabora v1.0.0 Migration Audit
+# SnapFlow Final → Tabora v1.0.0 移行監査
 
-Date: 2026-08-18
+日付: 2026-08-18
 
 ## Baseline
 
-The migration uses the supplied SnapFlow Final project archive as the behavior baseline.
+移行では、提供されたSnapFlow Final project archiveをbehavior baselineとして使用しました。
 
 - SnapFlow Final version: 1.3.0
 - Baseline archive SHA-256: `049ab054992cc2aea6737300f538205d4c897d71255448b97417b9d870ecfc23`
-- Historical Git HEAD contained in the baseline: `005af4b15fc256627e55f4346b05b91f1ae5a93d`
-- The baseline contained validated uncommitted working-tree changes; the archive, not the historical commit alone, defines the frozen source state.
+- baseline内のhistorical Git HEAD: `005af4b15fc256627e55f4346b05b91f1ae5a93d`
+- baselineには検証済みのuncommitted working-tree changesが含まれていました。そのため、historical commit単体ではなくarchive自体がfrozen source stateを定義します。
 
-## Migration-only changes
+## 移行だけで行った変更
 
 - Swift package / executable target: `SnapFlow` → `Tabora`
 - source target directory: `Sources/SnapFlow` → `Sources/Tabora`
-- test target directory/imports: `SnapFlowTests` / `SnapFlow` → `TaboraTests` / `Tabora`
-- application entry type and user-visible product strings renamed to Tabora
-- diagnostic queue / notification identity strings renamed where they directly represented the product
-- update URL changed to `Pentagon22GIT/Tabora`
+- test target directory / imports: `SnapFlowTests` / `SnapFlow` → `TaboraTests` / `Tabora`
+- application entry typeとuser-visible product stringをTaboraへ変更
+- productを直接表すdiagnostic queue / notification identity stringをTaboraへ変更
+- update URLを `Pentagon22GIT/Tabora` へ変更
 
-## Identity changes
+## Identity変更
 
 - Version: `1.3.0` → `1.0.0`
 - Build number: `13` → `1`
 - Official Bundle ID: `dev.pent.SnapFlow` → `dev.pent.Tabora`
 - Community Bundle ID: `dev.pent.SnapFlow.community` → `dev.pent.Tabora.community`
-- build artifacts: `SnapFlow*.app` / `SnapFlow-<version>.zip` → `Tabora*.app` / `Tabora-<version>.zip`
-- Info.plist provenance keys: `SnapFlowEdition` / `SnapFlowSourceRevision` / `SnapFlowSourceDirty` → `Tabora...`
-- old SnapFlow certificate fingerprint removed; Tabora専用Official fingerprint `B931AC85747B9B12E32751D3776AAFD3430E5A12` を設定済み（公開fingerprintのみ。private keyはrepository外）
+- build artifact: `SnapFlow*.app` / `SnapFlow-<version>.zip` → `Tabora*.app` / `Tabora-<version>.zip`
+- Info.plist provenance key: `SnapFlowEdition` / `SnapFlowSourceRevision` / `SnapFlowSourceDirty` → `Tabora...`
+- 旧SnapFlow certificate fingerprintを削除し、Tabora専用Official fingerprint `B931AC85747B9B12E32751D3776AAFD3430E5A12` を設定済み（公開fingerprintのみ。private keyはrepository外）
 
-## Documentation / repository changes
+## Documentation / repository変更
 
-- active docs rebuilt for Tabora v1.0.0
-- historical version-specific SnapFlow release/validation documents excluded from the active Tabora repository
-- old `.git`, `.build`, build outputs, release outputs, `.DS_Store`, and `__MACOSX` excluded
-- project-owned `build/official`, `build/community`, and `release` output directories retained empty in the distributed project folder
-- GitHub URLs, templates, workflows, and security metadata migrated to Tabora
-- safety invariant workflow added as the middle CI layer
+- active documentationをTabora v1.0.0向けに再構築
+- version固有のhistorical SnapFlow release / validation文書をactive Tabora repositoryから除外
+- 旧 `.git`、`.build`、build output、release output、`.DS_Store`、`__MACOSX`を除外
+- project-owned `build/official`、`build/community`、`release` output directoryはdistributed project folder内に空の状態で維持
+- GitHub URL、template、workflow、security metadataをTaboraへ移行
+- 中間CI layerとしてsafety invariant workflowを追加
 
-## Behavior change classification
+## Behavior変更の分類
 
-**Behavior change: none intended.**
+**意図したbehavior変更: なし。**
 
-No timer interval, geometry calculation, AX mutation rule, group membership algorithm, Recovery algorithm, Mission Control authorization rule, cursor rule, snap decision, or resize rule was intentionally changed during migration.
+移行中にtimer interval、geometry calculation、AX mutation rule、group membership algorithm、Recovery algorithm、Mission Control authorization rule、cursor rule、snap decision、resize ruleを意図的には変更していません。
 
-Three-window layouts were not treated as a special migration target. The inherited structural rules are shared across 2 / 3 / 4 split layouts.
+3-window layoutを移行専用の特殊対象にはしていません。継承した構造規則は2 / 3 / 4 split layoutで共通です。
 
-## Validation performed in the migration environment
+## 移行環境で実施した検証
 
-- file/directory identity audit
-- old-product-name scan across active code/config/scripts/GitHub metadata
-- exact source/test transform audit against the frozen baseline
-- existing build scripts verified as identity-only transformations of the baseline scripts
-- `swift package dump-package` succeeded with package/product `Tabora` and targets `Tabora` / `TaboraTests`
-- `swiftc -parse` succeeded for all Sources and Tests
-- `swift test` was attempted and failed at compile time because this Linux environment has no `AppKit` module
-- zsh script syntax was not executed because `zsh` is not installed in this environment; the scripts themselves are identity-only transforms of the already validated baseline scripts
-- secret / generated-artifact hygiene scans
-- Markdown local-link and YAML syntax checks
-- package ZIP reconstruction and content audit
+- file / directory identity audit
+- active code / config / scripts / GitHub metadata全体の旧product名scan
+- frozen baselineに対するsource / test transformの完全比較
+- 既存build scriptがbaseline scriptのidentity-only transformであることを確認
+- `swift package dump-package` がpackage / product `Tabora`、target `Tabora` / `TaboraTests` で成功
+- 全Sources / Testsに対する `swiftc -parse` が成功
+- `swift test` は実行を試みたが、このLinux環境には `AppKit` moduleがないためcompile段階で失敗
+- この環境には `zsh` がないためzsh script syntaxは実行していない。script自体は検証済みbaseline scriptのidentity-only transform
+- secret / generated-artifact hygiene scan
+- Markdown local-link / YAML syntax check
+- package ZIP再構築とcontent audit
 
-## Validation not claimed here
+## この文書では成功扱いしない検証
 
-The migration environment is not a macOS runtime with AppKit / Accessibility / Window Server integration. Therefore this document does not claim that Tabora runtime functional-equivalence tests, Community app build, Official app build, Mission Control behavior, or TCC behavior passed on macOS.
+移行環境はAppKit / Accessibility / Window Server integrationを持つmacOS runtimeではありません。そのため、この文書はTaboraのruntime functional-equivalence test、Community app build、Official app build、Mission Control挙動、TCC挙動がmacOSで成功したとは主張しません。
 
-The SnapFlow Final Baseline itself was user-confirmed operational before migration. Tabora must still be run through the same macOS functional suite before an Official release.
+SnapFlow Final Baseline自体は移行前にユーザーが動作確認済みです。Tabora Official Release前には、同等のmacOS functional suiteを改めて実行する必要があります。

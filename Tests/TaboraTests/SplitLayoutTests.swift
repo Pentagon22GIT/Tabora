@@ -288,6 +288,132 @@ final class SplitLayoutTests: XCTestCase {
         )
     }
 
+    func testStraightBoundaryAllowsThreeMemberPartitionReplacement() {
+        let displaced = [
+            SplitPlacementGeometry(
+                stableIdentity: "top-right",
+                zone: .topRight,
+                frame: CGRect(x: 720, y: 450, width: 720, height: 450)
+            ),
+            SplitPlacementGeometry(
+                stableIdentity: "bottom-right",
+                zone: .bottomRight,
+                frame: CGRect(x: 720, y: 0, width: 720, height: 450)
+            )
+        ]
+        let retained = [
+            SplitPlacementGeometry(
+                stableIdentity: "left",
+                zone: .leftHalf,
+                frame: CGRect(x: 0, y: 0, width: 720, height: 900)
+            )
+        ]
+
+        XCTAssertTrue(
+            SplitLayoutGeometry.hasStraightSharedBoundaryBetweenPartitions(
+                displacedPlacements: displaced,
+                retainedPlacements: retained
+            )
+        )
+    }
+
+    func testStraightBoundaryAllowsFourToThreeReplacement() {
+        let displaced = [
+            SplitPlacementGeometry(
+                stableIdentity: "top-left",
+                zone: .topLeft,
+                frame: CGRect(x: 0, y: 450, width: 720, height: 450)
+            ),
+            SplitPlacementGeometry(
+                stableIdentity: "bottom-left",
+                zone: .bottomLeft,
+                frame: CGRect(x: 0, y: 0, width: 720, height: 450)
+            )
+        ]
+        let retained = [
+            SplitPlacementGeometry(
+                stableIdentity: "top-right",
+                zone: .topRight,
+                frame: CGRect(x: 720, y: 450, width: 720, height: 450)
+            ),
+            SplitPlacementGeometry(
+                stableIdentity: "bottom-right",
+                zone: .bottomRight,
+                frame: CGRect(x: 720, y: 0, width: 720, height: 450)
+            )
+        ]
+
+        XCTAssertTrue(
+            SplitLayoutGeometry.hasStraightSharedBoundaryBetweenPartitions(
+                displacedPlacements: displaced,
+                retainedPlacements: retained
+            )
+        )
+    }
+
+    func testMisalignedCrossPartitionBoundaryBlocksMultiMemberReplacement() {
+        let displaced = [
+            SplitPlacementGeometry(
+                stableIdentity: "top-right",
+                zone: .topRight,
+                frame: CGRect(x: 720, y: 450, width: 720, height: 450)
+            ),
+            SplitPlacementGeometry(
+                stableIdentity: "bottom-right",
+                zone: .bottomRight,
+                frame: CGRect(x: 724, y: 0, width: 716, height: 450)
+            )
+        ]
+        let retained = [
+            SplitPlacementGeometry(
+                stableIdentity: "left",
+                zone: .leftHalf,
+                frame: CGRect(x: 0, y: 0, width: 720, height: 900)
+            )
+        ]
+
+        XCTAssertFalse(
+            SplitLayoutGeometry.hasStraightSharedBoundaryBetweenPartitions(
+                displacedPlacements: displaced,
+                retainedPlacements: retained
+            )
+        )
+    }
+
+    func testCrossPartitionBoundariesOnTwoAxesAreNotStraight() {
+        let displaced = [
+            SplitPlacementGeometry(
+                stableIdentity: "top-left",
+                zone: .topLeft,
+                frame: CGRect(x: 0, y: 450, width: 720, height: 450)
+            ),
+            SplitPlacementGeometry(
+                stableIdentity: "bottom-right",
+                zone: .bottomRight,
+                frame: CGRect(x: 720, y: 0, width: 720, height: 450)
+            )
+        ]
+        let retained = [
+            SplitPlacementGeometry(
+                stableIdentity: "top-right",
+                zone: .topRight,
+                frame: CGRect(x: 720, y: 450, width: 720, height: 450)
+            ),
+            SplitPlacementGeometry(
+                stableIdentity: "bottom-left",
+                zone: .bottomLeft,
+                frame: CGRect(x: 0, y: 0, width: 720, height: 450)
+            )
+        ]
+
+        XCTAssertFalse(
+            SplitLayoutGeometry.hasStraightSharedBoundaryBetweenPartitions(
+                displacedPlacements: displaced,
+                retainedPlacements: retained
+            )
+        )
+    }
+
     func testResizeHandleJoinsAFullHeightWindowToTwoQuarterWindows() {
         let placements = [
             SplitPlacementGeometry(

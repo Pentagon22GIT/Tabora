@@ -1,66 +1,75 @@
-# Security and Correctness Invariants
+# Security / Correctness不変条件
 
-These invariants are inherited from the final SnapFlow stabilization and apply equally to 2 / 3 / 4 split layouts.
+これらの不変条件はSnapFlow最終安定化から継承され、2 / 3 / 4 split layoutへ同等に適用されます。
 
 ## Window state semantics
 
-1. Structural existence is not the same as current interaction eligibility.
-2. Temporary AX failure / timeout / `cannotComplete` is not confirmed disappearance.
-3. Partial or failed discovery is not an authoritative empty result.
-4. Existing group membership must not be destroyed solely because a member is temporarily unavailable for interaction.
-5. A correctness-critical exact target must not depend on optional broad-discovery budgets.
+1. structural existenceと現在のinteraction eligibilityは同じではない。
+2. temporary AX failure / timeout / `cannotComplete` はconfirmed disappearanceではない。
+3. partial / failed discoveryはauthoritative empty resultではない。
+4. memberが一時的に操作不能であることだけを理由に既存group membershipを破壊してはいけない。
+5. correctness-criticalなexact targetをoptional broad-discovery budgetへ依存させてはいけない。
 
-## Identity and geometry
+## Identityとgeometry
 
-1. Window Server evidence may identify the physical surface and Z-order.
-2. AX geometry is the baseline for AX native-resize comparison and committed AX mutations.
-3. CG geometry must not be compared directly against AX current geometry as a native-resize baseline.
-4. PID + CGWindowID must be considered together where ownership matters.
-5. Incomplete detached-window census must fail closed rather than adopting an ambiguous surface.
+1. Window Server evidenceはphysical surfaceとZ-orderの識別に使用できる。
+2. AX geometryはAX native-resize比較とcommitted AX mutationのbaselineである。
+3. native-resize baselineとしてCG geometryとAX current geometryを直接比較してはいけない。
+4. ownershipが重要な場面ではPID + CGWindowIDを組み合わせて扱う。
+5. detached-window censusがincompleteな場合、ambiguous surfaceをadoptせずfail closedする。
 
 ## Group integrity
 
-1. Unknown observation state alone must not retire a group.
-2. Legitimate native resize, legitimate drag departure, and confirmed member closure must remain effective departure paths.
-3. Passive geometry mismatch alone must not invent a user departure.
-4. Degradation confirmation must require fresh evidence rather than repeated calls inside the same observation epoch.
-5. One group's transient failure must not suspend unrelated groups' handles or consume unrelated recovery debt.
-6. These rules apply to 2-, 3-, and 4-window groups; three-window layouts are a high-sensitivity regression case, not a separate behavioral class.
+1. unknown observation stateだけでgroupをretireしてはいけない。
+2. 正当なnative resize、正当なdrag departure、confirmed member closureは有効なdeparture pathとして維持する。
+3. passive geometry mismatchだけからuser departureを捏造してはいけない。
+4. degradation confirmationには、同一observation epoch内の反復callではなくfresh evidenceを要求する。
+5. 1 groupのtransient failureが無関係なgroupのhandleを停止したり、無関係なrecovery debtを消費してはいけない。
+6. これらの規則は2 / 3 / 4 window groupに共通であり、3-window layoutは高感度regression caseではあっても別behavior classではない。
 
-## Shared resize and cursor ownership
+## Placement / replacement authorization
 
-1. Tabora-owned shared interaction regions must retain input ownership while their ownership is freshly validated.
-2. Temporary uncertainty may quarantine only the last validated Tabora-owned region; it must not expand onto ordinary native edges.
-3. Confirmed destruction / occlusion must release Tabora input ownership.
-4. Shared-resize authorization and native-resize departure must remain distinguishable.
+1. single-member replacementの既存認可経路へ、multi-member専用geometry条件を追加してはいけない。
+2. 2 members以上を一度にdisplaceするreplacementは、displaced partitionとretained partitionの共有境界が同一axis・同一coordinate上でgapなく一本へmergeできる場合だけ認可する。
+3. blocked multi-member replacementは、そのgroupに対するreplacementだけでなくextensionも認可しないhard vetoとして扱う。
+4. 「既存groupへ吸収できない」ことをnew group生成の直接認可理由にしてはいけない。既存のindependent split eligibilityへ戻す。
+5. multi-member replacementのcommit直前再検証は対象group / member geometryへ限定し、global discoveryや常時observerを追加しない。
+6. mutation開始後のidentity / geometry / AX / reconcile failureはrollbackし、new-group fallbackとして再試行しない。
+
+## Shared resizeとcursor ownership
+
+1. Tabora-owned shared interaction regionはownershipがfreshに検証されている間、input ownershipを維持する。
+2. temporary uncertainty時にquarantineできるのは最後にvalidatedされたTabora-owned regionだけであり、通常のnative edgeへ広げてはいけない。
+3. confirmed destruction / occlusionではTabora input ownershipを解放する。
+4. shared-resize authorizationとnative-resize departureを区別可能なまま維持する。
 
 ## Recovery
 
-1. The low-frequency Recovery watchdog must remain independent.
-2. Recovery must observe relevant group surfaces and external surfaces that can affect validated Tabora interaction regions.
-3. Distant unrelated window churn must not force broad recovery work.
-4. Relevant external occluder arrival, removal, or ordering change must be detectable.
-5. Observation results from one epoch must not be silently reused as fresh authorization after rollback or transition.
-6. Fast observer/presentation retries must be bounded; unresolved liveness debt falls back to the independent low-frequency watchdog rather than creating a second high-frequency loop.
+1. 低頻度Recovery watchdogは独立して維持する。
+2. Recoveryはrelevant group surfaceと、validated Tabora interaction regionへ影響し得るexternal surfaceを観測する。
+3. 遠方の無関係なwindow churnでbroad recovery workを強制しない。
+4. relevant external occluderの出現、消失、ordering changeを検出可能にする。
+5. 1 observation epochの結果をrollback / transition後のfresh authorizationとして黙って再利用しない。
+6. fast observer / presentation retryはboundedにし、未解決のliveness debtは第二high-frequency loopを作らず独立低頻度watchdogへ戻す。
 
 ## Foreground / Mission Control
 
-1. Z-order / occlusion comes from Window Server evidence; AX determines operation targets.
-2. Indeterminate foreground state must fail closed for automatic authorization.
-3. Mission Control transition evidence must be group-scoped, short-lived, and not reusable after expiry / rebuild / invalidation.
-4. Ordering verification failure must not leave an interactive stale proxy visible.
-5. A transient ordering or presentation observation failure must not destroy structural group membership or permanently retire an otherwise valid Mission Control candidate; recovery debt remains group-scoped.
+1. Z-order / occlusionはWindow Server evidence、operation targetはAXから得る。
+2. indeterminate foreground stateではautomatic authorizationをfail closedする。
+3. Mission Control transition evidenceはgroup-scopedかつshort-livedとし、expiry / rebuild / invalidation後に再利用しない。
+4. ordering verification失敗時にinteractiveなstale proxyを表示したままにしない。
+5. transient ordering / presentation observation failureでstructural group membershipを破壊したり、本来validなMission Control candidateを恒久retireしてはいけない。recovery debtはgroup-scopedのまま維持する。
 
-## Preview and optional data
+## Previewとoptional data
 
-1. Preview images are derived and disposable.
-2. Preview cache pressure or failure must not alter placement correctness.
-3. Optional candidate discovery must not become structural authority.
-4. Preview resolution must remain memory-bounded across 2 / 3 / 4 layouts and multiple groups; quality changes must not weaken identity or ordering authorization.
+1. Preview imageはderived / disposable stateである。
+2. Preview cache pressure / failureでplacement correctnessを変えてはいけない。
+3. optional candidate discoveryをstructural authorityにしてはいけない。
+4. Preview resolutionは2 / 3 / 4 layoutおよびmultiple group全体でmemory-boundedに保ち、quality変更のためidentity / ordering authorizationを弱めてはいけない。
 
 ## Release trust
 
-1. Tabora Official and Community identities are separate.
-2. SnapFlow's signing identity must not be reused as Tabora Official.
-3. Private keys, tokens, passwords, and local secrets must never enter the public repository.
-4. Official build verification must fail if the Tabora certificate fingerprint is not explicitly configured.
+1. Tabora OfficialとCommunity identityは分離する。
+2. SnapFlow signing identityをTabora Officialへ再利用しない。
+3. private key、token、password、local secretをpublic repositoryへ入れない。
+4. Tabora certificate fingerprintが明示設定されていない場合、Official build verificationは失敗しなければならない。

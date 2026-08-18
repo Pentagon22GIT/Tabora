@@ -1,59 +1,62 @@
-# Architecture
+# アーキテクチャ
 
-This document describes the Tabora v1.0.0 architecture inherited from the SnapFlow Final Baseline. It is descriptive; it does not redefine behavior.
+この文書は、SnapFlow Final Baselineから継承したTabora v1.0.0の構造と、その後のv1.0.1安定化で追加された限定的なplacement認可を説明するものです。これは実装の説明文書であり、実コードとは別の新しい挙動を定義するものではありません。
 
-## Application entry and settings
+## アプリケーション起動と設定
 
-- `AppMain.swift` owns the menu-bar application lifecycle, menu commands, global shortcut registration, update-link opening, and Accessibility settings shortcut.
-- `AppSettings.swift` stores user settings in the current app's `UserDefaults.standard` domain and controls login-item registration through `ServiceManagement`.
-- `SettingsWindowController.swift` presents settings without introducing a separate persistence layer.
+- `AppMain.swift` はメニューバーアプリのライフサイクル、メニューコマンド、グローバルショートカット登録、更新リンクの表示、Accessibility設定への導線を管理します。
+- `AppSettings.swift` は現在のアプリの `UserDefaults.standard` domainへユーザー設定を保存し、`ServiceManagement` を使ってログイン項目登録を管理します。
+- `SettingsWindowController.swift` は別の永続化層を追加せずに設定画面を表示します。
 
-## Window observation and identity
+## ウィンドウ観測とidentity
 
-- `AXWindowService.swift` combines Accessibility observation with Window Server identities.
-- `WindowSafetyPolicies.swift` contains safety-oriented state and authorization policies used to keep temporary observation failure distinct from confirmed disappearance.
-- PID + CGWindowID are used where a physical Window Server surface must be identified; AX geometry remains the mutation / native-resize geometry domain.
+- `AXWindowService.swift` はAccessibilityによる観測とWindow Server identityを組み合わせます。
+- `WindowSafetyPolicies.swift` は、一時的な観測失敗とconfirmed disappearanceを区別するための安全state / authorization policyを保持します。
+- physicalなWindow Server surfaceを特定する必要がある場面ではPID + CGWindowIDを使用し、AX geometryはmutationおよびnative resizeのgeometry domainとして扱います。
 
-## Placement and snap control
+## Placementとsnap制御
 
-- `SnapController.swift` coordinates drag observation, snap selection, Assist, restore state, recovery, and high-level application state.
-- `SnapZone.swift` and `SplitLayout.swift` model target zones and layout relationships.
-- Placement logic applies to two-, three-, and four-window arrangements through shared structural rules rather than a three-window-only special case.
+- `SnapController.swift` はdrag観測、snap選択、Assist、restore state、Recovery、高位アプリstateを統括します。
+- `SnapZone.swift` と `SplitLayout.swift` はtarget zoneとlayout関係をモデル化します。
+- placement logicは3分割専用分岐ではなく、2 / 3 / 4 window構成へ共通の構造規則を適用します。
+- v1.0.1では、既存groupの複数memberを一度に置き換える場合だけ、displaced partitionとretained partitionの共有境界が同一axis・同一coordinate上で連続した一本の直線として成立することをplacement認可条件へ追加します。
+- single-member replacementは従来経路を維持します。multi-member replacementが不適格な場合は、そのgroupに対するreplacement / extensionを認可せず、既存のindependent split判定へ戻します。
+- multi-member replacementの認可はmutation開始前に行い、commit直前には対象groupのrevision、member集合、AX current frameだけを局所再検証します。再検証失敗はfail-closedとし、new-group fallbackへ変換しません。
 
-## Explicit groups and resize
+## 明示的groupとresize
 
-- `SnapGroup.swift` models persistent group relationships and group-level state.
-- `SnapController+ExplicitGroups.swift` reconciles group membership and structural changes.
-- `SnapController+HandleResize.swift`, `ResizeHandleOverlay.swift`, and `ResizeHandleGeometry.swift` own shared-resize presentation and interaction.
-- `SnapController+NativeResize.swift` distinguishes true native resize / departure from Tabora-owned shared resize.
-- `LiveResizeScheduler.swift` coalesces live resize requests so stale targets do not accumulate.
-- `VirtualResizeOverlay.swift` provides lightweight resize presentation.
+- `SnapGroup.swift` は永続的なgroup関係とgroup-level stateをモデル化します。
+- `SnapController+ExplicitGroups.swift` はgroup membershipと構造変化をreconcileします。
+- `SnapController+HandleResize.swift`、`ResizeHandleOverlay.swift`、`ResizeHandleGeometry.swift` はshared resizeのpresentationとinteractionを担当します。
+- `SnapController+NativeResize.swift` は、本来のnative resize / departureとTabora-owned shared resizeを区別します。
+- `LiveResizeScheduler.swift` はlive resize requestをcoalesceし、stale targetが蓄積しないようにします。
+- `VirtualResizeOverlay.swift` は軽量なresize presentationを提供します。
 
-## Foreground and Mission Control
+## ForegroundとMission Control
 
-- `SnapController+GroupForeground.swift` authorizes group foregrounding using Window Server ordering evidence and AX operation targets.
-- `MissionControlGroupProxy.swift` provides Mission Control proxy behavior and scoped transition authorization. Proxy ordering is verified while hidden/non-interactive; transient ordering failure receives bounded revalidation and then becomes low-frequency Recovery debt rather than permanent candidate loss.
-- Mission Control presentation suppression caused by temporary AX / display / geometry uncertainty is tracked per group. Fast retries are finite; unresolved debt is re-observed by the independent 1 Hz Recovery watchdog.
-- Selection evidence is bounded and group-specific; stale transition evidence must not authorize a later unrelated action.
+- `SnapController+GroupForeground.swift` はWindow Server ordering evidenceとAX operation targetを使ってgroup foregroundingを認可します。
+- `MissionControlGroupProxy.swift` はMission Control proxy挙動とscopeされたtransition authorizationを担当します。proxy orderingはhidden / non-interactive状態で検証し、一時的なordering失敗にはboundedな再検証を行い、その後は候補を恒久的に失わせず低頻度Recovery debtへ移します。
+- AX / display / geometryの一時的不確実性によるMission Control presentation suppressionはgroup単位で追跡します。fast retryは有限で、未解決のdebtは独立した1 Hz Recovery watchdogで再観測します。
+- selection evidenceはboundedかつgroup-specificであり、stale transition evidenceを後の無関係なaction認可へ再利用してはいけません。
 
-## Assist and previews
+## AssistとPreview
 
-- `WindowPickerPanel.swift` presents candidate windows.
-- `AXWindowService.previewCGImage` captures preview images only when preview functionality is enabled.
-- Preview data is derived, bounded, disposable state and is not authoritative for window identity or placement correctness. Mission Control previews share the existing 32 MiB cache budget across all currently presentable members instead of using a fixed 720×480 cap.
+- `WindowPickerPanel.swift` はcandidate windowを表示します。
+- `AXWindowService.previewCGImage` はPreview機能が有効な場合だけpreview画像を取得します。
+- Preview dataはderived / bounded / disposable stateであり、window identityやplacement correctnessの権威にはなりません。Mission Control previewは固定720×480 capではなく、現在presentation可能な全memberで既存32 MiB cache budgetを共有します。
 
 ## Recovery
 
-Tabora retains an independent low-frequency Recovery watchdog. Recovery is a safety net for lost mouse-up, Assist cleanup, presentation recovery, observer re-arming, and transient AX / Window Server failures. Mouse event monitors receive a bounded readiness burst at startup/re-enable; after that, Recovery performs only a single re-arm attempt per 1 Hz tick. Healthy Recovery must not become a second unrestricted global discovery loop.
+Taboraは独立した低頻度Recovery watchdogを維持します。Recoveryはlost mouse-up、Assist cleanup、presentation recovery、observer re-arm、一時的なAX / Window Server failureに対する安全網です。mouse event monitorはstartup / re-enable時にbounded readiness burstを受け、その後のRecoveryでは1 Hz tickごとに単一のre-arm attemptだけを行います。正常時のRecoveryを制限のない第二global discovery loopにしてはいけません。
 
-## Settings and OS integration
+## 設定とOS integration
 
-- `ExperimentalWorkspaceSettings.swift` optionally reads/writes the Dock `workspaces-edge-delay` preference and restarts Dock when the user explicitly applies or restores that setting.
-- `ServiceManagement` is used for login-item registration.
+- `ExperimentalWorkspaceSettings.swift` は、ユーザーが明示的に適用・復元した場合だけDockの `workspaces-edge-delay` preferenceを読み書きし、Dockを再起動します。
+- login item登録には `ServiceManagement` を使用します。
 
-## Build identities
+## Build identity
 
 - Official: `dev.pent.Tabora`
 - Community: `dev.pent.Tabora.community`
 
-The two identities intentionally use separate trust and TCC domains.
+両identityは意図的に別々のtrust domain / TCC domainを使用します。

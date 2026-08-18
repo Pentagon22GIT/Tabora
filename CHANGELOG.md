@@ -1,4 +1,26 @@
-# Changelog
+# 更新履歴
+
+## 1.0.1 — 2026-08-18
+
+### バグ修正 / Correctness
+
+- 3分割以上で、配置対象側が複数windowへ細分化されている場合にsplit placementがキャンセルされる問題を修正。
+- single-member replacementの既存経路は変更せず、2 members以上のconflictだけをmulti-member replacementとして追加判定。
+- displaced partitionとretained partitionの共有境界が同一axis・同一coordinate上で連続した一本の直線になる場合だけreplacementを認可。
+- blocked multi-member conflictは同一groupへのextensionとして再吸収せず、既存のindependent split eligibilityへ戻す。
+- multi-member replacementはcommit直前に対象group revision / member集合 / AX current frameだけを局所再検証し、失敗時はnew-group fallbackへ変換せずfail closed / rollback。
+- 3分割専用・4分割専用のmember count patchは追加せず、2 / 3 / 4共通geometry policyとして実装。
+
+### UI改善
+
+- 左右端長押しで四隅候補へ切り替わる初回transitionは、点滅後も左右ハーフguideの外形を動かさず、内部へ横区切りを即時表示する方式へ変更。
+- 通常snap overlay、四隅候補表示後のhover / selection、snap完了など他のanimationは変更しない。
+- 四隅候補表示では選択中candidateの青いfillを通常snap guideと同じ濃さに揃え、非選択側は薄いfillを維持しつつguide線を残して、両候補の存在と現在の選択先を明確に判別できるコントラストへ調整。
+
+### Documentation
+
+- Architecture、Threat Model、Security / Correctness Invariants、Release Process、Origin、Migration Audit、Maintainer Setupを日本語化。
+- v1.0.1のmulti-member replacement authorizationと回帰条件をSecurity / Architecture文書へ反映。
 
 ## 1.0.0 — 2026-08-18
 

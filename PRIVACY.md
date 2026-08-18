@@ -1,8 +1,8 @@
-# Privacy Policy
+# プライバシーポリシー
 
 最終更新日: 2026-08-18
 
-Taboraはローカルで動作するmacOSアプリです。現在のv1.0.0ソースを静的監査した範囲では、解析、広告、テレメトリー、クラッシュレポート自動送信、ユーザーアカウント、アプリ自身によるHTTP通信を実装していません。
+Taboraはローカルで動作するmacOSアプリです。現在のv1.0.1ソースを静的監査した範囲では、解析、広告、テレメトリー、クラッシュレポート自動送信、ユーザーアカウント、アプリ自身によるHTTP通信を実装していません。
 
 ## ローカルで扱う情報
 
@@ -40,7 +40,7 @@ Taboraはローカルで動作するmacOSアプリです。現在のv1.0.0ソー
 
 Official (`dev.pent.Tabora`) と Community (`dev.pent.Tabora.community`) は別Bundle IDであるため、設定domainも分離されます。Taboraは新規productであり、SnapFlowのUserDefaults domainを自動移行・読み込みする処理を追加していません。
 
-## Experimental workspace setting
+## 実験的workspace設定
 
 利用者が実験的なSpace edge delay設定を操作した場合、Taboraは`/usr/bin/defaults`でmacOS Dockの`workspaces-edge-delay`を読み書きし、適用時に`/usr/bin/killall Dock`を実行します。これはmacOS全体の設定変更であり、設定画面上でも明示します。Tabora終了時に自動復元する処理はありません。
 

@@ -4,6 +4,8 @@ Taboraは、macOSのウィンドウを画面端・四隅・分割領域へ配置
 
 Tabora v1.0.0は、技術的に完成したSnapFlow Final v1.3.0の挙動を凍結し、製品identity、version、ドキュメント、署名trust domain、GitHub基盤だけを新しいプロジェクトとして移行したものです。移行そのものによるSnap / Group / Resize / Recovery / AX / Mission Controlのアルゴリズム変更は行いません。由来と移行境界は[ORIGIN.md](Documentation/ORIGIN.md)と[MIGRATION_AUDIT.md](Documentation/MIGRATION_AUDIT.md)を参照してください。
 
+Tabora v1.0.1では、複数memberをまとめて置き換えるplacementの構造認可を追加し、一直線の共有境界を持つ2 / 3 / 4共通layoutで安全にreplacementできるようにします。また、左右端長押し後の四隅ガイド初回切替を、点滅後に完成frameへ即時表示するUIへ改善します。single-member replacement、foreground safety、Recovery、Mission Control、native resize departureなどの既存安全経路は維持します。
+
 ## 主な機能
 
 - 左右半分、上下半分、四隅、最大化へのスナップ
@@ -106,13 +108,13 @@ https://github.com/Pentagon22GIT/Tabora/releases/latest
 
 Tabora自身にHTTPクライアント、自動更新ダウンローダー、自己置換処理はありません。
 
-## Privacy
+## プライバシー
 
 Taboraはウィンドウ情報と設定をローカルで扱います。解析、広告、テレメトリー、クラッシュレポート自動送信は実装していません。プレビュー画像は利用者が有効にした場合だけ取得し、メモリ上で使用します。
 
 詳細: [PRIVACY.md](PRIVACY.md)
 
-## Security
+## セキュリティ
 
 Accessibilityと画面収録は強い権限です。公式版を確認するときは名前やアイコンだけでなく、公式repository、Release、署名、ハッシュを組み合わせて確認してください。
 
@@ -122,7 +124,7 @@ Accessibilityと画面収録は強い権限です。公式版を確認すると�
 
 脆弱性は公開IssueではなくGitHub Private Vulnerability Reportingから報告してください。
 
-## Contributing
+## Contribution
 
 Contributionは[CONTRIBUTING.md](CONTRIBUTING.md)に従ってください。通常の変更でも`swift test`とCommunity buildを実行し、window identity / group membership / shared resize / Recovery / Mission Controlの安全不変条件を弱めないことを要求します。
 

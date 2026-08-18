@@ -220,10 +220,19 @@ enum SnapGroupPlacementEligibilityPolicy {
     }
 
     static func relationshipRank(
-        hasLogicalConflict: Bool,
+        conflictingMemberCount: Int,
+        multiMemberReplacementHasStraightBoundary: Bool,
         canExtend: Bool
     ) -> Int? {
-        if hasLogicalConflict { return 0 }
+        if conflictingMemberCount == 1 {
+            // Preserve the existing single-member replacement path exactly.
+            return 0
+        }
+        if conflictingMemberCount >= 2 {
+            // A blocked multi-member replacement is a hard veto for this
+            // group. It must not fall through and become an extension.
+            return multiMemberReplacementHasStraightBoundary ? 0 : nil
+        }
         if canExtend { return 1 }
         return nil
     }

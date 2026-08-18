@@ -31,7 +31,6 @@ jobs:
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' 'build/community/Tabora Community.app/Contents/Info.plist')" = "Tabora Community"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' 'build/community/Tabora Community.app/Contents/Info.plist')" = "Tabora"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' 'build/community/Tabora Community.app/Contents/Info.plist')" = "$(cat VERSION)"
-          test "$(cat VERSION)" = "1.0.0"
           test "$(/usr/libexec/PlistBuddy -c 'Print :TaboraSourceRevision' 'build/community/Tabora Community.app/Contents/Info.plist')" = "$(git rev-parse HEAD)"
           test "$(/usr/libexec/PlistBuddy -c 'Print :TaboraSourceDirty' 'build/community/Tabora Community.app/Contents/Info.plist')" = "false"
           codesign --verify --strict --verbose=2 'build/community/Tabora Community.app'

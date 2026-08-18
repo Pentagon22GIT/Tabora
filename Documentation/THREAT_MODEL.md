@@ -1,105 +1,119 @@
 # Threat Model
 
-## Assets to protect
+## 保護対象Asset
 
-- User control over windows and workspace state
-- Accessibility and Screen Capture permission boundaries
-- Correct association between AX windows and Window Server surfaces
-- Group membership and shared-resize authorization
-- Release identity and Official signing trust
-- Public repository integrity
+- window / workspace stateに対するユーザーのcontrol
+- Accessibility / Screen Capture permission境界
+- AX windowとWindow Server surfaceの正しい対応付け
+- group membershipとshared-resize authorization
+- placement / replacement authorizationのstate integrity
+- Release identityとOfficial signing trust
+- public repository integrity
 
-## Trust boundaries
+## Trust boundary
 
 ### macOS Accessibility / Window Server
 
-Tabora consumes state from AX and Window Server that can be delayed, temporarily unavailable, incomplete, or changing during transitions. Neither a temporary AX failure nor a partial discovery result is treated as proof that a window disappeared.
+TaboraはAXとWindow Serverからstateを取得しますが、そのstateはdelay、一時的unavailable、incomplete、transition中の変化を含み得ます。temporary AX failureまたはpartial discovery resultを、window disappearanceの証明として扱いません。
 
-### Other GUI applications
+### その他のGUI application
 
-Other applications may be slow, buggy, create large numbers of windows, rapidly create/destroy surfaces, expose duplicate titles, show modal sheets, or temporarily refuse move/resize operations. Tabora must fail closed without corrupting group state.
+他applicationはslow / buggyである可能性があり、大量のwindow作成、surfaceの高速create / destroy、duplicate title、modal sheet表示、move / resizeの一時拒否などを行うことがあります。Taboraはgroup stateを破壊せずfail closedできなければなりません。
 
 ### User interaction
 
-Pointer-down evidence, native-resize edges, Tabora-owned shared boundaries, Mission Control selection, and application switching can overlap in time. Authorization must bind to fresh physical identity and the correct interaction owner.
+pointer-down evidence、native-resize edge、Tabora-owned shared boundary、Mission Control selection、application switchingは時間的に重なる可能性があります。authorizationはfreshなphysical identityと正しいinteraction ownerへ束縛します。
 
 ### Build / release supply chain
 
-The public repository, GitHub Actions dependencies, release tags, hashes, code signing certificate, and Maintainer environment form a separate trust boundary from runtime window management.
+public repository、GitHub Actions dependency、release tag、hash、code signing certificate、Maintainer environmentは、runtime window managementとは別のtrust boundaryを構成します。
 
-## Threats and mitigations
+## Threatとmitigation
 
-### Malicious or broken GUI applications
+### 悪意または故障したGUI application
 
-Threats:
-- misleading titles
-- reused / ambiguous Window IDs
-- AX stalls or `cannotComplete`
-- temporary inability to move/resize
-- unexpected modal surfaces
+脅威:
+- misleading title
+- reused / ambiguous Window ID
+- AX stallまたは `cannotComplete`
+- move / resizeのtemporary inability
+- unexpected modal surface
 
-Mitigations:
-- PID + CGWindowID identity where physical ownership matters
-- AX unknown distinct from confirmed missing
-- no structural destruction from optional discovery failure
-- exact-target fail-closed behavior
+対策:
+- physical ownershipが重要な場面ではPID + CGWindowID identityを使用
+- AX unknownとconfirmed missingを分離
+- optional discovery failureからstructural destructionへ進まない
+- exact targetはfail closed
 
-### Large window count / resource exhaustion
+### 大量window / resource exhaustion
 
-Threats:
-- broad discovery causing excessive work
-- preview capture memory pressure
-- irrelevant Window Server churn triggering recovery repeatedly
+脅威:
+- broad discoveryによる過剰work
+- preview captureのmemory pressure
+- irrelevant Window Server churnによるRecovery反復
 
-Mitigations:
-- optional discovery may be budgeted while correctness-critical targets are not
+対策:
+- optional discoveryにはbudgetを設定可能だがcorrectness-critical targetにはそのhard capを流用しない
 - relevant-scene Recovery
-- bounded, disposable preview cache
-- per-group / per-descriptor recovery debt
+- bounded / disposable preview cache
+- group / descriptor単位のrecovery debt
 
 ### Identity ambiguity
 
-Threats:
-- same-title windows
-- detached browser tabs/windows
-- hidden or previously existing same-PID surfaces becoming visible
+脅威:
+- same-title window
+- detached browser tab / window
+- hiddenまたは以前存在したsame-PID surfaceの再出現
 
-Mitigations:
-- complete Window Server census required for detached adoption
-- title/geometry are not sufficient identity by themselves
-- physical evidence is resolved back to the exact AX target before committed mutation
+対策:
+- detached adoptionにはcomplete Window Server censusを要求
+- title / geometryだけをidentityとして十分とは扱わない
+- committed mutation前にphysical evidenceをexact AX targetへ解決する
+
+### Multi-member replacementの誤認可
+
+脅威:
+複数member conflictを単なるlogical overlapだけでreplacement可能と判断すると、非一直線layoutの一部を破壊したり、blocked placementをextensionとして既存groupへ誤吸収する可能性があります。またplanning時には正しかったgeometryがcommitまでに変化する可能性があります。
+
+対策:
+- multi-member conflictに限り、displaced / retained partition間のcross-partition boundaryが同一axis・同一coordinate・continuous spanであることを要求
+- internal boundaryをauthorization evidenceへ流用しない
+- blocked multi-member conflictは同一groupに対するextensionもhard veto
+- commit直前に対象group revision / member集合 / AX current frameだけを局所再検証
+- 再検証失敗やmutation後のfailureをnew-group fallbackへ変換しない
+- single-member replacementにはこの追加geometry gateを適用しない
 
 ### Cursor / input ownership confusion
 
-Threat:
-A transient observation failure could remove Tabora's shared-resize surface and expose the underlying macOS native resize edge, causing an unintended group departure.
+脅威:
+transient observation failureでTabora shared-resize surfaceが消え、その下のmacOS native resize edgeが露出すると、意図しないgroup departureが起きる可能性があります。
 
-Mitigation:
-Short quarantine is limited to the last validated Tabora-owned region when the physical participants still exist. Confirmed occlusion or structural destruction releases the region.
+対策:
+physical participantがまだ存在する場合のshort quarantineは、最後にvalidatedされたTabora-owned regionだけへ限定します。confirmed occlusionまたはstructural destructionではregionを解放します。
 
 ### Mission Control stale evidence
 
-Threat:
-A transition observed for one group could authorize interaction with another group or a later stale proxy.
+脅威:
+あるgroupのtransition evidenceが、別groupまたは後のstale proxy interactionを認可する可能性があります。
 
-Mitigation:
-Transition evidence is scoped to group identity / generation and expires or is consumed.
+対策:
+transition evidenceをgroup identity / generationへscopeし、expireまたはconsumeします。
 
 ### Signing-key compromise
 
-Threat:
-An attacker with the Tabora Official private key could create a binary satisfying the configured designated requirement.
+脅威:
+攻撃者がTabora Official private keyを取得すると、configured designated requirementを満たすbinaryを作成できる可能性があります。
 
-Mitigation:
-- private key never stored in the repository or GitHub Actions
-- certificate fingerprint is public configuration only
-- compromise triggers a new Tabora certificate and explicit user trust reset guidance
-- SnapFlow certificate is not reused for Tabora
+対策:
+- private keyをrepositoryまたはGitHub Actionsへ保存しない
+- certificate fingerprintは公開configurationだけに使用
+- compromise時は新しいTabora certificateへrotationし、明示的なuser trust reset手順を案内
+- SnapFlow certificateをTaboraへ再利用しない
 
-## Out of scope
+## Scope外
 
-- Vulnerabilities in macOS itself
-- Third-party forks after they diverge from this source
-- Attackers that already fully control the user's account or machine
+- macOS自体の脆弱性
+- このsourceからdivergeした第三者fork
+- すでにユーザーaccountまたはmachineを完全controlしているattacker
 
-Out-of-scope conditions may still be investigated if they expose a practical weakness in Tabora's own trust boundaries.
+Scope外の条件でも、Tabora自身のtrust boundaryに実用的な弱点を示す場合は調査対象になることがあります。

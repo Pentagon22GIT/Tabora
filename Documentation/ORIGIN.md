@@ -1,24 +1,24 @@
-# Origin and Provenance
+# 由来とProvenance
 
-Tabora v1.0.0 is a new project lineage derived from the final validated SnapFlow codebase.
+Tabora v1.0.0は、最終検証済みSnapFlow codebaseから派生した新しいproject lineageです。
 
 ## Source baseline
 
 - Historical project: SnapFlow
 - Final SnapFlow version: 1.3.0
 - Historical repository: `Pentagon22GIT/SnapFlow`
-- Historical source commit present in the supplied project: `005af4b15fc256627e55f4346b05b91f1ae5a93d`
+- 提供projectに含まれていたhistorical source commit: `005af4b15fc256627e55f4346b05b91f1ae5a93d`
 - Final baseline archive SHA-256: `049ab054992cc2aea6737300f538205d4c897d71255448b97417b9d870ecfc23`
 - Tabora migration date: 2026-08-18
 
-The final SnapFlow archive contains validated working-tree changes beyond the historical commit above. Therefore that commit alone does not define the final behavioral baseline. The archive hash identifies the exact supplied baseline used for this migration.
+Final SnapFlow archiveには、上記historical commitより後の検証済みworking-tree changesが含まれています。そのため、このcommit単体ではfinal behavioral baselineを定義できません。archive hashが、移行に使用した正確なbaselineを識別します。
 
 ## Lineage rule
 
-Tabora is not a rename or mirror of the SnapFlow Git repository. The old `.git` directory and release artifacts are intentionally excluded. Tabora starts with a new Git history and new product identity.
+TaboraはSnapFlow Git repositoryのrenameでもmirrorでもありません。旧 `.git` directoryとrelease artifactは意図的に除外しています。Taboraは新しいGit historyと新しいproduct identityから開始します。
 
 ## Behavior freeze
 
-The migration phase is identity / presentation / documentation / repository-hygiene work only. Snap / Group / Resize / Recovery / AX / Mission Control behavior must remain equivalent to the SnapFlow Final Baseline except where a change is strictly required for the new product identity or build artifact name.
+移行phaseはidentity / presentation / documentation / repository hygieneだけを対象としました。新しいproduct identityまたはbuild artifact名のために厳密に必要な変更を除き、Snap / Group / Resize / Recovery / AX / Mission Control behaviorはSnapFlow Final Baselineと同等であることを要求しました。
 
-Historical SnapFlow release notes remain with the historical SnapFlow project rather than being copied into Tabora's active documentation.
+historical SnapFlow release noteはTaboraのactive documentationへ複製せず、historical SnapFlow project側に残します。

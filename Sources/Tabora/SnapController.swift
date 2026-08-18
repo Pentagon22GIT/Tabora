@@ -101,12 +101,37 @@ struct LayoutSession {
     }
 }
 
+struct MultiMemberReplacementPlan {
+    let targetGroupID: SnapGroupID
+    let targetGroupRevision: UInt64
+    let incomingZone: SnapZone
+    let displacedMemberIDs: Set<String>
+    let retainedMemberIDs: Set<String>
+}
+
 struct SnapPlacementContext {
     let targetGroupID: SnapGroupID?
     let departingGroupID: SnapGroupID?
     let memberIDs: Set<String>
     let excludedAssistCandidateIDs: Set<String>
     let displayID: CGDirectDisplayID
+    let multiMemberReplacementPlan: MultiMemberReplacementPlan?
+
+    init(
+        targetGroupID: SnapGroupID?,
+        departingGroupID: SnapGroupID?,
+        memberIDs: Set<String>,
+        excludedAssistCandidateIDs: Set<String>,
+        displayID: CGDirectDisplayID,
+        multiMemberReplacementPlan: MultiMemberReplacementPlan? = nil
+    ) {
+        self.targetGroupID = targetGroupID
+        self.departingGroupID = departingGroupID
+        self.memberIDs = memberIDs
+        self.excludedAssistCandidateIDs = excludedAssistCandidateIDs
+        self.displayID = displayID
+        self.multiMemberReplacementPlan = multiMemberReplacementPlan
+    }
 }
 
 struct StagedGroupDeparture {
@@ -2272,7 +2297,7 @@ final class SnapController {
                 windowServerSnapshot: windowService.windowOcclusionSnapshot()
             )
         let eligibleGroups = explicitGroupStore.groups.compactMap { group
-            -> (SnapGroup, Int, Int)? in
+            -> (SnapGroup, Int, Int, MultiMemberReplacementPlan?)? in
             guard group.displayID == currentDisplayID else { return nil }
             let groupWindows = comparisonWindows.filter {
                 group.memberIDs.contains($0.stableIdentity)
@@ -2313,13 +2338,54 @@ final class SnapController {
                     frame: member.frame
                 )
             }
-            let hasLogicalConflict = group.layout.zonesByMemberID.values
-                .contains {
+            let conflictingMemberIDs = Set(
+                group.layout.zonesByMemberID.compactMap { memberID, memberZone
+                    -> String? in
                     SnapPlacementLayerPolicy.conflicts(
-                        existing: $0,
+                        existing: memberZone,
                         incoming: zone
-                    )
+                    ) ? memberID : nil
                 }
+            )
+            let retainedMemberIDs = group.memberIDs
+                .subtracting(conflictingMemberIDs)
+            let placementsByIdentity = Dictionary(
+                groupPlacements.map { ($0.stableIdentity, $0) },
+                uniquingKeysWith: { first, _ in first }
+            )
+            let displacedPlacements = conflictingMemberIDs.compactMap {
+                placementsByIdentity[$0]
+            }
+            let retainedPlacements = retainedMemberIDs.compactMap {
+                placementsByIdentity[$0]
+            }
+            let multiMemberReplacementHasStraightBoundary: Bool
+            if conflictingMemberIDs.count >= 2 {
+                multiMemberReplacementHasStraightBoundary =
+                    displacedPlacements.count == conflictingMemberIDs.count
+                    && retainedPlacements.count == retainedMemberIDs.count
+                    && SplitLayoutGeometry
+                        .hasStraightSharedBoundaryBetweenPartitions(
+                            displacedPlacements: displacedPlacements,
+                            retainedPlacements: retainedPlacements
+                        )
+            } else {
+                multiMemberReplacementHasStraightBoundary = false
+            }
+            let multiMemberReplacementPlan: MultiMemberReplacementPlan?
+            if conflictingMemberIDs.count >= 2,
+               multiMemberReplacementHasStraightBoundary {
+                multiMemberReplacementPlan = MultiMemberReplacementPlan(
+                    targetGroupID: group.id,
+                    targetGroupRevision: group.revision,
+                    incomingZone: zone,
+                    displacedMemberIDs: conflictingMemberIDs,
+                    retainedMemberIDs: retainedMemberIDs
+                )
+            } else {
+                multiMemberReplacementPlan = nil
+            }
+
             let incomingConnections = SplitLayoutGeometry
                 .resizeHandleGeometries(
                     placements: groupPlacements + [incomingGeometry],
@@ -2331,7 +2397,9 @@ final class SnapController {
             ).intersection(group.memberIDs).isEmpty
             let relationshipRank = SnapGroupPlacementEligibilityPolicy
                 .relationshipRank(
-                    hasLogicalConflict: hasLogicalConflict,
+                    conflictingMemberCount: conflictingMemberIDs.count,
+                    multiMemberReplacementHasStraightBoundary:
+                        multiMemberReplacementHasStraightBoundary,
                     canExtend: canExtend
                 )
             guard SnapGroupPlacementEligibilityPolicy.canAbsorbPlacement(
@@ -2343,19 +2411,26 @@ final class SnapController {
                   let firstMember = group.memberIDs.compactMap({ memberID in
                       orderedIDs.firstIndex(of: memberID)
                   }).min() else { return nil }
-            return (group, relationshipRank, firstMember)
+            return (
+                group,
+                relationshipRank,
+                firstMember,
+                multiMemberReplacementPlan
+            )
         }.sorted {
             if $0.1 != $1.1 { return $0.1 < $1.1 }
             return $0.2 < $1.2
         }
 
-        if let targetGroup = eligibleGroups.first?.0 {
+        if let target = eligibleGroups.first {
+            let targetGroup = target.0
             return SnapPlacementContext(
                 targetGroupID: targetGroup.id,
                 departingGroupID: nil,
                 memberIDs: targetGroup.memberIDs.union([window.stableIdentity]),
                 excludedAssistCandidateIDs: initiallyLockedIDs,
-                displayID: currentDisplayID
+                displayID: currentDisplayID,
+                multiMemberReplacementPlan: target.3
             )
         }
 
@@ -3361,6 +3436,58 @@ final class SnapController {
             && abs(current.height - recorded.height) <= tolerance
     }
 
+    private func revalidateMultiMemberReplacementPlan(
+        _ plan: MultiMemberReplacementPlan,
+        zone: SnapZone,
+        displayID: CGDirectDisplayID
+    ) -> Bool {
+        guard plan.incomingZone == zone,
+              let group = explicitGroupStore.group(id: plan.targetGroupID),
+              group.displayID == displayID,
+              group.revision == plan.targetGroupRevision,
+              group.memberIDs == plan.displacedMemberIDs
+                .union(plan.retainedMemberIDs),
+              plan.displacedMemberIDs.count >= 2,
+              !plan.retainedMemberIDs.isEmpty else {
+            return false
+        }
+
+        var placementsByIdentity: [String: SplitPlacementGeometry] = [:]
+        for memberID in group.memberIDs {
+            guard let locked = lockedPlacements[memberID],
+                  locked.displayID == displayID,
+                  let groupZone = group.layout.zonesByMemberID[memberID],
+                  locked.zone == groupZone,
+                  let currentFrame = windowService.currentFrame(
+                    of: locked.element,
+                    pid: locked.pid
+                  ) else {
+                return false
+            }
+            placementsByIdentity[memberID] = SplitPlacementGeometry(
+                stableIdentity: memberID,
+                zone: groupZone,
+                frame: currentFrame
+            )
+        }
+
+        let displacedPlacements = plan.displacedMemberIDs.compactMap {
+            placementsByIdentity[$0]
+        }
+        let retainedPlacements = plan.retainedMemberIDs.compactMap {
+            placementsByIdentity[$0]
+        }
+        guard displacedPlacements.count == plan.displacedMemberIDs.count,
+              retainedPlacements.count == plan.retainedMemberIDs.count else {
+            return false
+        }
+
+        return SplitLayoutGeometry.hasStraightSharedBoundaryBetweenPartitions(
+            displacedPlacements: displacedPlacements,
+            retainedPlacements: retainedPlacements
+        )
+    }
+
     private func registerLock(
         for window: ManagedWindow,
         zone: SnapZone,
@@ -3371,6 +3498,14 @@ final class SnapController {
             return false
         }
         if let context, context.displayID != currentDisplayID {
+            return false
+        }
+        if let plan = context?.multiMemberReplacementPlan,
+           !revalidateMultiMemberReplacementPlan(
+               plan,
+               zone: zone,
+               displayID: currentDisplayID
+           ) {
             return false
         }
         let previousLockedPlacements = lockedPlacements

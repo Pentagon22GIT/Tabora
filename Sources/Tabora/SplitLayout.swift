@@ -293,6 +293,141 @@ enum SplitLayoutGeometry {
         return compressionRatios.contains { $0 > tolerance }
     }
 
+    /// Returns true only when the boundary between the displaced and retained
+    /// partitions can be represented as one continuous straight line.
+    ///
+    /// This is intentionally a cross-partition check. Internal boundaries
+    /// inside either partition must never authorize a multi-member
+    /// replacement. Single-member replacement does not use this policy.
+    static func hasStraightSharedBoundaryBetweenPartitions(
+        displacedPlacements: [SplitPlacementGeometry],
+        retainedPlacements: [SplitPlacementGeometry],
+        tolerance: CGFloat = contactTolerance,
+        coordinateTolerance: CGFloat = boundaryMergeTolerance
+    ) -> Bool {
+        struct Segment {
+            let axis: SplitAxis
+            let coordinate: CGFloat
+            let span: ClosedRange<CGFloat>
+        }
+
+        guard displacedPlacements.count >= 2,
+              !retainedPlacements.isEmpty,
+              tolerance.isFinite, tolerance >= 0,
+              coordinateTolerance.isFinite, coordinateTolerance >= 0 else {
+            return false
+        }
+
+        let allPlacements = displacedPlacements + retainedPlacements
+        guard allPlacements.allSatisfy({ placement in
+            let frame = placement.frame
+            return placement.zone != .maximize
+                && frame.minX.isFinite && frame.minY.isFinite
+                && frame.width.isFinite && frame.height.isFinite
+                && frame.width > 0 && frame.height > 0
+        }) else {
+            return false
+        }
+
+        func span(
+            for frame: CGRect,
+            axis: SplitAxis
+        ) -> ClosedRange<CGFloat> {
+            switch axis {
+            case .horizontal:
+                return frame.minY...frame.maxY
+            case .vertical:
+                return frame.minX...frame.maxX
+            }
+        }
+
+        var segments: [Segment] = []
+        for displaced in displacedPlacements {
+            for retained in retainedPlacements {
+                for axis in SplitAxis.allCases {
+                    guard let displacedSide = boundarySide(
+                        for: displaced.zone,
+                        axis: axis
+                    ),
+                          let retainedSide = boundarySide(
+                            for: retained.zone,
+                            axis: axis
+                          ),
+                          displacedSide != retainedSide else {
+                        continue
+                    }
+
+                    let displacedCoordinate = boundaryCoordinate(
+                        of: displaced.frame,
+                        side: displacedSide,
+                        axis: axis
+                    )
+                    let retainedCoordinate = boundaryCoordinate(
+                        of: retained.frame,
+                        side: retainedSide,
+                        axis: axis
+                    )
+                    guard abs(displacedCoordinate - retainedCoordinate)
+                            <= tolerance else {
+                        continue
+                    }
+
+                    let displacedSpan = span(
+                        for: displaced.frame,
+                        axis: axis
+                    )
+                    let retainedSpan = span(
+                        for: retained.frame,
+                        axis: axis
+                    )
+                    let lower = max(
+                        displacedSpan.lowerBound,
+                        retainedSpan.lowerBound
+                    )
+                    let upper = min(
+                        displacedSpan.upperBound,
+                        retainedSpan.upperBound
+                    )
+                    guard upper - lower > tolerance else { continue }
+
+                    segments.append(Segment(
+                        axis: axis,
+                        coordinate: (
+                            displacedCoordinate + retainedCoordinate
+                        ) / 2,
+                        span: lower...upper
+                    ))
+                }
+            }
+        }
+
+        guard let first = segments.first else { return false }
+        guard segments.allSatisfy({ segment in
+            segment.axis == first.axis
+                && abs(segment.coordinate - first.coordinate)
+                    <= coordinateTolerance
+        }) else {
+            return false
+        }
+
+        let orderedSpans = segments.map(\.span).sorted { lhs, rhs in
+            if lhs.lowerBound != rhs.lowerBound {
+                return lhs.lowerBound < rhs.lowerBound
+            }
+            return lhs.upperBound < rhs.upperBound
+        }
+        guard var mergedUpper = orderedSpans.first?.upperBound else {
+            return false
+        }
+        for next in orderedSpans.dropFirst() {
+            guard next.lowerBound <= mergedUpper + tolerance else {
+                return false
+            }
+            mergedUpper = max(mergedUpper, next.upperBound)
+        }
+        return true
+    }
+
     static func resizeHandleGeometries(
         placements: [SplitPlacementGeometry],
         detachedConnections: Set<SplitConnectionKey> = [],

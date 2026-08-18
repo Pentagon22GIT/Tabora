@@ -255,22 +255,40 @@ final class SnapGroupTests: XCTestCase {
         )
         XCTAssertEqual(
             SnapGroupPlacementEligibilityPolicy.relationshipRank(
-                hasLogicalConflict: true,
+                conflictingMemberCount: 1,
+                multiMemberReplacementHasStraightBoundary: false,
                 canExtend: true
             ),
             0
         )
         XCTAssertEqual(
             SnapGroupPlacementEligibilityPolicy.relationshipRank(
-                hasLogicalConflict: false,
+                conflictingMemberCount: 0,
+                multiMemberReplacementHasStraightBoundary: false,
                 canExtend: true
             ),
             1
         )
         XCTAssertNil(
             SnapGroupPlacementEligibilityPolicy.relationshipRank(
-                hasLogicalConflict: false,
+                conflictingMemberCount: 0,
+                multiMemberReplacementHasStraightBoundary: false,
                 canExtend: false
+            )
+        )
+        XCTAssertEqual(
+            SnapGroupPlacementEligibilityPolicy.relationshipRank(
+                conflictingMemberCount: 2,
+                multiMemberReplacementHasStraightBoundary: true,
+                canExtend: false
+            ),
+            0
+        )
+        XCTAssertNil(
+            SnapGroupPlacementEligibilityPolicy.relationshipRank(
+                conflictingMemberCount: 2,
+                multiMemberReplacementHasStraightBoundary: false,
+                canExtend: true
             )
         )
     }

@@ -3,6 +3,56 @@ import XCTest
 @testable import Tabora
 
 final class SnapGroupTests: XCTestCase {
+    func testProvisionalPlacementCannotUseIncomingWindowAsItsOwnPeer() {
+        XCTAssertFalse(
+            SnapGroupPlacementEligibilityPolicy.canUseProvisionalPeer(
+                existingIdentity: "same-window",
+                incomingIdentity: "same-window"
+            )
+        )
+        XCTAssertTrue(
+            SnapGroupPlacementEligibilityPolicy.canUseProvisionalPeer(
+                existingIdentity: "existing-window",
+                incomingIdentity: "incoming-window"
+            )
+        )
+    }
+
+    func testReplacementRevalidationUsesExactStructuralSignature() {
+        let members: Set<String> = ["left", "right"]
+        let zones: [String: SnapZone] = [
+            "left": .leftHalf,
+            "right": .rightHalf
+        ]
+        XCTAssertTrue(
+            MultiMemberReplacementStructuralPolicy.matchesCapturedStructure(
+                expectedMemberIDs: members,
+                expectedZonesByMemberID: zones,
+                currentMemberIDs: members,
+                currentZonesByMemberID: zones
+            )
+        )
+        XCTAssertFalse(
+            MultiMemberReplacementStructuralPolicy.matchesCapturedStructure(
+                expectedMemberIDs: members,
+                expectedZonesByMemberID: zones,
+                currentMemberIDs: members,
+                currentZonesByMemberID: [
+                    "left": .topLeft,
+                    "right": .rightHalf
+                ]
+            )
+        )
+        XCTAssertFalse(
+            MultiMemberReplacementStructuralPolicy.matchesCapturedStructure(
+                expectedMemberIDs: members,
+                expectedZonesByMemberID: zones,
+                currentMemberIDs: ["left"],
+                currentZonesByMemberID: ["left": .leftHalf]
+            )
+        )
+    }
+
     func testDegradationDoesNotConfirmTwiceInSameEpoch() {
         let fingerprint = GroupDegradationFingerprint(
             missingMemberIDs: ["middle"],
@@ -61,6 +111,87 @@ final class SnapGroupTests: XCTestCase {
         )
         XCTAssertFalse(changed.isConfirmed)
         XCTAssertEqual(changed.evidence.firstObservationEpoch, 2)
+    }
+
+    func testSpaceSeparationRequiresProperExactMemberSplit() {
+        let members: Set<String> = ["left", "right"]
+        XCTAssertEqual(
+            GroupSpaceSeparationPolicy.fingerprint(
+                memberIDs: members,
+                onScreenMemberIDs: ["left"],
+                confirmedExistingMemberIDs: members,
+                eligibleOffscreenMemberIDs: ["right"]
+            ),
+            GroupDegradationFingerprint(
+                missingMemberIDs: ["right"],
+                geometryDisconnected: false
+            )
+        )
+    }
+
+    func testSpaceSeparationPreservesAllVisibleAndAllOffscreenGroups() {
+        let members: Set<String> = ["left", "right"]
+        XCTAssertNil(GroupSpaceSeparationPolicy.fingerprint(
+            memberIDs: members,
+            onScreenMemberIDs: members,
+            confirmedExistingMemberIDs: members,
+            eligibleOffscreenMemberIDs: []
+        ))
+        XCTAssertNil(GroupSpaceSeparationPolicy.fingerprint(
+            memberIDs: members,
+            onScreenMemberIDs: [],
+            confirmedExistingMemberIDs: members,
+            eligibleOffscreenMemberIDs: members
+        ))
+    }
+
+    func testSpaceSeparationRejectsIncompletePhysicalOrAXEvidence() {
+        let members: Set<String> = ["left", "right"]
+        XCTAssertNil(GroupSpaceSeparationPolicy.fingerprint(
+            memberIDs: members,
+            onScreenMemberIDs: ["left"],
+            confirmedExistingMemberIDs: ["left"],
+            eligibleOffscreenMemberIDs: ["right"]
+        ))
+        XCTAssertNil(GroupSpaceSeparationPolicy.fingerprint(
+            memberIDs: members,
+            onScreenMemberIDs: ["left"],
+            confirmedExistingMemberIDs: members,
+            eligibleOffscreenMemberIDs: []
+        ))
+    }
+
+    func testSpaceSeparationConfirmationUsesLongerSettleWindow() {
+        let fingerprint = GroupDegradationFingerprint(
+            missingMemberIDs: ["right"],
+            geometryDisconnected: false
+        )
+        let first = GroupDegradationConfirmationPolicy.observe(
+            previous: nil,
+            fingerprint: fingerprint,
+            epoch: 1,
+            now: 1,
+            minimumSettleInterval:
+                GroupSpaceSeparationPolicy.minimumSettleInterval
+        )
+        let tooSoon = GroupDegradationConfirmationPolicy.observe(
+            previous: first.evidence,
+            fingerprint: fingerprint,
+            epoch: 2,
+            now: 1.49,
+            minimumSettleInterval:
+                GroupSpaceSeparationPolicy.minimumSettleInterval
+        )
+        let confirmed = GroupDegradationConfirmationPolicy.observe(
+            previous: tooSoon.evidence,
+            fingerprint: fingerprint,
+            epoch: 3,
+            now: 1.50,
+            minimumSettleInterval:
+                GroupSpaceSeparationPolicy.minimumSettleInterval
+        )
+        XCTAssertFalse(tooSoon.isConfirmed)
+        XCTAssertTrue(confirmed.isConfirmed)
     }
 
     func testFrontmostEvaluationUsesWindowServerOccluders() {
@@ -290,6 +421,26 @@ final class SnapGroupTests: XCTestCase {
                 multiMemberReplacementHasStraightBoundary: false,
                 canExtend: true
             )
+        )
+        XCTAssertEqual(
+            SnapGroupPlacementEligibilityPolicy.relationshipRank(
+                conflictingMemberCount: 2,
+                multiMemberReplacementHasStraightBoundary: false,
+                fullGroupReplacementIsExactCover: true,
+                canExtend: false
+            ),
+            0
+        )
+    }
+
+    func testAssistExclusionsReleaseDisplacedMembersAfterCommittedReplacement() {
+        XCTAssertEqual(
+            AssistCandidateExclusionPolicy.currentExclusions(
+                capturedIDs: ["retained", "displaced", "foreign"],
+                lockedIDs: ["retained", "foreign"],
+                groupedIDs: ["retained", "foreign"]
+            ),
+            Set(["retained", "foreign"])
         )
     }
 
@@ -592,6 +743,27 @@ final class SnapGroupTests: XCTestCase {
         XCTAssertEqual(store.connectedMemberCount, 2)
         XCTAssertEqual(store.group(containing: "left")?.id, result?.id)
         XCTAssertEqual(store.group(containing: "right")?.id, result?.id)
+    }
+
+    func testCompleteSpaceTransitionReactivatesExactGroup() {
+        var store = SnapGroupStore()
+        let group = store.reconcileAfterLayoutMutation(
+            preferredMemberID: "right",
+            displayID: displayID,
+            placements: [left, right],
+            detachedConnections: []
+        )
+        let groupID = try! XCTUnwrap(group?.id)
+
+        store.suspendForSpaceTransition()
+        XCTAssertEqual(
+            store.group(id: groupID)?.state,
+            .suspendedForSpaceTransition
+        )
+
+        store.markDegraded(groupID: groupID, missingMemberIDs: [])
+        XCTAssertEqual(store.group(id: groupID)?.state, .active)
+        XCTAssertEqual(store.group(id: groupID)?.memberIDs, ["left", "right"])
     }
 
     func testIndependentGroupsWithOverlappingGeometryCoexist() {
@@ -1251,6 +1423,311 @@ final class SnapGroupTests: XCTestCase {
         )
     }
 
+    func testMissionControlActivationUsesExactIdentityNotTransformedGeometry() throws {
+        let bindings = [
+            PersistedWindowBinding(
+                stableIdentity: "left",
+                pid: 10,
+                windowID: 101
+            ),
+            PersistedWindowBinding(
+                stableIdentity: "right",
+                pid: 20,
+                windowID: 202
+            )
+        ]
+        let transformedSnapshot = [
+            WindowOcclusionSnapshot(
+                windowID: 101,
+                pid: 10,
+                frame: CGRect(x: 70, y: 80, width: 420, height: 620),
+                zIndex: 0,
+                layer: 0
+            ),
+            WindowOcclusionSnapshot(
+                windowID: 202,
+                pid: 20,
+                frame: CGRect(x: 510, y: 80, width: 420, height: 620),
+                zIndex: 1,
+                layer: 0
+            )
+        ]
+        let selections = try XCTUnwrap(
+            MissionControlActivationIdentityPolicy.exactSelections(
+                memberIDs: ["left", "right"],
+                bindings: bindings,
+                snapshot: transformedSnapshot
+            )
+        )
+        XCTAssertEqual(
+            selections,
+            Set([
+                WindowServerSelectionSnapshot(pid: 10, windowID: 101),
+                WindowServerSelectionSnapshot(pid: 20, windowID: 202)
+            ])
+        )
+    }
+
+    func testMissionControlActivationExactIdentityFailsClosedWhenMemberSurfaceIsMissing() {
+        let bindings = [
+            PersistedWindowBinding(
+                stableIdentity: "left",
+                pid: 10,
+                windowID: 101
+            ),
+            PersistedWindowBinding(
+                stableIdentity: "right",
+                pid: 20,
+                windowID: 202
+            )
+        ]
+        XCTAssertNil(
+            MissionControlActivationIdentityPolicy.exactSelections(
+                memberIDs: ["left", "right"],
+                bindings: bindings,
+                snapshot: [
+                    WindowOcclusionSnapshot(
+                        windowID: 101,
+                        pid: 10,
+                        frame: left.frame,
+                        zIndex: 0,
+                        layer: 0
+                    )
+                ]
+            )
+        )
+    }
+
+    func testMissionControlObservationIsGroupLocalWhenAnotherGroupEvidenceIsUnavailable() {
+        let transformedEvidence = [
+            GroupWindowServerEvidence(
+                stableIdentity: "left",
+                pid: 10,
+                windowID: 101,
+                expectedFrame: left.frame
+            ),
+            GroupWindowServerEvidence(
+                stableIdentity: "right",
+                pid: 20,
+                windowID: 202,
+                expectedFrame: right.frame
+            )
+        ]
+        let snapshot = [
+            WindowOcclusionSnapshot(
+                windowID: 101,
+                pid: 10,
+                frame: CGRect(x: 80, y: 80, width: 500, height: 625),
+                zIndex: 0,
+                layer: 0
+            ),
+            WindowOcclusionSnapshot(
+                windowID: 202,
+                pid: 20,
+                frame: CGRect(x: 580, y: 80, width: 500, height: 625),
+                zIndex: 1,
+                layer: 0
+            )
+        ]
+
+        XCTAssertEqual(
+            GroupPresentationTransitionPolicy.observe(
+                evidence: transformedEvidence,
+                expectedMemberCount: 2,
+                visibleMemberIDs: [],
+                snapshot: snapshot
+            ),
+            .transformed
+        )
+        XCTAssertEqual(
+            GroupPresentationTransitionPolicy.observe(
+                evidence: Array(transformedEvidence.prefix(1)),
+                expectedMemberCount: 2,
+                visibleMemberIDs: [],
+                snapshot: snapshot
+            ),
+            .unavailable
+        )
+    }
+
+    func testMissionControlBaselineUsesSettledAXAndWindowServerGeometry() {
+        let settled = CGRect(x: 0, y: 0, width: 800, height: 900)
+        XCTAssertTrue(
+            GroupWindowServerEvidenceBaselinePolicy
+                .framesRepresentTheSameDesktopGeometry(
+                    accessibilityFrame: settled,
+                    windowServerFrame: settled.offsetBy(dx: 1, dy: -1)
+                )
+        )
+
+        XCTAssertFalse(
+            GroupWindowServerEvidenceBaselinePolicy
+                .framesRepresentTheSameDesktopGeometry(
+                    accessibilityFrame: settled,
+                    windowServerFrame: CGRect(
+                        x: 80,
+                        y: 90,
+                        width: 640,
+                        height: 720
+                    )
+                )
+        )
+    }
+
+    func testMissionControlTransformObservationUsesTheSameRuleForTwoThreeAndFourMembers() {
+        for memberCount in 2...4 {
+            var evidence: [GroupWindowServerEvidence] = []
+            evidence.reserveCapacity(memberCount)
+            for index in 0..<memberCount {
+                let stableIdentity = "member-\(index)"
+                let pid = pid_t(100 + index)
+                let windowID = CGWindowID(1000 + index)
+                let expectedFrame = CGRect(
+                    x: CGFloat(index) * 400,
+                    y: 0,
+                    width: 400,
+                    height: 800
+                )
+                evidence.append(
+                    GroupWindowServerEvidence(
+                        stableIdentity: stableIdentity,
+                        pid: pid,
+                        windowID: windowID,
+                        expectedFrame: expectedFrame
+                    )
+                )
+            }
+
+            var snapshot: [WindowOcclusionSnapshot] = []
+            snapshot.reserveCapacity(evidence.count)
+            for (index, member) in evidence.enumerated() {
+                guard let windowID = member.windowID else {
+                    XCTFail("Expected exact Window Server identity for member \(index)")
+                    continue
+                }
+                let frame = CGRect(
+                    x: CGFloat(index) * 320 + 60,
+                    y: 60,
+                    width: 320,
+                    height: 640
+                )
+                snapshot.append(
+                    WindowOcclusionSnapshot(
+                        windowID: windowID,
+                        pid: member.pid,
+                        frame: frame,
+                        zIndex: index,
+                        layer: 0
+                    )
+                )
+            }
+
+            XCTAssertEqual(
+                GroupPresentationTransitionPolicy.observe(
+                    evidence: evidence,
+                    expectedMemberCount: memberCount,
+                    visibleMemberIDs: [],
+                    snapshot: snapshot
+                ),
+                .transformed
+            )
+        }
+    }
+
+    func testRetiringOneGroupPreservesUnrelatedPresentationLease() {
+        let groupA = SnapGroupID()
+        let groupB = SnapGroupID()
+        let leaseA = GroupPresentationTransitionLeasePolicy.make(
+            groupID: groupA, memberIDs: ["a1", "a2"], now: 10
+        )
+        let leaseB = GroupPresentationTransitionLeasePolicy.make(
+            groupID: groupB, memberIDs: ["b1", "b2"], now: 10
+        )
+        let retained = GroupPresentationTransitionLeasePolicy.retainingUnretired(
+            [groupA: leaseA, groupB: leaseB],
+            retiring: [groupA]
+        )
+        XCTAssertNil(retained[groupA])
+        XCTAssertEqual(retained[groupB], leaseB)
+    }
+
+    func testMissionControlTransformLeaseIsGroupMemberScopedAndBounded() {
+        let groupID = SnapGroupID()
+        let lease = GroupPresentationTransitionLeasePolicy.make(
+            groupID: groupID,
+            memberIDs: ["left", "right"],
+            now: 10
+        )
+
+        XCTAssertTrue(
+            GroupPresentationTransitionLeasePolicy.isValid(
+                lease,
+                groupID: groupID,
+                memberIDs: ["left", "right"],
+                now: 10.5
+            )
+        )
+        XCTAssertFalse(
+            GroupPresentationTransitionLeasePolicy.isValid(
+                lease,
+                groupID: SnapGroupID(),
+                memberIDs: ["left", "right"],
+                now: 10.5
+            )
+        )
+        XCTAssertFalse(
+            GroupPresentationTransitionLeasePolicy.isValid(
+                lease,
+                groupID: groupID,
+                memberIDs: ["left", "replacement"],
+                now: 10.5
+            )
+        )
+        XCTAssertFalse(
+            GroupPresentationTransitionLeasePolicy.isValid(
+                lease,
+                groupID: groupID,
+                memberIDs: ["left", "right"],
+                now: 11.26
+            )
+        )
+    }
+
+    func testMissionControlObservationReturnsNormalOnlyForCompleteVisibleGroup() {
+        let evidence = [
+            GroupWindowServerEvidence(
+                stableIdentity: "left",
+                pid: 10,
+                windowID: 101,
+                expectedFrame: left.frame
+            ),
+            GroupWindowServerEvidence(
+                stableIdentity: "right",
+                pid: 20,
+                windowID: 202,
+                expectedFrame: right.frame
+            )
+        ]
+        XCTAssertEqual(
+            GroupPresentationTransitionPolicy.observe(
+                evidence: evidence,
+                expectedMemberCount: 2,
+                visibleMemberIDs: ["left", "right"],
+                snapshot: []
+            ),
+            .normal
+        )
+        XCTAssertEqual(
+            GroupPresentationTransitionPolicy.observe(
+                evidence: Array(evidence.prefix(1)),
+                expectedMemberCount: 2,
+                visibleMemberIDs: ["left"],
+                snapshot: []
+            ),
+            .unavailable
+        )
+    }
+
     func testMovedOrClosedWindowDoesNotMasqueradeAsMissionControl() {
         let evidence = [
             GroupWindowServerEvidence(
@@ -1301,6 +1778,37 @@ final class SnapGroupTests: XCTestCase {
                 evidence: evidence,
                 visibleMemberIDs: [],
                 snapshot: []
+            )
+        )
+    }
+
+    func testSingleAxisResizeDoesNotMasqueradeAsMissionControl() {
+        let evidence = [
+            GroupWindowServerEvidence(
+                stableIdentity: "left",
+                pid: 10,
+                windowID: 101,
+                expectedFrame: left.frame
+            )
+        ]
+        let horizontallyResized = WindowOcclusionSnapshot(
+            windowID: 101,
+            pid: 10,
+            frame: CGRect(
+                x: left.frame.minX,
+                y: left.frame.minY,
+                width: left.frame.width * 0.8,
+                height: left.frame.height
+            ),
+            zIndex: 0,
+            layer: 0
+        )
+
+        XCTAssertFalse(
+            GroupPresentationTransitionPolicy.shouldPreserveLastPresentation(
+                evidence: evidence,
+                visibleMemberIDs: [],
+                snapshot: [horizontallyResized]
             )
         )
     }

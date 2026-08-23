@@ -15,8 +15,6 @@ extension SnapController {
             } else {
                 explicitGroupStore.removeWindow(preferredMemberID)
             }
-            updateSelectionMonitoringState()
-            refreshMissionControlGroupProxies()
             return false
         }
         let existingGroup = explicitGroupStore.group(
@@ -29,8 +27,6 @@ extension SnapController {
                 windowID: preferredMemberID,
                 displayID: placement.displayID
             )
-            updateSelectionMonitoringState()
-            refreshMissionControlGroupProxies()
             return true
         } else {
             let placements = lockedPlacements.compactMap { identity, item
@@ -55,16 +51,19 @@ extension SnapController {
             let provisionalSingleIsValid = effectiveTargetGroupID == nil
                 && placements.filter({ $0.zone != .maximize }).count == 1
             let succeeded = reconciled != nil || provisionalSingleIsValid
-            updateSelectionMonitoringState()
-            refreshMissionControlGroupProxies()
             return succeeded
         }
     }
 
     func detachFocusedWindowFromExplicitGroup() {
         guard isEnabled,
+              !isConstraintMeasurementActive,
+              !isConstraintPermissionPromptActive,
+              !isRestoreTransactionActive,
               ensurePermission(),
-              let focused = windowService.focusedWindow() else { return }
+              let focused = windowService.focusedWindow(
+                  messagingTimeout: AXMessagingTimeoutPolicy.interactiveOperation
+              ) else { return }
         detachWindowFromExplicitGroup(focused.stableIdentity)
     }
 
@@ -86,7 +85,7 @@ extension SnapController {
         guard let departure = explicitGroupDepartureSnapshot(
             containing: stableIdentity
         ) else { return false }
-        return retireExplicitGroup(departure)
+        return retireExplicitGroup(departure, reason: .explicitDetach)
     }
 
     func explicitGroupDepartureSnapshot(
@@ -106,7 +105,8 @@ extension SnapController {
     /// group mapping while its placement locks are still present.
     @discardableResult
     func retireExplicitGroup(
-        _ departure: ExplicitGroupDepartureSnapshot
+        _ departure: ExplicitGroupDepartureSnapshot,
+        reason: ExplicitGroupDepartureReason = .explicitDetach
     ) -> Bool {
         let dissolution = explicitGroupStore.dissolveGroups(
             intersecting: departure.memberIDs
@@ -117,11 +117,11 @@ extension SnapController {
         )
         guard members.count >= 2 else { return false }
         let retiredGroupIDs = dissolution.groupIDs.union([departure.groupID])
-        for groupID in retiredGroupIDs {
-            groupForegroundModes.removeValue(forKey: groupID)
-            groupDegradationEvidenceByGroupID.removeValue(forKey: groupID)
-        }
-        applyCompleteGroupDeparture(memberIDs: members)
+        commitExplicitGroupDeparture(
+            memberIDs: members,
+            retiredGroupIDs: retiredGroupIDs,
+            reason: reason
+        )
         return true
     }
 
@@ -147,17 +147,75 @@ extension SnapController {
         for groupID in retiredGroupIDs {
             groupForegroundModes.removeValue(forKey: groupID)
             groupDegradationEvidenceByGroupID.removeValue(forKey: groupID)
+            groupSpaceSeparationEvidenceByGroupID.removeValue(forKey: groupID)
+            groupPresentationFailureCountsByGroupID.removeValue(forKey: groupID)
+            handleLivenessFailureCountsByGroupID.removeValue(forKey: groupID)
+            missionControlGroupProxyController.hide(groupID: groupID)
         }
         if pendingNativeResizeDeparture?.groupID == departure.groupID {
             pendingNativeResizeDeparture = nil
         }
         stagedGroupDeparture = StagedGroupDeparture(
             draggedIdentity: stableIdentity,
-            memberIDs: members
+            memberIDs: members,
+            retiredGroupIDs: retiredGroupIDs
         )
-        resizeHandleOverlay.hideAll()
-        missionControlGroupProxyController.hideAll()
-        resetGroupPresentationTransitionRecovery()
+        retireHandlePresentation(participantIDs: members)
+        retireGroupPresentationTransitionState(for: retiredGroupIDs)
+        updateSelectionMonitoringState()
+        return true
+    }
+
+    @discardableResult
+    func restoreStagedGroupDepartureIfPossible() -> Bool {
+        guard let stagedGroupDeparture else { return true }
+        guard dragWindow == nil,
+              pendingDragWindow == nil,
+              !isWindowMoveConfirmed else {
+            // A Space transition can occur while the physical drag continues.
+            // Rebuilding the group at that point would erase the staged
+            // departure authority before the eventual mouse-up decides whether
+            // the member re-snapped or truly left. Only a quiesced gesture may
+            // restore the captured structure.
+            return false
+        }
+        // Staging removes explicit membership before the drag outcome is known,
+        // but it deliberately keeps the authoritative placement locks. An OS
+        // display/Space transition is not departure evidence, so when the
+        // gesture has been quiesced rebuild structural membership from that
+        // captured member set rather than committing or discarding it.
+        let placements = stagedGroupDeparture.memberIDs.compactMap { identity
+            -> SplitPlacementGeometry? in
+            guard let placement = lockedPlacements[identity],
+                  placement.zone != .maximize else { return nil }
+            return SplitPlacementGeometry(
+                stableIdentity: identity,
+                zone: placement.zone,
+                frame: placement.appliedFrame
+            )
+        }
+        guard placements.count == stagedGroupDeparture.memberIDs.count,
+              let preferredPlacement = lockedPlacements[
+                  stagedGroupDeparture.draggedIdentity
+              ],
+              placements.allSatisfy({ placement in
+                  lockedPlacements[placement.stableIdentity]?.displayID
+                      == preferredPlacement.displayID
+              }),
+              screen(withDisplayID: preferredPlacement.displayID) != nil else {
+            return false
+        }
+        guard let restoredGroup = explicitGroupStore.reconcileAfterLayoutMutation(
+            preferredMemberID: stagedGroupDeparture.draggedIdentity,
+            displayID: preferredPlacement.displayID,
+            placements: placements,
+            detachedConnections: detachedConnections,
+            targetGroupID: nil
+        ), restoredGroup.memberIDs == stagedGroupDeparture.memberIDs else {
+            return false
+        }
+        self.stagedGroupDeparture = nil
+        setAutomaticForegroundMode(forGroupID: restoredGroup.id)
         updateSelectionMonitoringState()
         return true
     }
@@ -165,26 +223,46 @@ extension SnapController {
     func finalizeStagedGroupDepartureIfNeeded() {
         guard let stagedGroupDeparture else { return }
         self.stagedGroupDeparture = nil
-        applyCompleteGroupDeparture(
-            memberIDs: stagedGroupDeparture.memberIDs
+        commitExplicitGroupDeparture(
+            memberIDs: stagedGroupDeparture.memberIDs,
+            retiredGroupIDs: stagedGroupDeparture.retiredGroupIDs,
+            reason: .userDragDeparture
         )
     }
 
-    private func applyCompleteGroupDeparture(memberIDs members: Set<String>) {
-        detachedConnections = SnapGroupDeparturePolicy
-            .connectionsAfterRetirement(
-                existing: detachedConnections,
-                retiredMemberIDs: members
-            )
+    private func commitExplicitGroupDeparture(
+        memberIDs members: Set<String>,
+        retiredGroupIDs: Set<SnapGroupID>,
+        reason _: ExplicitGroupDepartureReason
+    ) {
+        // Authorization has already happened. Cleanup is one transaction so a
+        // retired structural group cannot outlive its handles (or vice versa).
+        detachedConnections = SnapGroupDeparturePolicy.connectionsAfterRetirement(
+            existing: detachedConnections,
+            retiredMemberIDs: members
+        )
+
+        let endedSharedResizeInteraction = retireHandleResizeOwnership(
+            participantIDs: members
+        )
+        retireHandlePresentation(participantIDs: members)
+
         var remainingPlacements = lockedPlacements
         for memberID in members {
             remainingPlacements.removeValue(forKey: memberID)
             restoreFrames.removeValue(forKey: memberID)
             inFlightPlacementIDs.remove(memberID)
             pendingPlacementSnapshots.removeValue(forKey: memberID)
-            constraintHints.removeValue(forKey: memberID)
+            lastGroupWindowServerEvidenceByIdentity.removeValue(forKey: memberID)
         }
+        // Prevent the generic placement observer from turning a group-local
+        // retirement into a global Mission Control presentation hide.
+        let wasReconcilingPlacementMutation = isReconcilingPlacementMutation
+        isReconcilingPlacementMutation = true
         lockedPlacements = remainingPlacements
+        isReconcilingPlacementMutation = wasReconcilingPlacementMutation
+        updateSelectionMonitoringState()
+
         if let stagedGroupDeparture,
            !stagedGroupDeparture.memberIDs.isDisjoint(with: members) {
             self.stagedGroupDeparture = nil
@@ -196,13 +274,91 @@ extension SnapController {
             stopEscapeMonitoring()
             picker.hide()
         }
-        missionControlGroupProxyController.hideAll()
-        for memberID in members {
-            lastGroupWindowServerEvidenceByIdentity.removeValue(
-                forKey: memberID
-            )
+        if let pending = pendingNativeResizeDeparture,
+           !pending.memberIDs.isDisjoint(with: members) {
+            pendingNativeResizeDeparture = nil
         }
-        resetGroupPresentationTransitionRecovery()
+
+        for groupID in retiredGroupIDs {
+            groupForegroundModes.removeValue(forKey: groupID)
+            groupDegradationEvidenceByGroupID.removeValue(forKey: groupID)
+            groupSpaceSeparationEvidenceByGroupID.removeValue(forKey: groupID)
+            groupPresentationFailureCountsByGroupID.removeValue(forKey: groupID)
+            handleGeometryFailureCountsByGroupID.removeValue(forKey: groupID)
+            handleLivenessFailureCountsByGroupID.removeValue(forKey: groupID)
+            missionControlGroupProxyController.hide(groupID: groupID)
+        }
+        retireGroupPresentationTransitionState(for: retiredGroupIDs)
+
+        // beginInteraction() intentionally hides every non-active handle while
+        // one shared resize is in progress. If this departure terminated that
+        // interaction, endInteraction() therefore hid handles belonging to
+        // unrelated groups too. Rebuild from the now-committed structural
+        // state before returning so Group A retirement cannot leave Group B's
+        // presentation waiting for event-driven or 1 Hz Recovery.
+        if endedSharedResizeInteraction {
+            refreshResizeHandles()
+        }
+    }
+
+    @discardableResult
+    private func retireHandleResizeOwnership(
+        participantIDs members: Set<String>
+    ) -> Bool {
+        let active = handleResizeSession
+        let finalizing = finalizingHandleResizeSession
+        let ownsActive = active.map {
+            !Set($0.participants.keys).isDisjoint(with: members)
+        } ?? false
+        let ownsFinalizing = finalizing.map {
+            !Set($0.participants.keys).isDisjoint(with: members)
+        } ?? false
+        guard ownsActive || ownsFinalizing else { return false }
+
+        // A generation invalidation makes every late scheduler/final-write
+        // callback from the retired group fail its existing session guard.
+        liveResizeScheduler.cancelAll()
+        let ownedWindows = (active?.participants.values.map(\.window) ?? [])
+            + (finalizing?.participants.values.map(\.window) ?? [])
+        if !isHandleResizeRollbackActive {
+            for window in ownedWindows {
+                windowService.cancelFrameOperation(for: window.element)
+            }
+        }
+        if let active {
+            inFlightPlacementIDs.subtract(active.participants.keys)
+        }
+        if let finalizing {
+            inFlightPlacementIDs.subtract(finalizing.participants.keys)
+        }
+        handleResizeSession = nil
+        finalizingHandleResizeSession = nil
+        isHandleResizeFinalizing = false
+        stopEscapeMonitoring()
+        virtualResizeOverlay.hideAll()
+        resizeHandleOverlay.endInteraction()
+        return true
+    }
+
+    private func retireHandlePresentation(participantIDs members: Set<String>) {
+        let removedDescriptorIDs = Set(baseResizeHandleDescriptors.compactMap {
+            descriptor in
+            !descriptor.participantIDs.isDisjoint(with: members)
+                ? descriptor.id : nil
+        })
+        baseResizeHandleDescriptors.removeAll {
+            !$0.participantIDs.isDisjoint(with: members)
+        }
+        lastPresentableResizeHandleDescriptors.removeAll {
+            !$0.participantIDs.isDisjoint(with: members)
+        }
+        quarantinedResizeHandleIDs.subtract(removedDescriptorIDs)
+        handleOcclusionFailureCountsByDescriptorID =
+            handleOcclusionFailureCountsByDescriptorID.filter {
+                !removedDescriptorIDs.contains($0.key)
+            }
+        handlePresentationGeneration &+= 1
+        resizeHandleOverlay.removeHandles(participantIDs: members)
     }
 
     func resetMissionControlPresentationRetryDebt() {
@@ -210,6 +366,163 @@ extension SnapController {
         guard scheduledGroupPresentationRetryGeneration != nil else { return }
         groupDegradationRetryGeneration &+= 1
         scheduledGroupPresentationRetryGeneration = nil
+    }
+
+    private func spaceSeparationFingerprint(
+        for group: SnapGroup,
+        onScreenMemberIDs: Set<String>,
+        censusByPID: inout [pid_t: WindowServerWindowIDCensus]
+    ) -> GroupDegradationFingerprint? {
+        let offscreenMemberIDs = group.memberIDs.subtracting(onScreenMemberIDs)
+        guard !onScreenMemberIDs.isEmpty,
+              !offscreenMemberIDs.isEmpty else { return nil }
+
+        var confirmedExistingMemberIDs = Set<String>()
+        var eligibleOffscreenMemberIDs = Set<String>()
+        for memberID in group.memberIDs {
+            guard let placement = lockedPlacements[memberID],
+                  let windowID = placement.cgWindowID else { return nil }
+            let census: WindowServerWindowIDCensus
+            if let cached = censusByPID[placement.pid] {
+                census = cached
+            } else {
+                census = windowService.windowServerWindowIDCensus(
+                    forPID: placement.pid
+                )
+                censusByPID[placement.pid] = census
+            }
+            guard census.completeness == .complete,
+                  census.windowIDs.contains(windowID) else { return nil }
+            confirmedExistingMemberIDs.insert(memberID)
+
+            guard offscreenMemberIDs.contains(memberID) else { continue }
+            guard let application = NSRunningApplication(
+                processIdentifier: placement.pid
+            ), !application.isTerminated, !application.isHidden else {
+                return nil
+            }
+            switch windowService.refreshedPersistedWindow(
+                element: placement.element,
+                pid: placement.pid,
+                expectedStableIdentity: placement.stableIdentity,
+                cgWindowID: windowID,
+                messagingTimeout: AXMessagingTimeoutPolicy.passiveObservation
+            ) {
+            case .available(let window) where !window.isMinimized:
+                eligibleOffscreenMemberIDs.insert(memberID)
+            case .available, .missing, .unknown:
+                return nil
+            }
+        }
+        return GroupSpaceSeparationPolicy.fingerprint(
+            memberIDs: group.memberIDs,
+            onScreenMemberIDs: onScreenMemberIDs,
+            confirmedExistingMemberIDs: confirmedExistingMemberIDs,
+            eligibleOffscreenMemberIDs: eligibleOffscreenMemberIDs
+        )
+    }
+
+    /// Structural Space reconciliation is independent from Mission Control
+    /// proxy presentation. It runs only after the Window Server scene has been
+    /// proven to be back at normal desktop geometry. A pending group is
+    /// returned as handle-recovery debt so repeated evidence is collected even
+    /// when AX can still enumerate an off-Space member.
+    func reconcileExplicitGroupsSeparatedAcrossSpaces(
+        windowServerSnapshot: [WindowOcclusionSnapshot]
+    ) -> Set<SnapGroupID> {
+        let activeGroupIDs = Set(explicitGroupStore.groups.map(\.id))
+        groupSpaceSeparationEvidenceByGroupID =
+            groupSpaceSeparationEvidenceByGroupID.filter {
+                activeGroupIDs.contains($0.key)
+            }
+        groupSpaceSeparationObservationEpoch &+= 1
+        let observationEpoch = groupSpaceSeparationObservationEpoch
+        let observationTime = ProcessInfo.processInfo.systemUptime
+        var windowServerCensusByPID:
+            [pid_t: WindowServerWindowIDCensus] = [:]
+        var pendingGroupIDs = Set<SnapGroupID>()
+
+        for group in explicitGroupStore.groups {
+            guard screen(withDisplayID: group.displayID) != nil else {
+                groupSpaceSeparationEvidenceByGroupID.removeValue(
+                    forKey: group.id
+                )
+                continue
+            }
+            let normalOnScreenMemberIDs = Set(group.memberIDs.filter {
+                memberID in
+                guard let evidence = lastGroupWindowServerEvidenceByIdentity[
+                    memberID
+                ], groupWindowServerEvidenceHasNormalGeometry(
+                    evidence,
+                    snapshot: windowServerSnapshot
+                ) else { return false }
+                return true
+            })
+            if normalOnScreenMemberIDs == group.memberIDs {
+                // The Space transition has fully settled back onto one active
+                // desktop. This is the missing inverse of
+                // suspendForSpaceTransition(); only complete normal geometry
+                // may reactivate structural presentation.
+                groupSpaceSeparationEvidenceByGroupID.removeValue(
+                    forKey: group.id
+                )
+                explicitGroupStore.markDegraded(
+                    groupID: group.id,
+                    missingMemberIDs: []
+                )
+                continue
+            }
+            let isProperDesktopSplit = !normalOnScreenMemberIDs.isEmpty
+                && normalOnScreenMemberIDs != group.memberIDs
+            guard isProperDesktopSplit else {
+                // All-offscreen is a valid suspended state. Transformed
+                // Mission Control surfaces are not normal geometry, so they
+                // also cannot accumulate destructive evidence here.
+                groupSpaceSeparationEvidenceByGroupID.removeValue(
+                    forKey: group.id
+                )
+                continue
+            }
+
+            missionControlGroupProxyController.hide(groupID: group.id)
+            pendingGroupIDs.insert(group.id)
+            guard let fingerprint = spaceSeparationFingerprint(
+                for: group,
+                onScreenMemberIDs: normalOnScreenMemberIDs,
+                censusByPID: &windowServerCensusByPID
+            ) else {
+                groupSpaceSeparationEvidenceByGroupID.removeValue(
+                    forKey: group.id
+                )
+                continue
+            }
+            let observation = GroupDegradationConfirmationPolicy.observe(
+                previous: groupSpaceSeparationEvidenceByGroupID[group.id],
+                fingerprint: fingerprint,
+                epoch: observationEpoch,
+                now: observationTime,
+                minimumSettleInterval:
+                    GroupSpaceSeparationPolicy.minimumSettleInterval
+            )
+            groupSpaceSeparationEvidenceByGroupID[group.id] =
+                observation.evidence
+            guard observation.isConfirmed else { continue }
+
+            let departure = ExplicitGroupDepartureSnapshot(
+                groupID: group.id,
+                memberIDs: group.memberIDs
+            )
+            _ = retireExplicitGroup(
+                departure,
+                reason: .confirmedSpaceSeparation
+            )
+            groupSpaceSeparationEvidenceByGroupID.removeValue(
+                forKey: group.id
+            )
+            pendingGroupIDs.remove(group.id)
+        }
+        return pendingGroupIDs
     }
 
     func refreshMissionControlGroupProxies(
@@ -221,27 +534,49 @@ extension SnapController {
               isEnabled,
               isUserSessionActive,
               settings.linkedResizeEnabled,
-              !isSnapPlacementInProgress,
-              handleResizeSession == nil,
-              !isHandleResizeFinalizing,
-              manualResizeWindow == nil,
-              pendingDragWindow == nil,
-              dragWindow == nil,
-              activeSession == nil,
-              !isAssistPlacementPending,
-              !isApplicationUIVisible else {
+              !isApplicationInteractionSuppressed else {
             missionControlGroupProxyController.hideAll()
             resetMissionControlPresentationRetryDebt()
             return
         }
-        let visibleWindows = providedVisibleWindows ?? managedVisibleWindows()
+        guard !missionControlSelectionTransactionIsActive else {
+            // The proxy key callback has already captured one bounded exit.
+            // Preview completion and Recovery may not reorder or rebuild any
+            // proxy until that selection either reaches the controller or is
+            // explicitly rejected.
+            return
+        }
+        if PresentationTransactionOwnershipPolicy
+            .preservesMissionControlPresentation(
+                snapPlacementInProgress: isSnapPlacementInProgress,
+                assistSessionActive: activeSession != nil,
+                assistPlacementPending: isAssistPlacementPending
+            ) {
+            // These transactions explicitly own presentation. Snap start has
+            // already invalidated only the affected group; Assist must not
+            // rebuild Mission Control proxies behind its screen-saver panels.
+            return
+        }
+        guard handleResizeSession == nil,
+              !isHandleResizeFinalizing,
+              manualResizeWindow == nil,
+              pendingDragWindow == nil,
+              dragWindow == nil else {
+            missionControlGroupProxyController.hideAll()
+            resetMissionControlPresentationRetryDebt()
+            return
+        }
+        let visibleWindows = providedVisibleWindows ?? managedExplicitGroupWindows()
         let windowServerSnapshot = providedWindowServerSnapshot
             ?? windowService.windowOcclusionSnapshot()
         groupDegradationObservationEpoch &+= 1
         let observationEpoch = groupDegradationObservationEpoch
         let observationTime = ProcessInfo.processInfo.systemUptime
 
-        updateGroupWindowServerEvidence(using: visibleWindows)
+        updateGroupWindowServerEvidence(
+            using: visibleWindows,
+            windowServerSnapshot: windowServerSnapshot
+        )
         if providedVisibleWindows == nil,
            shouldPreserveGroupPresentationDuringWindowServerTransform(
                visibleWindows: visibleWindows,
@@ -264,6 +599,7 @@ extension SnapController {
         var presentationRecoveryGroupIDs = Set<SnapGroupID>()
         var fastPresentationRetryGroupIDs = Set<SnapGroupID>()
         var presentationSuppressedGroupIDs = Set<SnapGroupID>()
+        var preservedPresentationGroupIDs = Set<SnapGroupID>()
         let activeGroupIDs = Set(explicitGroupStore.groups.map(\.id))
         groupDegradationEvidenceByGroupID =
             groupDegradationEvidenceByGroupID.filter {
@@ -279,6 +615,9 @@ extension SnapController {
                 presentationSuppressedGroupIDs.insert(group.id)
                 missionControlGroupProxyController.hide(groupID: group.id)
                 groupDegradationEvidenceByGroupID.removeValue(forKey: group.id)
+                groupSpaceSeparationEvidenceByGroupID.removeValue(
+                    forKey: group.id
+                )
                 presentationRecoveryGroupIDs.insert(group.id)
                 fastPresentationRetryGroupIDs.insert(group.id)
                 continue
@@ -287,13 +626,16 @@ extension SnapController {
             let confirmedClosedMembers = axMissing.filter { memberID in
                 guard let placement = lockedPlacements[memberID] else {
                     // A group member without its authoritative placement is an
-                    // internal structural inconsistency, not an AX timeout.
-                    return true
+                    // internal structural inconsistency. It requires repair or
+                    // Recovery evidence, but absence of controller metadata is
+                    // not proof that the live member closed.
+                    return false
                 }
                 return WindowStructuralPolicy.isConfirmedMissing(
                     windowService.windowLiveness(
                         element: placement.element,
-                        pid: placement.pid
+                        pid: placement.pid,
+                        messagingTimeout: AXMessagingTimeoutPolicy.passiveObservation
                     )
                 )
             }
@@ -304,17 +646,45 @@ extension SnapController {
                 groupDegradationEvidenceByGroupID.removeValue(
                     forKey: group.id
                 )
+                groupSpaceSeparationEvidenceByGroupID.removeValue(
+                    forKey: group.id
+                )
                 continue
             }
 
             guard axMissing.isEmpty else {
                 // AX-visible/interaction availability is presentation evidence,
-                // not structural membership. Unknown members retain the group.
+                // not structural membership. Preserve the last validated proxy
+                // while exact physical identity still owns structural truth; a
+                // streamed/unresponsive member must not make the whole group
+                // repeatedly leave and re-enter Mission Control.
                 presentationSuppressedGroupIDs.insert(group.id)
-                missionControlGroupProxyController.hide(groupID: group.id)
+                preservedPresentationGroupIDs.insert(group.id)
                 groupDegradationEvidenceByGroupID.removeValue(forKey: group.id)
                 presentationRecoveryGroupIDs.insert(group.id)
-                fastPresentationRetryGroupIDs.insert(group.id)
+                let physicalMembersAreStillPresent = group.memberIDs.allSatisfy {
+                    memberID in
+                    guard let placement = lockedPlacements[memberID],
+                          let windowID = placement.cgWindowID else {
+                        return false
+                    }
+                    return windowServerSnapshot.contains { surface in
+                        surface.pid == placement.pid
+                            && surface.windowID == windowID
+                            && surface.layer == 0
+                    }
+                }
+                if !physicalMembersAreStillPresent
+                    || !missionControlGroupProxyController.hasPresentation(
+                        for: group.id
+                    ) {
+                    // Initial presentation and true physical uncertainty get
+                    // the bounded fast-retry burst. Once a validated proxy
+                    // exists and physical members remain present, AX-only
+                    // unavailability is liveness debt for the 1 Hz watchdog;
+                    // it must not drive a global high-frequency refresh loop.
+                    fastPresentationRetryGroupIDs.insert(group.id)
+                }
                 continue
             }
 
@@ -331,7 +701,7 @@ extension SnapController {
             }
             guard placements.count == group.memberIDs.count else {
                 presentationSuppressedGroupIDs.insert(group.id)
-                missionControlGroupProxyController.hide(groupID: group.id)
+                preservedPresentationGroupIDs.insert(group.id)
                 groupDegradationEvidenceByGroupID.removeValue(forKey: group.id)
                 presentationRecoveryGroupIDs.insert(group.id)
                 fastPresentationRetryGroupIDs.insert(group.id)
@@ -356,7 +726,6 @@ extension SnapController {
             }
 
             presentationSuppressedGroupIDs.insert(group.id)
-            missionControlGroupProxyController.hide(groupID: group.id)
             let physicalMembersAreStillPresent = group.memberIDs.allSatisfy {
                 memberID in
                 guard let placement = lockedPlacements[memberID],
@@ -369,12 +738,16 @@ extension SnapController {
             }
             guard physicalMembersAreStillPresent else {
                 // Window Server evidence is incomplete/indeterminate. Never
-                // convert that into a structural departure.
+                // convert that into a structural departure; without complete
+                // physical surfaces we also cannot safely keep stale geometry
+                // presented.
+                missionControlGroupProxyController.hide(groupID: group.id)
                 groupDegradationEvidenceByGroupID.removeValue(forKey: group.id)
                 presentationRecoveryGroupIDs.insert(group.id)
                 fastPresentationRetryGroupIDs.insert(group.id)
                 continue
             }
+            preservedPresentationGroupIDs.insert(group.id)
 
             let fingerprint = GroupDegradationFingerprint(
                 missingMemberIDs: group.memberIDs.subtracting(connected),
@@ -465,13 +838,18 @@ extension SnapController {
             if case .suspendedForSpaceTransition = $0.state { return false }
             return true
         }
+        let previewsEnabled = settings.windowPreviewsEnabled
         missionControlGroupProxyController.update(
             groups: presentableGroups,
             visibleWindowsByIdentity: windowsByIdentity,
+            preservedGroupIDs: preservedPresentationGroupIDs,
+            previewsEnabled: previewsEnabled,
+            previewCacheByteLimit: AppSettings
+                .missionControlPreviewMemoryByteLimit(
+                    settings.missionControlPreviewMemoryLimitMiB
+                ),
             previewProvider: { [weak self] windowID in
-                guard let self, self.settings.windowPreviewsEnabled else {
-                    return nil
-                }
+                guard previewsEnabled, let self else { return nil }
                 return self.windowService.previewCGImage(for: windowID)
             }
         )
@@ -479,220 +857,357 @@ extension SnapController {
 
     func activateExplicitGroupFromMissionControlProxy(
         groupID: SnapGroupID,
-        revision: UInt64
+        presentedMemberIDs: Set<String>
     ) {
         guard missionControlGroupPresentationIsEnabled,
-              let group = explicitGroupStore.group(id: groupID) else { return }
-        // Harmless state/preferred-member changes can advance the revision
-        // between drawing the proxy and delivering its click. The stable group
-        // identity plus the fresh geometry and selection checks below are the
-        // authoritative safety evidence.
-        let currentRevision = group.revision
-        _ = revision
-        // The proxy click is an explicit group selection, not a desktop click
-        // at the same screen coordinate. Never replay that coordinate after
-        // the proxy disappears, where it would resolve to the formerly top
-        // window beneath the proxy and undo the requested selection.
-        deferredPlainClickPoint = nil
+              let group = explicitGroupStore.group(id: groupID),
+              MissionControlProxySelectionStructuralPolicy.matchesPresentedMembers(
+                  presentedMemberIDs: presentedMemberIDs,
+                  currentMemberIDs: group.memberIDs
+              ) else {
+            discardDeferredForegroundSignals()
+            missionControlGroupProxyController.cancelSelectionTransition(
+                for: groupID
+            )
+            return
+        }
+        if let active = activeMissionControlProxyActivation {
+            if active.groupID != groupID
+                || active.memberIDs != presentedMemberIDs {
+                missionControlGroupProxyController.cancelSelectionTransition(
+                    for: groupID
+                )
+            }
+            // One Mission Control exit has exactly one selected group. A later
+            // proxy key event may not supersede or restart that transaction.
+            return
+        }
+        // Revision also tracks harmless preferred-member/state changes, so it
+        // is not a structural authorization token. The exact member set shown
+        // by the selected proxy is the stale-evidence boundary instead.
+        discardDeferredForegroundSignals()
         invalidatePendingGroupRaise()
         invalidatePendingSelectionRaise()
         groupRaiseGeneration &+= 1
         let generation = groupRaiseGeneration
-        activeMissionControlProxyActivationGeneration = generation
-        missionControlProxyFocusRequestedGeneration = nil
+        activeMissionControlProxyActivation = MissionControlProxyActivationState(
+            groupID: groupID,
+            generation: generation,
+            memberIDs: group.memberIDs,
+            preferredMemberID: group.preferredMemberID
+        )
+        resizeHandleOverlay.setPresentationSuspended(true)
+        // The selected proxy now owns a bounded visual handoff. Do not remove
+        // the Window Server surface while Mission Control is still returning
+        // it to the desktop; the proxy itself enforces a short visibility
+        // ceiling, and success/cancellation below performs final retirement.
         activateExplicitGroupFromMissionControlProxy(
             groupID: groupID,
-            revision: currentRevision,
             generation: generation,
-            completedAttempts: 0
+            completedAttempts: 0,
+            successfulOrderingPassExists: false,
+            passiveTransformObservations: 0,
+            unsettledDesktopVerificationDeferrals: 0
         )
     }
 
     private func activateExplicitGroupFromMissionControlProxy(
         groupID: SnapGroupID,
-        revision: UInt64,
         generation: Int,
-        completedAttempts: Int
+        completedAttempts: Int,
+        successfulOrderingPassExists: Bool,
+        passiveTransformObservations: Int,
+        unsettledDesktopVerificationDeferrals: Int
     ) {
         guard groupRaiseGeneration == generation,
-              activeMissionControlProxyActivationGeneration == generation,
+              let activation = activeMissionControlProxyActivation,
+              activation.generation == generation,
+              activation.groupID == groupID,
               missionControlGroupPresentationIsEnabled,
-              let group = explicitGroupStore.group(id: groupID) else {
-            if activeMissionControlProxyActivationGeneration == generation {
-                activeMissionControlProxyActivationGeneration = nil
-                missionControlProxyFocusRequestedGeneration = nil
+              let group = explicitGroupStore.group(id: groupID),
+              group.memberIDs == activation.memberIDs,
+              group.preferredMemberID == activation.preferredMemberID else {
+            let clearedActivation =
+                activeMissionControlProxyActivation?.generation == generation
+            if clearedActivation {
+                activeMissionControlProxyActivation = nil
             }
             endOwnedForegroundMutation(generation: generation)
             missionControlGroupProxyController.cancelSelectionTransition(
                 for: groupID
             )
-            replayDeferredForegroundSignalIfNeeded()
-            return
-        }
-        let visibleWindows = managedVisibleWindows()
-        let groupWindows = visibleWindows.filter {
-            group.memberIDs.contains($0.stableIdentity)
-        }
-        guard groupWindows.count == group.memberIDs.count,
-              let mainWindow = groupWindows.first(where: {
-                  $0.stableIdentity == group.preferredMemberID
-              }) else {
-            if completedAttempts
-                < maximumMissionControlProxyActivationSettleAttempts {
-                scheduleMissionControlProxyActivationRetry(
-                    groupID: groupID,
-                    revision: revision,
-                    generation: generation,
-                    completedAttempts: completedAttempts
-                )
-                return
+            if clearedActivation {
+                discardDeferredForegroundSignals()
+                refreshResizeHandles()
             }
-            activeMissionControlProxyActivationGeneration = nil
-            missionControlProxyFocusRequestedGeneration = nil
-            endOwnedForegroundMutation(generation: generation)
-            missionControlGroupProxyController.cancelSelectionTransition(
-                for: groupID
-            )
-            refreshMissionControlGroupProxies(using: visibleWindows)
-            replayDeferredForegroundSignalIfNeeded()
-            return
-        }
-        guard let validatedGroupWindows = connectedSnapGroupWindows(
-            for: mainWindow,
-            visibleWindows: visibleWindows
-        ), Set(validatedGroupWindows.map(\.stableIdentity)) == group.memberIDs else {
-            if completedAttempts
-                < maximumMissionControlProxyActivationSettleAttempts {
-                scheduleMissionControlProxyActivationRetry(
-                    groupID: groupID,
-                    revision: revision,
-                    generation: generation,
-                    completedAttempts: completedAttempts
-                )
-                return
-            }
-            activeMissionControlProxyActivationGeneration = nil
-            missionControlProxyFocusRequestedGeneration = nil
-            endOwnedForegroundMutation(generation: generation)
-            missionControlGroupProxyController.cancelSelectionTransition(
-                for: groupID
-            )
-            refreshMissionControlGroupProxies(using: visibleWindows)
-            replayDeferredForegroundSignalIfNeeded()
             return
         }
 
-        if connectedGroupFrontmostEvaluation(validatedGroupWindows)
-            == .verifiedFrontmost {
+        let activationSnapshot = windowService.windowOcclusionSnapshot()
+        guard let validatedGroupWindows = missionControlActivationWindows(
+            memberIDs: group.memberIDs,
+            snapshot: activationSnapshot
+        ), validatedGroupWindows.count == group.memberIDs.count,
+           Set(validatedGroupWindows.map(\.stableIdentity)) == group.memberIDs,
+           let mainWindow = validatedGroupWindows.first(where: {
+               $0.stableIdentity == activation.preferredMemberID
+           }) else {
+            if MissionControlProxyActivationRetryPolicy.allowsAnotherPass(
+                completedAttempts: completedAttempts
+            ) {
+                scheduleMissionControlProxyActivationRetry(
+                    groupID: groupID,
+                    generation: generation,
+                    completedAttempts: completedAttempts,
+                    successfulOrderingPassExists:
+                        successfulOrderingPassExists,
+                    passiveTransformObservations:
+                        passiveTransformObservations,
+                    unsettledDesktopVerificationDeferrals:
+                        unsettledDesktopVerificationDeferrals
+                )
+            } else {
+                cancelMissionControlProxyActivation(
+                    groupID: groupID,
+                    generation: generation
+                )
+            }
+            return
+        }
+
+        let transformIsObserved =
+            missionControlTransitionIsCurrentlyObserved(groupID: groupID)
+        if MissionControlVisualHandoffPolicy.shouldSuppressRepeatedOrdering(
+            transformIsObserved: transformIsObserved,
+            successfulOrderingPassExists: successfulOrderingPassExists,
+            completedPassiveObservations: passiveTransformObservations
+        ) {
+            // The selected group has already received one complete ordering
+            // pass. While Window Server is still animating Mission Control,
+            // suppress only duplicate AXRaise/focus passes; repeating them at
+            // the end of the transform produces a visible final-frame jump.
+            scheduleMissionControlProxyActivationRetry(
+                groupID: groupID,
+                generation: generation,
+                completedAttempts: completedAttempts,
+                successfulOrderingPassExists: successfulOrderingPassExists,
+                passiveTransformObservations:
+                    passiveTransformObservations + 1,
+                unsettledDesktopVerificationDeferrals: 0,
+                advancesActivationAttempt: false
+            )
+            return
+        }
+
+        let frontmostEvaluation = connectedGroupFrontmostEvaluation(
+            validatedGroupWindows,
+            allowsExactIdentityWithTransformedGeometry: true
+        )
+        let orderingIsVerified = !transformIsObserved
+            && frontmostEvaluation == .verifiedFrontmost
+
+        if orderingIsVerified {
             setAutomaticForegroundMode(forGroupID: groupID)
-            activeMissionControlProxyActivationGeneration = nil
-            missionControlProxyFocusRequestedGeneration = nil
+            activeMissionControlProxyActivation = nil
             endOwnedForegroundMutation(generation: generation)
             explicitGroupStore.setPreferredMember(mainWindow.stableIdentity)
-            missionControlGroupProxyController.hideAll()
-            refreshResizeHandles(using: visibleWindows)
-            replayDeferredForegroundSignalIfNeeded()
+            missionControlGroupProxyController.hide(groupID: groupID)
+            discardDeferredForegroundSignals()
+            refreshResizeHandles()
             return
         }
 
-        if !beginOwnedForegroundMutation(
-               groupID: groupID,
-               windows: validatedGroupWindows,
-               generation: generation
-           ) {
-            guard completedAttempts
-                    < maximumMissionControlProxyActivationSettleAttempts else {
-                setSoloForegroundMode(memberID: mainWindow.stableIdentity)
-                activeMissionControlProxyActivationGeneration = nil
-                missionControlProxyFocusRequestedGeneration = nil
-                missionControlGroupProxyController.cancelSelectionTransition(
-                    for: groupID
-                )
-                refreshResizeHandles(using: visibleWindows)
-                replayDeferredForegroundSignalIfNeeded()
-                return
-            }
+        if MissionControlVisualHandoffPolicy
+            .shouldDeferUnsettledDesktopVerification(
+                transformIsObserved: transformIsObserved,
+                successfulOrderingPassExists: successfulOrderingPassExists,
+                orderingIsVerified: orderingIsVerified,
+                completedDeferrals:
+                    unsettledDesktopVerificationDeferrals
+            ) {
+            // The first normal-geometry sample and the final Window Server
+            // Z-order sample need not settle in the same compositor turn.
+            // Re-observe once before issuing another visible ordering mutation.
             scheduleMissionControlProxyActivationRetry(
                 groupID: groupID,
-                revision: revision,
                 generation: generation,
-                completedAttempts: completedAttempts
+                completedAttempts: completedAttempts,
+                successfulOrderingPassExists: successfulOrderingPassExists,
+                passiveTransformObservations: passiveTransformObservations,
+                unsettledDesktopVerificationDeferrals:
+                    unsettledDesktopVerificationDeferrals + 1,
+                advancesActivationAttempt: false
             )
             return
         }
 
-        if missionControlProxyFocusRequestedGeneration != generation {
-            // Selecting the proxy makes Tabora the temporary active app.
-            // Activate only the recorded main member first, then let the same
-            // fail-closed AX/WindowServer agreement used by ordinary group
-            // raises authorize the companion raises.
-            windowService.focus(mainWindow)
-            missionControlProxyFocusRequestedGeneration = generation
-        }
-        if automaticGroupRaiseIsSafe(for: mainWindow),
-           raiseWindowsForAutomaticSelection(
-               validatedGroupWindows,
-               withMainWindow: mainWindow,
-               isRequestCurrent: { [weak self] in
-                   guard let self,
-                         self.groupRaiseGeneration == generation,
-                         self.explicitGroupStore.group(id: groupID) != nil
-                   else { return false }
-                   return true
-               }
-           ) {
-            // AXRaise acceptance precedes the Window Server Z-order update.
-            // Keep the static composite covering the transition until a later
-            // bounded observation proves every real member is frontmost.
-            scheduleMissionControlProxyActivationRetry(
+        guard MissionControlProxyActivationRetryPolicy.allowsAnotherPass(
+            completedAttempts: completedAttempts
+        ) else {
+            cancelMissionControlProxyActivation(
                 groupID: groupID,
-                revision: revision,
-                generation: generation,
-                completedAttempts: completedAttempts
+                generation: generation
             )
             return
         }
 
-        guard completedAttempts
-                < maximumMissionControlProxyActivationSettleAttempts else {
-            // The explicit proxy request did not reach its complete-frontmost
-            // postcondition. The main window may still have been selected by
-            // macOS, but presenting shared resize controls for an
-            // incomplete foreground group would be unsafe.
-            setSoloForegroundMode(memberID: mainWindow.stableIdentity)
-            activeMissionControlProxyActivationGeneration = nil
-            missionControlProxyFocusRequestedGeneration = nil
-            endOwnedForegroundMutation(generation: generation)
-            missionControlGroupProxyController.cancelSelectionTransition(
-                for: groupID
-            )
-            refreshResizeHandles(using: visibleWindows)
-            replayDeferredForegroundSignalIfNeeded()
-            return
-        }
+        // The proxy click is explicit authorization for this immutable group,
+        // so it must not depend on a real member already being frontmost. That
+        // would make foregrounding depend on its own postcondition. Perform the
+        // exact same whole-group mutation that the working resize toggle uses:
+        // raise every companion, then activate/raise the preferred main.
+        let orderingPassCompleted = issueMissionControlGroupOrderingPass(
+            groupID: groupID,
+            generation: generation,
+            memberIDs: activation.memberIDs,
+            windows: validatedGroupWindows,
+            mainWindow: mainWindow
+        )
+
         scheduleMissionControlProxyActivationRetry(
             groupID: groupID,
-            revision: revision,
             generation: generation,
-            completedAttempts: completedAttempts
+            completedAttempts: completedAttempts,
+            successfulOrderingPassExists:
+                successfulOrderingPassExists || orderingPassCompleted,
+            passiveTransformObservations: passiveTransformObservations,
+            unsettledDesktopVerificationDeferrals:
+                orderingPassCompleted
+                    ? 0
+                    : unsettledDesktopVerificationDeferrals
         )
+    }
+
+    private func missionControlProxyActivationIsCurrent(
+        groupID: SnapGroupID,
+        generation: Int,
+        memberIDs: Set<String>
+    ) -> Bool {
+        guard groupRaiseGeneration == generation,
+              let current = activeMissionControlProxyActivation else {
+            return false
+        }
+        return current.groupID == groupID
+            && current.generation == generation
+            && current.memberIDs == memberIDs
+            && explicitGroupStore.group(id: groupID)?.memberIDs == memberIDs
+    }
+
+    /// Every call is an independent whole-group pass. It never resumes from a
+    /// partially accepted member list and never waits for placement geometry.
+    private func issueMissionControlGroupOrderingPass(
+        groupID: SnapGroupID,
+        generation: Int,
+        memberIDs: Set<String>,
+        windows: [ManagedWindow],
+        mainWindow: ManagedWindow
+    ) -> Bool {
+        var seen = Set<String>()
+        let uniqueWindows = windows.filter {
+            seen.insert($0.stableIdentity).inserted
+        }
+        guard uniqueWindows.count == memberIDs.count,
+              Set(uniqueWindows.map(\.stableIdentity)) == memberIDs,
+              memberIDs.contains(mainWindow.stableIdentity),
+              beginOwnedForegroundMutation(
+                  groupID: groupID,
+                  windows: uniqueWindows,
+                  generation: generation,
+                  allowsExactIdentityWithTransformedGeometry: true
+              ) else {
+            return false
+        }
+
+        let resolvedWindows = uniqueWindows.map {
+            windowService.resolvingWindowServerIdentity(
+                $0,
+                allowsExactIdentityWithTransformedGeometry: true
+            )
+        }
+        guard Set(resolvedWindows.map(\.stableIdentity)) == memberIDs,
+              resolvedWindows.allSatisfy({ $0.cgWindowID != nil }),
+              resolvedWindows.allSatisfy({
+                  windowService.windowLiveness(
+                      element: $0.element,
+                      pid: $0.pid
+                  ) == .alive
+              }) else {
+            return false
+        }
+
+        for follower in resolvedWindows where
+            follower.stableIdentity != mainWindow.stableIdentity {
+            guard missionControlProxyActivationIsCurrent(
+                groupID: groupID,
+                generation: generation,
+                memberIDs: memberIDs
+            ) else { return false }
+            guard windowService.raise(follower) else { return false }
+        }
+        guard missionControlProxyActivationIsCurrent(
+            groupID: groupID,
+            generation: generation,
+            memberIDs: memberIDs
+        ), let resolvedMain = resolvedWindows.first(where: {
+            $0.stableIdentity == mainWindow.stableIdentity
+        }) else {
+            return false
+        }
+        windowService.focus(resolvedMain)
+        return true
+    }
+
+    private func cancelMissionControlProxyActivation(
+        groupID: SnapGroupID,
+        generation: Int
+    ) {
+        guard let activation = activeMissionControlProxyActivation,
+              activation.groupID == groupID,
+              activation.generation == generation else { return }
+        activeMissionControlProxyActivation = nil
+        endOwnedForegroundMutation(generation: generation)
+        missionControlGroupProxyController.cancelSelectionTransition(
+            for: groupID
+        )
+        refreshResizeHandles()
+        // Failure preserves group membership, placements, and the previous
+        // foreground mode. Transition-derived input is consumed rather than
+        // falling through to another group below the selected proxy.
+        discardDeferredForegroundSignals()
     }
 
     private func scheduleMissionControlProxyActivationRetry(
         groupID: SnapGroupID,
-        revision: UInt64,
         generation: Int,
-        completedAttempts: Int
+        completedAttempts: Int,
+        successfulOrderingPassExists: Bool,
+        passiveTransformObservations: Int,
+        unsettledDesktopVerificationDeferrals: Int,
+        advancesActivationAttempt: Bool = true
     ) {
+        guard (!advancesActivationAttempt
+                || MissionControlProxyActivationRetryPolicy.allowsAnotherPass(
+                    completedAttempts: completedAttempts
+                )),
+              activeMissionControlProxyActivation?.generation
+                == generation else { return }
         let workItem = DispatchWorkItem { [weak self] in
             guard let self,
-                  self.groupRaiseGeneration == generation else { return }
+                  self.groupRaiseGeneration == generation,
+                  self.activeMissionControlProxyActivation?.generation
+                    == generation else { return }
             self.pendingGroupRaiseWorkItem = nil
             self.activateExplicitGroupFromMissionControlProxy(
                 groupID: groupID,
-                revision: revision,
                 generation: generation,
-                completedAttempts: completedAttempts + 1
+                completedAttempts: completedAttempts
+                    + (advancesActivationAttempt ? 1 : 0),
+                successfulOrderingPassExists:
+                    successfulOrderingPassExists,
+                passiveTransformObservations:
+                    passiveTransformObservations,
+                unsettledDesktopVerificationDeferrals:
+                    unsettledDesktopVerificationDeferrals
             )
         }
         pendingGroupRaiseWorkItem = workItem

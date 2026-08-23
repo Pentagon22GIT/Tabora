@@ -1,8 +1,8 @@
 # プライバシーポリシー
 
-最終更新日: 2026-08-18
+最終更新日: 2026-08-23
 
-Taboraはローカルで動作するmacOSアプリです。現在のv1.0.1ソースを静的監査した範囲では、解析、広告、テレメトリー、クラッシュレポート自動送信、ユーザーアカウント、アプリ自身によるHTTP通信を実装していません。
+Taboraはローカルで動作するmacOSアプリです。現在のv1.1.0ソースを静的監査した範囲では、解析、広告、テレメトリー、クラッシュレポート自動送信、ユーザーアカウント、アプリ自身によるHTTP通信を実装していません。
 
 ## ローカルで扱う情報
 
@@ -18,6 +18,30 @@ Taboraはローカルで動作するmacOSアプリです。現在のv1.0.1ソー
 
 これらはSnap / Assist / Group / Recovery / Mission Control連携等のローカル機能に使用します。ウィンドウ一覧、タイトル、座標履歴を外部サーバーへ送信する処理はありません。
 
+### App Constraint記録
+
+v1.1.0では、Taboraが要求したサイズを対象アプリ自身が拒否し、settle後のaccepted boundaryを確認できた場合に限り、アプリ固有のサイズ制約候補をローカルで記録できます。通常のresize履歴や単なるAX失敗は制約として記録しません。
+
+記録対象には、必要に応じて次が含まれます。
+
+- アプリ表示名
+- native appのBundle IDとDesignated Requirement
+- Chrome Web Appの場合はparent Chrome identityとcanonical Web App ID
+- minWidth / minHeight / maxWidth / maxHeightのcandidate / known state
+- アプリ単位の記録許可
+- constraintの確認待ち・要確認・dormant状態
+- 記録の更新時刻
+
+永続keyにはPID、CGWindowID、AX element hash、ウィンドウタイトル、ウィンドウ位置・サイズ履歴、アプリversion、bundle pathを使用しません。Chrome Web App間でconstraint値を自動共有しません。
+
+App Constraint recordは次のローカルJSONへ保存します。
+
+```text
+~/Library/Application Support/Tabora/<Bundle ID>/constraints-v1.json
+```
+
+このファイルはschema version付きでatomic writeし、外部サーバーへ送信する処理はありません。ユーザーが設定からrecordを削除した場合、そのrecordのlearned values、permission、pending candidate、dormant stateを削除します。
+
 ### Preview画像
 
 「配置候補にウィンドウ画像を表示」を有効にした場合だけ、画面収録権限を使用して配置候補およびMission Control連携で表示する対象ウィンドウのプレビュー画像を取得します。
@@ -25,6 +49,8 @@ Taboraはローカルで動作するmacOSアプリです。現在のv1.0.1ソー
 - 初期状態では任意機能です。
 - 表示用のメモリキャッシュで扱います。
 - キャッシュはboundedな派生データとして破棄可能です。
+- 配置候補はpanelが必要とした対象を取得します。Mission Control連携はgroup proxy構築時のcache missに加え、groupが存在して機能が有効な間、通常desktopの操作停止中に15秒以上古いactive memberだけを非同期で更新します。
+- Mission Control画像はexact window IDを対象に最大2件並列で取得します。1秒ごとの画像取得、directory scan、画像ファイルscanは行いません。
 - ディスクへ保存する処理はありません。
 - ネットワーク送信する処理はありません。
 
@@ -36,9 +62,11 @@ Taboraはローカルで動作するmacOSアプリです。現在のv1.0.1ソー
 
 ## 永続保存
 
-`UserDefaults.standard`へ、ショートカット、スナップ判定範囲、表示方式、Recovery/前面化に関係するユーザー設定などを保存します。
+`UserDefaults.standard`へ、ショートカット、スナップ判定範囲、表示方式、Recovery/前面化に関係するユーザー設定、App Constraintの記録確認ON/OFFなどのscalar設定を保存します。
 
-Official (`dev.pent.Tabora`) と Community (`dev.pent.Tabora.community`) は別Bundle IDであるため、設定domainも分離されます。Taboraは新規productであり、SnapFlowのUserDefaults domainを自動移行・読み込みする処理を追加していません。
+App Constraintのアプリ別record本体は`UserDefaults`へ詰め込まず、前述の専用Application Support JSONへ保存します。
+
+Official (`dev.pent.Tabora`) と Community (`dev.pent.Tabora.community`) は別Bundle IDであるため、UserDefaultsの設定domainとApp Constraint recordの保存directoryを分離します。Taboraは新規productであり、SnapFlowのUserDefaults domainを自動移行・読み込みする処理を追加していません。
 
 ## 実験的workspace設定
 

@@ -283,6 +283,70 @@ enum ResizeHandleInteraction: Equatable {
     }
 }
 
+enum ResizeHandleBoundaryPlacementGeometry {
+    static func freeIntervals(
+        span: ClosedRange<CGFloat>,
+        excluding exclusions: [ClosedRange<CGFloat>]
+    ) -> [ClosedRange<CGFloat>] {
+        guard span.upperBound > span.lowerBound else { return [] }
+        let clipped = exclusions.compactMap { exclusion -> ClosedRange<CGFloat>? in
+            let lower = max(span.lowerBound, exclusion.lowerBound)
+            let upper = min(span.upperBound, exclusion.upperBound)
+            return upper > lower ? lower...upper : nil
+        }.sorted { $0.lowerBound < $1.lowerBound }
+        guard !clipped.isEmpty else { return [span] }
+
+        var merged: [ClosedRange<CGFloat>] = []
+        for item in clipped {
+            if let last = merged.last, item.lowerBound <= last.upperBound {
+                merged[merged.count - 1] = last.lowerBound...max(
+                    last.upperBound, item.upperBound
+                )
+            } else {
+                merged.append(item)
+            }
+        }
+
+        var result: [ClosedRange<CGFloat>] = []
+        var cursor = span.lowerBound
+        for exclusion in merged {
+            if exclusion.lowerBound > cursor {
+                result.append(cursor...exclusion.lowerBound)
+            }
+            cursor = max(cursor, exclusion.upperBound)
+        }
+        if cursor < span.upperBound {
+            result.append(cursor...span.upperBound)
+        }
+        return result.filter { $0.upperBound - $0.lowerBound >= 1 }
+    }
+
+    static func controlPlacement(
+        span: ClosedRange<CGFloat>,
+        excluding exclusions: [ClosedRange<CGFloat>],
+        preferredMidpoint: CGFloat,
+        desiredLength: CGFloat
+    ) -> (center: CGFloat, length: CGFloat)? {
+        let intervals = freeIntervals(span: span, excluding: exclusions)
+        let candidates = intervals.compactMap { interval
+            -> (center: CGFloat, length: CGFloat, distance: CGFloat)? in
+            let available = interval.upperBound - interval.lowerBound
+            guard available >= 1 else { return nil }
+            let length = min(max(desiredLength, 1), available)
+            let lowerCenter = interval.lowerBound + length / 2
+            let upperCenter = interval.upperBound - length / 2
+            let center = min(max(preferredMidpoint, lowerCenter), upperCenter)
+            return (center, length, abs(center - preferredMidpoint))
+        }
+        return candidates.min { lhs, rhs in
+            if abs(lhs.distance - rhs.distance) > 0.001 {
+                return lhs.distance < rhs.distance
+            }
+            return lhs.length > rhs.length
+        }.map { ($0.center, $0.length) }
+    }
+}
+
 struct ResizeHandleDescriptor: Equatable {
     static let macControlThickness: CGFloat = 8
     static let macControlLength: CGFloat = 44
@@ -306,6 +370,7 @@ struct ResizeHandleDescriptor: Equatable {
     let presentationStyle: LinkedResizePresentationStyle
     let showsResizeCursorAdornment: Bool
     let resizeCursorAdornmentDistance: CGFloat
+    let junctionExclusionSpans: [ClosedRange<CGFloat>]
 
     init(
         id: String,
@@ -320,7 +385,8 @@ struct ResizeHandleDescriptor: Equatable {
         showsResizeCursorAdornment: Bool = false,
         resizeCursorAdornmentDistance: CGFloat = CGFloat(
             AppSettings.defaultResizeCursorAdornmentDistance
-        )
+        ),
+        junctionExclusionSpans: [ClosedRange<CGFloat>] = []
     ) {
         self.id = id
         self.displayID = displayID
@@ -333,30 +399,50 @@ struct ResizeHandleDescriptor: Equatable {
         self.presentationStyle = presentationStyle
         self.showsResizeCursorAdornment = showsResizeCursorAdornment
         self.resizeCursorAdornmentDistance = resizeCursorAdornmentDistance
+        self.junctionExclusionSpans = junctionExclusionSpans
     }
 
     var spanLength: CGFloat {
         max(span.upperBound - span.lowerBound, 1)
     }
 
+    var freeInteractionIntervals: [ClosedRange<CGFloat>] {
+        ResizeHandleBoundaryPlacementGeometry.freeIntervals(
+            span: span,
+            excluding: junctionExclusionSpans
+        )
+    }
+
+    func controlPlacement(
+        desiredLength: CGFloat = Self.macControlLength
+    ) -> (center: CGFloat, length: CGFloat)? {
+        ResizeHandleBoundaryPlacementGeometry.controlPlacement(
+            span: span,
+            excluding: junctionExclusionSpans,
+            preferredMidpoint: (span.lowerBound + span.upperBound) / 2,
+            desiredLength: desiredLength
+        )
+    }
+
     func interactionFrame() -> CGRect {
         if presentationStyle == .mac {
-            let controlLength = min(Self.macControlLength, spanLength)
+            let placement = controlPlacement() ?? (
+                center: (span.lowerBound + span.upperBound) / 2,
+                length: min(Self.macControlLength, spanLength)
+            )
             switch axis {
             case .horizontal:
                 return CGRect(
                     x: coordinate - Self.macControlThickness / 2,
-                    y: (span.lowerBound + span.upperBound) / 2
-                        - controlLength / 2,
+                    y: placement.center - placement.length / 2,
                     width: Self.macControlThickness,
-                    height: controlLength
+                    height: placement.length
                 )
             case .vertical:
                 return CGRect(
-                    x: (span.lowerBound + span.upperBound) / 2
-                        - controlLength / 2,
+                    x: placement.center - placement.length / 2,
                     y: coordinate - Self.macControlThickness / 2,
-                    width: controlLength,
+                    width: placement.length,
                     height: Self.macControlThickness
                 )
             }
@@ -400,6 +486,7 @@ struct ResizeHandlePresentationSignature: Equatable {
     let presentationStyle: LinkedResizePresentationStyle
     let showsResizeCursorAdornment: Bool
     let resizeCursorAdornmentDistance: CGFloat
+    let junctionExclusionBounds: [CGFloat]
 
     init(_ descriptor: ResizeHandleDescriptor) {
         id = descriptor.id
@@ -410,5 +497,8 @@ struct ResizeHandlePresentationSignature: Equatable {
         presentationStyle = descriptor.presentationStyle
         showsResizeCursorAdornment = descriptor.showsResizeCursorAdornment
         resizeCursorAdornmentDistance = descriptor.resizeCursorAdornmentDistance
+        junctionExclusionBounds = descriptor.junctionExclusionSpans.flatMap {
+            [$0.lowerBound, $0.upperBound]
+        }
     }
 }

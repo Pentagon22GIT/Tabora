@@ -180,6 +180,25 @@ enum SnapPlacementLayerPolicy {
         zone != .maximize
     }
 
+    static func incomingExactlyCovers(
+        existingZones: Set<SnapZone>,
+        incoming: SnapZone
+    ) -> Bool {
+        guard incoming != .maximize, !existingZones.isEmpty else {
+            return false
+        }
+        var existingCells: Set<SnapZone> = []
+        for zone in existingZones {
+            let cells = logicalCells(for: zone)
+            // Exact-cover replacement is an authorization boundary. Reject
+            // malformed/overlapping source layouts instead of letting a union
+            // operation hide duplicate ownership of the same logical cell.
+            guard existingCells.isDisjoint(with: cells) else { return false }
+            existingCells.formUnion(cells)
+        }
+        return existingCells == logicalCells(for: incoming)
+    }
+
     private static func logicalCells(for zone: SnapZone) -> Set<SnapZone> {
         switch zone {
         case .leftHalf:

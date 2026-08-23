@@ -4,9 +4,20 @@ import CoreGraphics
 private final class PreviewImageLoader {
     private static let maximumPreviewPixelSize = CGSize(width: 680, height: 420)
     private let provider: (CGWindowID?) -> CGImage?
-    private let queue = DispatchQueue(label: "dev.pent.Tabora.preview-loader", qos: .userInitiated)
+    private static let queue: OperationQueue = {
+        let queue = OperationQueue()
+        queue.name = "dev.pent.Tabora.preview-loader"
+        queue.qualityOfService = .userInitiated
+        queue.maxConcurrentOperationCount = 2
+        return queue
+    }()
+    // Reuse the established interactive readiness budget. Preview is derived
+    // state: a slow Window Server capture may continue off-main, but the picker
+    // must fall back to its placeholder instead of waiting behind it.
+    private let presentationTimeout: TimeInterval = 0.45
     private var cache: [String: NSImage] = [:]
     private var completed: Set<String> = []
+    private var placeholderDelivered: Set<String> = []
     private var pending: [String: [(NSImage?) -> Void]] = [:]
 
     init(provider: @escaping (CGWindowID?) -> CGImage?) {
@@ -27,20 +38,39 @@ private final class PreviewImageLoader {
         pending[key] = [completion]
         let provider = self.provider
         let windowID = window.cgWindowID
-        queue.async { [weak self] in
+        let timeout = presentationTimeout
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
+            self?.deliverTimeoutPlaceholder(key: key)
+        }
+        Self.queue.addOperation { [weak self] in
             guard self != nil else { return }
             let imageRef = provider(windowID).flatMap { source in
                 Self.makePreviewImage(from: source)
             }
-            DispatchQueue.main.async {
-                guard let self else { return }
-                let image = imageRef.map { NSImage(cgImage: $0, size: .zero) }
-                if let image { self.cache[key] = image }
-                self.completed.insert(key)
-                let callbacks = self.pending.removeValue(forKey: key) ?? []
-                callbacks.forEach { $0(image) }
+            DispatchQueue.main.async { [weak self] in
+                self?.finishRequest(key: key, imageRef: imageRef)
             }
         }
+    }
+
+    private func deliverTimeoutPlaceholder(key: String) {
+        guard !completed.contains(key),
+              placeholderDelivered.insert(key).inserted else { return }
+        // The timeout is presentation-only. Keep subscribers until the actual
+        // derived capture finishes so a late image can replace the placeholder
+        // without rebuilding the picker or its transaction.
+        let callbacks = pending[key] ?? []
+        callbacks.forEach { $0(nil) }
+    }
+
+    private func finishRequest(key: String, imageRef: CGImage?) {
+        let image = imageRef.map { NSImage(cgImage: $0, size: .zero) }
+        if let image { cache[key] = image }
+        guard completed.insert(key).inserted else { return }
+        placeholderDelivered.remove(key)
+        let callbacks = pending.removeValue(forKey: key) ?? []
+        callbacks.forEach { $0(image) }
     }
 
     private static func makePreviewImage(from source: CGImage) -> CGImage? {
@@ -84,6 +114,7 @@ final class WindowPickerPanel: NSObject {
     private var onSelect: ((ManagedWindow, SnapZone) -> Void)?
     private var onCancel: (() -> Void)?
     private var previewLoader: PreviewImageLoader?
+    private var selectionPending = false
 
     var isVisible: Bool { !panels.isEmpty }
 
@@ -92,29 +123,46 @@ final class WindowPickerPanel: NSObject {
     }
 
     func show(
-        windows: [ManagedWindow],
+        windowsByZone: [SnapZone: [ManagedWindow]],
         zoneFrames: [SnapZone: CGRect],
+        backdropFrames: [CGRect] = [],
         previewProvider: @escaping (CGWindowID?) -> CGImage?,
         onCancel: @escaping () -> Void,
         onSelect: @escaping (ManagedWindow, SnapZone) -> Void
     ) {
         hide(notifyCancel: false)
-        guard !windows.isEmpty, !zoneFrames.isEmpty else { return }
+        guard windowsByZone.values.contains(where: { !$0.isEmpty }),
+              !zoneFrames.isEmpty else { return }
         self.onSelect = onSelect
         self.onCancel = onCancel
+        selectionPending = false
         let previewLoader = PreviewImageLoader(provider: previewProvider)
         self.previewLoader = previewLoader
 
+        for frame in backdropFrames where frame.width > 1 && frame.height > 1 {
+            let panel = makePanel(frame: frame)
+            panel.contentView = PickerBackdropView(onCancel: { [weak self] in
+                self?.hide(notifyCancel: true)
+            })
+            panel.orderFrontRegardless()
+            panels.append(panel)
+        }
+
         for zone in SnapZone.allCases {
-            guard let frame = zoneFrames[zone], frame.width >= 80, frame.height >= 80 else { continue }
+            guard let frame = zoneFrames[zone],
+                  frame.width >= 80,
+                  frame.height >= 80,
+                  let windows = windowsByZone[zone],
+                  !windows.isEmpty else { continue }
             let panel = makePanel(frame: frame)
             let content = PickerZoneView(
                 windows: windows,
                 zone: zone,
                 previewLoader: previewLoader,
                 selection: { [weak self] window, selectedZone in
-                    self?.onSelect?(window, selectedZone)
-                    self?.hide(notifyCancel: false)
+                    guard let self, !self.selectionPending else { return }
+                    self.selectionPending = true
+                    self.onSelect?(window, selectedZone)
                 },
                 onCancel: { [weak self] in
                     self?.hide(notifyCancel: true)
@@ -129,6 +177,10 @@ final class WindowPickerPanel: NSObject {
         }
     }
 
+    func allowAnotherSelection() {
+        selectionPending = false
+    }
+
     func hide(notifyCancel: Bool = false) {
         panels.forEach { $0.orderOut(nil) }
         panels.removeAll()
@@ -136,6 +188,7 @@ final class WindowPickerPanel: NSObject {
         onSelect = nil
         onCancel = nil
         previewLoader = nil
+        selectionPending = false
         if notifyCancel { cancel?() }
     }
 
@@ -153,6 +206,35 @@ final class WindowPickerPanel: NSObject {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
         panel.isMovable = false
         return panel
+    }
+}
+
+private final class PickerBackdropView: NSView {
+    private let effectView = NSVisualEffectView()
+    private let onCancel: () -> Void
+
+    init(onCancel: @escaping () -> Void) {
+        self.onCancel = onCancel
+        super.init(frame: .zero)
+        wantsLayer = true
+        effectView.blendingMode = .behindWindow
+        effectView.material = .hudWindow
+        effectView.state = .active
+        effectView.wantsLayer = true
+        effectView.layer?.backgroundColor = NSColor.black
+            .withAlphaComponent(0.12).cgColor
+        addSubview(effectView)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func layout() {
+        super.layout()
+        effectView.frame = bounds
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        onCancel()
     }
 }
 

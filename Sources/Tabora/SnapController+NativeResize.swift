@@ -21,11 +21,19 @@ extension SnapController {
             ), isNearWindowResizeEdge(point, frame: frame) else {
                 return nil
             }
+            let physicalFrame = placement.cgWindowID.flatMap { windowID in
+                windowService.windowServerFrame(
+                    pid: placement.pid,
+                    windowID: windowID
+                )
+            }
             return PendingNativeResizeCandidate(
                 element: placement.element,
                 pid: placement.pid,
                 stableIdentity: identity,
                 initialFrame: frame,
+                cgWindowID: placement.cgWindowID,
+                initialWindowServerFrame: physicalFrame,
                 departure: explicitGroupDepartureSnapshot(
                     containing: identity
                 )
@@ -40,9 +48,28 @@ extension SnapController {
               !isSnapPlacementInProgress else {
             return unresolvedNativeResizeWasActivated
         }
+        if unresolvedNativeResizeWasActivated {
+            return true
+        }
 
         let observations = pendingNativeResizeCandidates.compactMap {
             candidate -> NativeWindowResizePolicy.FrameObservation? in
+            // A physical size delta may justify an AX-vs-AX verification, but
+            // never authorizes native departure by itself. When the exact
+            // Window Server surface has not changed size, skip the expensive
+            // AX read entirely.
+            if let windowID = candidate.cgWindowID,
+               let physicalBaseline = candidate.initialWindowServerFrame,
+               let currentPhysicalFrame = windowService.windowServerFrame(
+                   pid: candidate.pid,
+                   windowID: windowID
+               ), !NativeWindowResizePolicy.didResize(
+                   from: physicalBaseline,
+                   to: currentPhysicalFrame,
+                   tolerance: manualResizeDetectionTolerance
+               ) {
+                return nil
+            }
             guard let currentFrame = windowService.currentFrame(
                 of: candidate.element,
                 pid: candidate.pid
@@ -74,7 +101,7 @@ extension SnapController {
                 guard retiredGroupIDs.insert(departure.groupID).inserted else {
                     continue
                 }
-                if retireExplicitGroup(departure) {
+                if retireExplicitGroup(departure, reason: .nativeResizeDeparture) {
                     continue
                 }
             }
@@ -82,8 +109,6 @@ extension SnapController {
                 identity: candidate.stableIdentity
             )
         }
-        resizeHandleOverlay.setPresentationSuspended(true)
-        missionControlGroupProxyController.hideAll()
         virtualResizeOverlay.hideAll()
         overlay.hide()
         activeTarget = nil
@@ -125,14 +150,40 @@ extension SnapController {
             return false
         }
 
+        // Once native resize departure has been confirmed, the structural work
+        // is already complete. Continue owning the gesture without polling AX
+        // for every subsequent mouseDragged sample.
+        if manualResizeWindow != nil {
+            return true
+        }
+
+        // Window Server geometry is only a cheap prefilter here. Structural
+        // native-resize departure remains AX-vs-AX below. During an ordinary
+        // title-bar drag, a streamed app must not be synchronously AX-polled at
+        // 60 Hz merely to prove that its size did not change.
+        if manualResizeWindow == nil,
+           let physicalBaseline = pendingDragWindowServerFrame,
+           let currentPhysicalFrame = windowService.windowServerFrame(originalWindow) {
+            pendingDragCurrentWindowServerFrame = currentPhysicalFrame
+            if !NativeWindowResizePolicy.didResize(
+                from: physicalBaseline,
+                to: currentPhysicalFrame,
+                tolerance: manualResizeDetectionTolerance
+            ) {
+                return false
+            }
+        }
+
         let now = ProcessInfo.processInfo.systemUptime
         if now - lastManualResizeRefreshAt < manualResizeRefreshInterval {
             return manualResizeWindow != nil
         }
         lastManualResizeRefreshAt = now
 
-        guard let currentFrame = windowService.refreshedFrame(originalWindow)
-        else {
+        guard let currentFrame = windowService.refreshedFrame(
+            originalWindow,
+            messagingTimeout: AXMessagingTimeoutPolicy.passiveObservation
+        ) else {
             return manualResizeWindow != nil
         }
         let currentWindow = originalWindow.replacingFrame(currentFrame)
@@ -157,8 +208,6 @@ extension SnapController {
         retirePlacementForNativeResize(
             identity: currentWindow.stableIdentity
         )
-        resizeHandleOverlay.setPresentationSuspended(true)
-        missionControlGroupProxyController.hideAll()
         virtualResizeOverlay.hideAll()
         dragWindow = nil
         isWindowMoveConfirmed = false
@@ -180,7 +229,10 @@ extension SnapController {
         }
 
         if manualResizeWindow == nil,
-           let currentFrame = windowService.refreshedFrame(originalWindow),
+           let currentFrame = windowService.refreshedFrame(
+               originalWindow,
+               messagingTimeout: AXMessagingTimeoutPolicy.passiveObservation
+           ),
            NativeWindowResizePolicy.didResize(
                from: originalFrame,
                to: currentFrame,
@@ -208,7 +260,7 @@ extension SnapController {
     private func retirePlacementForNativeResize(identity: String) {
         if let departure = pendingNativeResizeDeparture {
             pendingNativeResizeDeparture = nil
-            if retireExplicitGroup(departure) {
+            if retireExplicitGroup(departure, reason: .nativeResizeDeparture) {
                 return
             }
         }
@@ -224,7 +276,6 @@ extension SnapController {
         restoreFrames.removeValue(forKey: identity)
         inFlightPlacementIDs.remove(identity)
         pendingPlacementSnapshots.removeValue(forKey: identity)
-        constraintHints.removeValue(forKey: identity)
         lastGroupWindowServerEvidenceByIdentity.removeValue(forKey: identity)
     }
 }

@@ -3,6 +3,33 @@ import XCTest
 @testable import Tabora
 
 final class SnapZoneTests: XCTestCase {
+    func testDisplayTransitionDetectsBottomAlignedSidecarSeam() {
+        let main = CGRect(x: 0, y: 0, width: 1728, height: 1117)
+        let sidecar = CGRect(x: -1180, y: 0, width: 1180, height: 820)
+
+        XCTAssertEqual(
+            DisplayTransitionPolicy.sharedEntryEdge(
+                from: main,
+                to: sidecar,
+                at: CGPoint(x: -1, y: 40)
+            ),
+            .right
+        )
+    }
+
+    func testDisplayTransitionDoesNotTreatCornerTouchAsSharedEdge() {
+        let main = CGRect(x: 0, y: 0, width: 1000, height: 800)
+        let cornerOnly = CGRect(x: -600, y: -500, width: 600, height: 500)
+
+        XCTAssertNil(
+            DisplayTransitionPolicy.sharedEntryEdge(
+                from: main,
+                to: cornerOnly,
+                at: CGPoint(x: -1, y: -1)
+            )
+        )
+    }
+
     func testDropUsesTheAuthoritativeMouseUpZone() {
         XCTAssertEqual(
             SnapDropTargetPolicy.preferredZone(
@@ -65,6 +92,44 @@ final class SnapZoneTests: XCTestCase {
     func testMaximizedLayerDoesNotCountAsConnectedLayoutMembership() {
         XCTAssertFalse(SnapPlacementLayerPolicy.countsTowardConnectedLayout(.maximize))
         XCTAssertTrue(SnapPlacementLayerPolicy.countsTowardConnectedLayout(.topLeft))
+    }
+
+    func testFullHalfExactlyCoversItsTwoQuarterMembers() {
+        XCTAssertTrue(SnapPlacementLayerPolicy.incomingExactlyCovers(
+            existingZones: [.topRight, .bottomRight],
+            incoming: .rightHalf
+        ))
+        XCTAssertTrue(SnapPlacementLayerPolicy.incomingExactlyCovers(
+            existingZones: [.topLeft, .bottomLeft],
+            incoming: .leftHalf
+        ))
+        XCTAssertTrue(SnapPlacementLayerPolicy.incomingExactlyCovers(
+            existingZones: [.topLeft, .topRight],
+            incoming: .topHalf
+        ))
+        XCTAssertTrue(SnapPlacementLayerPolicy.incomingExactlyCovers(
+            existingZones: [.bottomLeft, .bottomRight],
+            incoming: .bottomHalf
+        ))
+    }
+
+    func testFullGroupCoverRejectsPartialOrUnrelatedOverlap() {
+        XCTAssertFalse(SnapPlacementLayerPolicy.incomingExactlyCovers(
+            existingZones: [.topRight],
+            incoming: .rightHalf
+        ))
+        XCTAssertFalse(SnapPlacementLayerPolicy.incomingExactlyCovers(
+            existingZones: [.topLeft, .bottomLeft],
+            incoming: .rightHalf
+        ))
+        XCTAssertFalse(SnapPlacementLayerPolicy.incomingExactlyCovers(
+            existingZones: [.rightHalf, .topRight],
+            incoming: .rightHalf
+        ))
+        XCTAssertFalse(SnapPlacementLayerPolicy.incomingExactlyCovers(
+            existingZones: [.topRight, .bottomRight],
+            incoming: .maximize
+        ))
     }
 
     func testAssistKeepsOppositeHalfAndOffersOnlyItsMissingQuarter() {

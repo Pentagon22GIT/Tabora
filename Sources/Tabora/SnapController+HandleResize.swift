@@ -7,6 +7,31 @@ extension SnapController {
         windowServerSnapshot providedWindowServerSnapshot:
             [WindowOcclusionSnapshot]? = nil
     ) {
+        let canMaintainGroupPresentation = isEnabled
+            && settings.linkedResizeEnabled
+            && isUserSessionActive
+            && !isSnapPlacementInProgress
+            && handleResizeSession == nil
+            && !isHandleResizeFinalizing
+            && manualResizeWindow == nil
+            && !isApplicationInteractionSuppressed
+        let snapOrAssistOwnsPresentation =
+            PresentationTransactionOwnershipPolicy
+                .preservesMissionControlPresentation(
+                    snapPlacementInProgress: isSnapPlacementInProgress,
+                    assistSessionActive: activeSession != nil,
+                    assistPlacementPending: isAssistPlacementPending
+                )
+
+        if ResizeHandlePresentationOwnershipPolicy
+            .missionControlSelectionOwnsPresentation(
+                activationIsActive:
+                    missionControlSelectionTransactionIsActive
+            ) {
+            resizeHandleOverlay.setPresentationSuspended(true)
+            return
+        }
+
         guard isEnabled,
               settings.linkedResizeEnabled,
               !isSnapPlacementInProgress,
@@ -15,23 +40,51 @@ extension SnapController {
               manualResizeWindow == nil,
               activeSession == nil,
               !isAssistPlacementPending,
-              !isApplicationUIVisible else {
-            missionControlGroupProxyController.hideAll()
-            resetGroupPresentationTransitionRecovery()
+              !isApplicationInteractionSuppressed else {
+            // Snap/Assist owns the visible transaction. Snap start already
+            // invalidates only the structurally affected group; Assist keeps
+            // the remaining validated Mission Control presentation stable. Do
+            // not rebuild or globally retire proxies behind those UI layers.
+            if snapOrAssistOwnsPresentation {
+                // Intentionally preserve current proxy state.
+            } else if canMaintainGroupPresentation {
+                refreshMissionControlGroupProxies()
+            } else {
+                missionControlGroupProxyController.hideAll()
+                resetGroupPresentationTransitionRecovery()
+            }
             if handleResizeSession == nil {
                 handlePresentationGeneration &+= 1
                 baseResizeHandleDescriptors = []
+                lastPresentableResizeHandleDescriptors = []
                 quarantinedResizeHandleIDs.removeAll()
                 hasValidatedCurrentHandleGeometry = false
                 resizeHandleOverlay.hideAll()
+                resetHandlePresentationLivenessRecovery()
             }
             return
         }
 
-        let visibleWindows = providedVisibleWindows ?? managedVisibleWindows()
+        guard !explicitGroupStore.groups.isEmpty else {
+            handlePresentationGeneration &+= 1
+            baseResizeHandleDescriptors = []
+            lastPresentableResizeHandleDescriptors = []
+            quarantinedResizeHandleIDs.removeAll()
+            hasValidatedCurrentHandleGeometry = false
+            resizeHandleOverlay.hideAll()
+            missionControlGroupProxyController.hideAll()
+            resetHandlePresentationLivenessRecovery()
+            resetMissionControlPresentationRetryDebt()
+            return
+        }
+
+        let visibleWindows = providedVisibleWindows ?? managedExplicitGroupWindows()
         let windowServerSnapshot = providedWindowServerSnapshot
             ?? windowService.windowOcclusionSnapshot()
-        updateGroupWindowServerEvidence(using: visibleWindows)
+        updateGroupWindowServerEvidence(
+            using: visibleWindows,
+            windowServerSnapshot: windowServerSnapshot
+        )
         if shouldPreserveGroupPresentationDuringWindowServerTransform(
             visibleWindows: visibleWindows,
             using: windowServerSnapshot
@@ -45,6 +98,29 @@ extension SnapController {
             return
         }
         isPreservingGroupPresentationForWindowServerTransform = false
+        let spaceSeparationPendingGroupIDs: Set<SnapGroupID>
+        if isUserSessionActive {
+            spaceSeparationPendingGroupIDs =
+                reconcileExplicitGroupsSeparatedAcrossSpaces(
+                    windowServerSnapshot: windowServerSnapshot
+                )
+        } else {
+            // Lock/login transitions can temporarily remove otherwise-live
+            // surfaces. They are never Space-separation evidence.
+            spaceSeparationPendingGroupIDs = []
+        }
+        guard !explicitGroupStore.groups.isEmpty else {
+            handlePresentationGeneration &+= 1
+            baseResizeHandleDescriptors = []
+            lastPresentableResizeHandleDescriptors = []
+            quarantinedResizeHandleIDs.removeAll()
+            hasValidatedCurrentHandleGeometry = false
+            resizeHandleOverlay.hideAll()
+            missionControlGroupProxyController.hideAll()
+            resetHandlePresentationLivenessRecovery()
+            resetMissionControlPresentationRetryDebt()
+            return
+        }
         pruneForegroundStateForActiveGroups()
         let windowsByIdentity = Dictionary(
             visibleWindows.map { ($0.stableIdentity, $0) },
@@ -53,12 +129,19 @@ extension SnapController {
         let previouslyValidatedDescriptors = baseResizeHandleDescriptors
         var descriptors: [ResizeHandleDescriptor] = []
         var quarantinedDescriptorIDs = Set<String>()
-        var incompleteGroupIDs = Set<SnapGroupID>()
+        var incompleteGroupIDs = spaceSeparationPendingGroupIDs
+        var interactionUnavailableGroupIDs = Set<SnapGroupID>()
 
         for screen in NSScreen.screens {
             guard let screenDisplayID = displayID(for: screen) else { continue }
             for group in explicitGroupStore.groups where
                 group.displayID == screenDisplayID {
+                guard !spaceSeparationPendingGroupIDs.contains(group.id) else {
+                    // A split-across-Space group has no complete active-desktop
+                    // boundary. Keep its handles absent while structural
+                    // evidence is being confirmed.
+                    continue
+                }
                 var interactionUnavailable = false
                 let placements = group.memberIDs.compactMap { identity
                     -> SplitPlacementGeometry? in
@@ -94,6 +177,7 @@ extension SnapController {
                             }
                         }
                     if interactionUnavailable, physicalMembersAreStillPresent {
+                        interactionUnavailableGroupIDs.insert(group.id)
                         // Retain only the last boundary owned by this exact group.
                         // It is input-quarantined below: it keeps Tabora's arrow
                         // hit region above the native edge, but cannot start a
@@ -165,7 +249,12 @@ extension SnapController {
         baseResizeHandleDescriptors = descriptors
         quarantinedResizeHandleIDs = quarantinedDescriptorIDs
         if !incompleteGroupIDs.isEmpty {
-            scheduleIncompleteHandleGeometryRefresh(for: incompleteGroupIDs)
+            scheduleIncompleteHandleGeometryRefresh(
+                for: incompleteGroupIDs,
+                fastRetryGroupIDs: incompleteGroupIDs.subtracting(
+                    interactionUnavailableGroupIDs
+                )
+            )
         } else {
             resetIncompleteHandleGeometryRecovery()
         }
@@ -181,7 +270,8 @@ extension SnapController {
     }
 
     func scheduleIncompleteHandleGeometryRefresh(
-        for groupIDs: Set<SnapGroupID>
+        for groupIDs: Set<SnapGroupID>,
+        fastRetryGroupIDs: Set<SnapGroupID>? = nil
     ) {
         let activeGroupIDs = Set(explicitGroupStore.groups.map(\.id))
         handleGeometryFailureCountsByGroupID =
@@ -191,8 +281,10 @@ extension SnapController {
         for groupID in groupIDs {
             handleGeometryFailureCountsByGroupID[groupID, default: 0] += 1
         }
-        guard scheduledHandleGeometryRetryGeneration == nil else { return }
-        let retryableCounts = groupIDs.compactMap { groupID -> Int? in
+        let groupsEligibleForFastRetry = fastRetryGroupIDs ?? groupIDs
+        guard !groupsEligibleForFastRetry.isEmpty,
+              scheduledHandleGeometryRetryGeneration == nil else { return }
+        let retryableCounts = groupsEligibleForFastRetry.compactMap { groupID -> Int? in
             guard let count = handleGeometryFailureCountsByGroupID[groupID],
                   count <= 6 else { return nil }
             return count
@@ -224,7 +316,8 @@ extension SnapController {
     }
 
     func updateGroupWindowServerEvidence(
-        using visibleWindows: [ManagedWindow]
+        using visibleWindows: [ManagedWindow],
+        windowServerSnapshot: [WindowOcclusionSnapshot]
     ) {
         let activeMemberIDs = explicitGroupStore.groups.reduce(
             into: Set<String>()
@@ -237,8 +330,24 @@ extension SnapController {
             }
         for window in visibleWindows where
             activeMemberIDs.contains(window.stableIdentity) {
-            guard let placement = lockedPlacements[window.stableIdentity],
-                  let windowID = window.cgWindowID else { continue }
+            guard lockedPlacements[window.stableIdentity] != nil,
+                  let windowID = window.cgWindowID,
+                  let surface = windowServerSnapshot.first(where: {
+                      $0.pid == window.pid
+                          && $0.windowID == windowID
+                          && $0.layer == 0
+                  }), GroupWindowServerEvidenceBaselinePolicy
+                    .framesRepresentTheSameDesktopGeometry(
+                        accessibilityFrame: window.frame,
+                        windowServerFrame: surface.frame
+                    ) else {
+                // During Mission Control AX keeps reporting desktop geometry
+                // while Window Server scales the physical surface. Never
+                // replace the last proven desktop baseline with transformed
+                // geometry. The same rule also prevents a stale placement
+                // frame from coupling resize settlement to transition proof.
+                continue
+            }
             if let previous = lastGroupWindowServerEvidenceByIdentity[
                 window.stableIdentity
             ], previous.pid != window.pid
@@ -253,9 +362,49 @@ extension SnapController {
                     stableIdentity: window.stableIdentity,
                     pid: window.pid,
                     windowID: windowID,
-                    expectedFrame: placement.appliedFrame
+                    expectedFrame: window.frame
                 )
         }
+    }
+
+    func groupWindowServerEvidenceHasNormalGeometry(
+        _ evidence: GroupWindowServerEvidence,
+        snapshot: [WindowOcclusionSnapshot]
+    ) -> Bool {
+        guard let windowID = evidence.windowID,
+              let surface = snapshot.first(where: {
+                  $0.pid == evidence.pid
+                      && $0.windowID == windowID
+                      && $0.layer == 0
+              }), evidence.expectedFrame.width > 1,
+                 evidence.expectedFrame.height > 1 else {
+            return false
+        }
+        let widthScale = surface.frame.width / evidence.expectedFrame.width
+        let heightScale = surface.frame.height / evidence.expectedFrame.height
+        return abs(widthScale - 1)
+                < GroupPresentationTransitionPolicy.defaultMinimumScaleDelta
+            && abs(heightScale - 1)
+                < GroupPresentationTransitionPolicy.defaultMinimumScaleDelta
+    }
+
+    func normalGeometryVisibleGroupMemberIDs(
+        visibleWindows: [ManagedWindow],
+        snapshot: [WindowOcclusionSnapshot]
+    ) -> Set<String> {
+        Set(visibleWindows.compactMap { window -> String? in
+            guard let expected = lastGroupWindowServerEvidenceByIdentity[
+                window.stableIdentity
+            ], expected.pid == window.pid,
+               expected.windowID == window.cgWindowID,
+               groupWindowServerEvidenceHasNormalGeometry(
+                   expected,
+                   snapshot: snapshot
+               ) else {
+                return nil
+            }
+            return window.stableIdentity
+        })
     }
 
     func missionControlTransitionIsCurrentlyObserved(
@@ -271,28 +420,17 @@ extension SnapController {
         let snapshot = windowService.windowOcclusionSnapshot()
         let normalGeometryMemberIDs = Set(evidence.compactMap { expected
             -> String? in
-            guard let windowID = expected.windowID,
-                  let surface = snapshot.first(where: {
-                      $0.pid == expected.pid
-                          && $0.windowID == windowID
-                          && $0.layer == 0
-                  }), expected.expectedFrame.width > 1,
-                  expected.expectedFrame.height > 1 else { return nil }
-            let widthScale = surface.frame.width / expected.expectedFrame.width
-            let heightScale = surface.frame.height / expected.expectedFrame.height
-            guard abs(widthScale - 1)
-                    < GroupPresentationTransitionPolicy.defaultMinimumScaleDelta,
-                  abs(heightScale - 1)
-                    < GroupPresentationTransitionPolicy.defaultMinimumScaleDelta else {
-                return nil
-            }
-            return expected.stableIdentity
+            groupWindowServerEvidenceHasNormalGeometry(
+                expected,
+                snapshot: snapshot
+            ) ? expected.stableIdentity : nil
         })
-        return GroupPresentationTransitionPolicy.shouldPreserveLastPresentation(
+        return GroupPresentationTransitionPolicy.observe(
             evidence: evidence,
+            expectedMemberCount: group.memberIDs.count,
             visibleMemberIDs: normalGeometryMemberIDs,
             snapshot: snapshot
-        )
+        ) == .transformed
     }
 
     func shouldPreserveGroupPresentationDuringWindowServerTransform(
@@ -306,105 +444,127 @@ extension SnapController {
         }
         let snapshot = providedSnapshot
             ?? windowService.windowOcclusionSnapshot()
-        let evidence = explicitGroupStore.groups.flatMap { group in
-            group.memberIDs.compactMap {
+        let normalGeometryMemberIDs = normalGeometryVisibleGroupMemberIDs(
+            visibleWindows: visibleWindows,
+            snapshot: snapshot
+        )
+        var observations: [SnapGroupID: GroupPresentationTransitionObservation] = [:]
+
+        for group in explicitGroupStore.groups {
+            let evidence = group.memberIDs.compactMap {
                 lastGroupWindowServerEvidenceByIdentity[$0]
             }
-        }
-        guard evidence.count == explicitGroupStore.connectedMemberCount else {
-            resetGroupPresentationTransitionRecovery()
-            return false
-        }
-        let visibleMemberIDs = Set(visibleWindows.compactMap { window
-            -> String? in
-            guard let expected = lastGroupWindowServerEvidenceByIdentity[
-                window.stableIdentity
-            ], expected.pid == window.pid,
-               expected.windowID == window.cgWindowID,
-               let windowID = expected.windowID,
-               let serverWindow = snapshot.first(where: {
-                   $0.windowID == windowID
-                       && $0.pid == expected.pid
-                       && $0.layer == 0
-               }), expected.expectedFrame.width > 1,
-               expected.expectedFrame.height > 1 else { return nil }
-            let widthScale = serverWindow.frame.width
-                / expected.expectedFrame.width
-            let heightScale = serverWindow.frame.height
-                / expected.expectedFrame.height
-            guard abs(widthScale - 1)
-                    < GroupPresentationTransitionPolicy
-                        .defaultMinimumScaleDelta,
-                  abs(heightScale - 1)
-                    < GroupPresentationTransitionPolicy
-                        .defaultMinimumScaleDelta else {
-                return nil
-            }
-            return window.stableIdentity
-        })
-        if visibleMemberIDs.count == evidence.count {
-            let presentationNeedsOrderingRevalidation =
-                groupPresentationRecoveryDeadline != nil
-                || isPreservingGroupPresentationForWindowServerTransform
-            if presentationNeedsOrderingRevalidation {
-                missionControlGroupProxyController
-                    .requireOrderingRevalidation()
-            }
-            resetGroupPresentationTransitionRecovery()
-            return false
-        }
-        guard GroupPresentationTransitionPolicy.unresolvedMembersRemainLive(
-            evidence: evidence,
-            visibleMemberIDs: visibleMemberIDs,
-            snapshot: snapshot
-        ) else {
-            resetGroupPresentationTransitionRecovery()
-            return false
+            observations[group.id] = GroupPresentationTransitionPolicy.observe(
+                evidence: evidence,
+                expectedMemberCount: group.memberIDs.count,
+                visibleMemberIDs: normalGeometryMemberIDs.intersection(
+                    group.memberIDs
+                ),
+                snapshot: snapshot
+            )
         }
 
+        let transformedGroupIDs = Set(observations.compactMap { groupID, state in
+            state == .transformed ? groupID : nil
+        })
+        let unresolvedLiveGroupIDs = Set(observations.compactMap { groupID, state in
+            state == .unresolvedLive ? groupID : nil
+        })
+        let normalGroupIDs = Set(observations.compactMap { groupID, state in
+            state == .normal ? groupID : nil
+        })
         let now = ProcessInfo.processInfo.systemUptime
-        if GroupPresentationTransitionPolicy.shouldPreserveLastPresentation(
-            evidence: evidence,
-            visibleMemberIDs: visibleMemberIDs,
-            snapshot: snapshot
-        ) {
-            for group in explicitGroupStore.groups {
-                let groupEvidence = group.memberIDs.compactMap {
-                    lastGroupWindowServerEvidenceByIdentity[$0]
-                }
-                guard groupEvidence.count == group.memberIDs.count else {
-                    continue
-                }
-                let visibleGroupMemberIDs = visibleMemberIDs.intersection(
-                    group.memberIDs
+        let groupsByID = Dictionary(
+            uniqueKeysWithValues: explicitGroupStore.groups.map {
+                ($0.id, $0)
+            }
+        )
+        groupPresentationTransitionLeasesByGroupID =
+            groupPresentationTransitionLeasesByGroupID.filter {
+                groupID, lease in
+                guard let group = groupsByID[groupID] else { return false }
+                return GroupPresentationTransitionLeasePolicy.isValid(
+                    lease,
+                    groupID: groupID,
+                    memberIDs: group.memberIDs,
+                    now: now
                 )
-                if GroupPresentationTransitionPolicy
-                    .shouldPreserveLastPresentation(
-                        evidence: groupEvidence,
-                        visibleMemberIDs: visibleGroupMemberIDs,
-                        snapshot: snapshot
-                    ) {
-                    missionControlGroupProxyController
-                        .noteMissionControlTransitionObserved(groupID: group.id)
+            }
+        let authorizedUnavailableGroupIDs = Set<SnapGroupID>(
+            observations.compactMap { (groupID, state) -> SnapGroupID? in
+                guard state == .unavailable,
+                      let group = groupsByID[groupID],
+                      GroupPresentationTransitionLeasePolicy.isValid(
+                          groupPresentationTransitionLeasesByGroupID[groupID],
+                          groupID: groupID,
+                          memberIDs: group.memberIDs,
+                          now: now
+                      ) else {
+                    return nil
                 }
+                return groupID
+            }
+        )
+
+        if !transformedGroupIDs.isEmpty {
+            // Mission Control is a global Window Server transform, but the
+            // evidence authorizing it is group-local. One unrelated group with
+            // incomplete AX/CG evidence must not erase a transition already
+            // proven by another complete group. The controller's short-lived
+            // transform lease is independent from proxy selection authorization.
+            for groupID in transformedGroupIDs {
+                guard let group = groupsByID[groupID] else { continue }
+                groupPresentationTransitionLeasesByGroupID[groupID] =
+                    GroupPresentationTransitionLeasePolicy.make(
+                        groupID: groupID,
+                        memberIDs: group.memberIDs,
+                        now: now
+                    )
+                // This is separate selection authorization. It is issued only
+                // to a safely presented proxy and is never read back as the
+                // controller's transform-preservation evidence.
+                missionControlGroupProxyController
+                    .noteMissionControlTransitionObserved(groupID: groupID)
             }
             groupPresentationRecoveryDeadline = max(
                 groupPresentationRecoveryDeadline ?? 0,
-                now + 1.25
+                now + GroupPresentationTransitionLeasePolicy.lifetime
             )
             return true
         }
 
-        if let deadline = groupPresentationRecoveryDeadline {
-            guard now <= deadline else {
+        if !unresolvedLiveGroupIDs.isEmpty
+            || !authorizedUnavailableGroupIDs.isEmpty {
+            // A group that already proved the transform may lose one evidence
+            // sample without losing its still-valid group-scoped transform
+            // lease. Unavailable evidence never starts or extends that bounded
+            // lease by itself.
+            guard let deadline = groupPresentationRecoveryDeadline,
+                  now <= deadline else {
+                // AX/Window Server disagreement by itself is common during
+                // ordinary resize, application throttling and constraint
+                // settlement. It may continue a transform already proven by
+                // an isotropically scaled group, but it cannot start a global
+                // Mission Control preservation transaction on its own.
                 resetGroupPresentationTransitionRecovery()
                 return false
             }
-        } else {
-            groupPresentationRecoveryDeadline = now + 1.25
+            scheduleGroupPresentationRecoveryChecksIfNeeded()
+            return true
         }
-        scheduleGroupPresentationRecoveryChecksIfNeeded()
-        return true
+
+        let presentationNeedsOrderingRevalidation =
+            groupPresentationRecoveryDeadline != nil
+            || isPreservingGroupPresentationForWindowServerTransform
+        if presentationNeedsOrderingRevalidation, !normalGroupIDs.isEmpty {
+            // Revalidate only groups whose own normal desktop evidence is back.
+            // An unrelated unavailable group must not demote a valid proxy.
+            missionControlGroupProxyController.requireOrderingRevalidation(
+                groupIDs: normalGroupIDs
+            )
+        }
+        resetGroupPresentationTransitionRecovery()
+        return false
     }
 
     func scheduleGroupPresentationRecoveryChecksIfNeeded() {
@@ -428,14 +588,40 @@ extension SnapController {
         }
     }
 
+    func invalidateGroupPresentationTransitionState(
+        for groupIDs: Set<SnapGroupID>
+    ) {
+        guard !groupIDs.isEmpty else { return }
+        groupPresentationTransitionLeasesByGroupID =
+            GroupPresentationTransitionLeasePolicy.retainingUnretired(
+                groupPresentationTransitionLeasesByGroupID,
+                retiring: groupIDs
+            )
+    }
+
+    func retireGroupPresentationTransitionState(
+        for retiredGroupIDs: Set<SnapGroupID>
+    ) {
+        invalidateGroupPresentationTransitionState(for: retiredGroupIDs)
+
+        // Whole-group departure remains intentionally strong, but its
+        // presentation cleanup is group-scoped. Only a genuinely global
+        // application/OS transition may invalidate unrelated groups' leases.
+        if explicitGroupStore.groups.isEmpty {
+            resetGroupPresentationTransitionRecovery()
+        }
+    }
+
     func resetGroupPresentationTransitionRecovery() {
         guard groupPresentationRecoveryDeadline != nil
+                || !groupPresentationTransitionLeasesByGroupID.isEmpty
                 || groupPresentationRecoveryChecksAreScheduled
                 || isPreservingGroupPresentationForWindowServerTransform else {
             return
         }
         groupPresentationRecoveryGeneration &+= 1
         groupPresentationRecoveryDeadline = nil
+        groupPresentationTransitionLeasesByGroupID.removeAll()
         groupPresentationRecoveryChecksAreScheduled = false
         isPreservingGroupPresentationForWindowServerTransform = false
     }
@@ -444,6 +630,14 @@ extension SnapController {
         force: Bool = false,
         using providedSnapshot: [WindowOcclusionSnapshot]? = nil
     ) {
+        if ResizeHandlePresentationOwnershipPolicy
+            .missionControlSelectionOwnsPresentation(
+                activationIsActive:
+                    missionControlSelectionTransactionIsActive
+            ) {
+            resizeHandleOverlay.setPresentationSuspended(true)
+            return
+        }
         guard !isPreservingGroupPresentationForWindowServerTransform else {
             resizeHandleOverlay.setPresentationSuspended(true)
             return
@@ -456,7 +650,7 @@ extension SnapController {
               manualResizeWindow == nil,
               activeSession == nil,
               !isAssistPlacementPending,
-              !isApplicationUIVisible else { return }
+              !isApplicationInteractionSuppressed else { return }
         let now = ProcessInfo.processInfo.systemUptime
         guard force || now - lastHandleOcclusionRefreshAt
             >= handleOcclusionRefreshInterval else { return }
@@ -502,9 +696,15 @@ extension SnapController {
         )
         resizeHandleOverlay.setInputSuspended(false)
         resizeHandleOverlay.setPresentationSuspended(false)
+        lastPresentableResizeHandleDescriptors = visibleDescriptors.filter {
+            !quarantinedResizeHandleIDs.contains($0.id)
+        }
         hasValidatedCurrentHandleGeometry = visibleDescriptors.contains {
             !quarantinedResizeHandleIDs.contains($0.id)
         } || (!hasIncompleteDescriptor && visibleDescriptors.isEmpty)
+        evaluateHandlePresentationLiveness(
+            expectedDescriptors: lastPresentableResizeHandleDescriptors
+        )
         if hasIncompleteDescriptor {
             for descriptor in validatedDescriptors {
                 handleOcclusionFailureCountsByDescriptorID.removeValue(
@@ -515,6 +715,94 @@ extension SnapController {
         } else {
             resetIncompleteHandleOcclusionRecovery()
         }
+    }
+
+    func evaluateHandlePresentationLiveness(
+        expectedDescriptors: [ResizeHandleDescriptor]
+    ) {
+        let presentedIDs = resizeHandleOverlay.presentedBoundaryIDs
+        let activeGroups = explicitGroupStore.groups
+        let activeGroupIDs = Set(activeGroups.map(\.id))
+        handleLivenessFailureCountsByGroupID =
+            handleLivenessFailureCountsByGroupID.filter {
+                activeGroupIDs.contains($0.key)
+            }
+
+        var missingGroupIDs = Set<SnapGroupID>()
+        for group in activeGroups {
+            let expectedIDs = Set(expectedDescriptors.compactMap { descriptor in
+                descriptor.participantIDs.isSubset(of: group.memberIDs)
+                    ? descriptor.id : nil
+            })
+            guard !expectedIDs.isEmpty else {
+                handleLivenessFailureCountsByGroupID.removeValue(
+                    forKey: group.id
+                )
+                continue
+            }
+            if expectedIDs.isDisjoint(with: presentedIDs) {
+                missingGroupIDs.insert(group.id)
+                handleLivenessFailureCountsByGroupID[group.id, default: 0] += 1
+            } else {
+                handleLivenessFailureCountsByGroupID.removeValue(
+                    forKey: group.id
+                )
+            }
+        }
+
+        guard !missingGroupIDs.isEmpty else {
+            resetScheduledHandleLivenessRetryIfDebtCleared()
+            return
+        }
+        scheduleHandlePresentationLivenessRetry(for: missingGroupIDs)
+    }
+
+    func scheduleHandlePresentationLivenessRetry(
+        for groupIDs: Set<SnapGroupID>
+    ) {
+        guard scheduledHandleLivenessRetryGeneration == nil else { return }
+        let retryable = groupIDs.compactMap { groupID -> Int? in
+            guard let count = handleLivenessFailureCountsByGroupID[groupID],
+                  count <= 6 else { return nil }
+            return count
+        }
+        guard let earliestDebt = retryable.min() else {
+            // Bounded fast retry is exhausted. The independent one-second
+            // Recovery watchdog owns the remaining liveness debt.
+            return
+        }
+        handleLivenessRetryGeneration &+= 1
+        let generation = handleLivenessRetryGeneration
+        scheduledHandleLivenessRetryGeneration = generation
+        let delay: TimeInterval
+        switch earliestDebt {
+        case 1...2: delay = 0.05
+        case 3...4: delay = 0.12
+        default: delay = 0.30
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self,
+                  self.scheduledHandleLivenessRetryGeneration == generation
+            else { return }
+            self.scheduledHandleLivenessRetryGeneration = nil
+            guard !self.handleLivenessFailureCountsByGroupID.isEmpty else {
+                return
+            }
+            self.refreshResizeHandles()
+        }
+    }
+
+    func resetScheduledHandleLivenessRetryIfDebtCleared() {
+        guard handleLivenessFailureCountsByGroupID.isEmpty,
+              scheduledHandleLivenessRetryGeneration != nil else { return }
+        handleLivenessRetryGeneration &+= 1
+        scheduledHandleLivenessRetryGeneration = nil
+    }
+
+    func resetHandlePresentationLivenessRecovery() {
+        handleLivenessFailureCountsByGroupID.removeAll()
+        handleLivenessRetryGeneration &+= 1
+        scheduledHandleLivenessRetryGeneration = nil
     }
 
     func verifiedOccludingFrames(
@@ -629,6 +917,7 @@ extension SnapController {
                       !self.isHandleResizeFinalizing else { return }
                 guard self.pendingSelectionRaiseWorkItem == nil,
                       self.pendingGroupRaiseWorkItem == nil,
+                      !self.missionControlSelectionTransactionIsActive,
                       !self.hasDeferredSelectionSignal else { return }
                 self.refreshResizeHandles()
             }
@@ -669,6 +958,9 @@ extension SnapController {
                   let vertical = descriptors.first(where: { $0.axis == .vertical }),
                   [horizontal.id, vertical.id].sorted().joined(separator: "::")
                     == presentedID,
+                  !horizontal.participantIDs.isDisjoint(
+                      with: vertical.participantIDs
+                  ),
                   horizontal.span.contains(vertical.coordinate),
                   vertical.span.contains(horizontal.coordinate) else {
                 rejectHandleResizeStart()
@@ -682,7 +974,7 @@ extension SnapController {
         }
         let allParticipantIDs = canonicalInteraction.participantIDs
 
-        let visibleWindows = managedVisibleWindows()
+        let visibleWindows = managedExplicitGroupWindows()
         let windowsByIdentity = Dictionary(
             visibleWindows.map { ($0.stableIdentity, $0) },
             uniquingKeysWith: { first, _ in first }
@@ -696,22 +988,27 @@ extension SnapController {
         }
 
         var participants: [String: HandleResizeParticipant] = [:]
-        let tolerance = CGFloat(settings.layoutIntrusionTolerance)
         for identity in allParticipantIDs {
             guard let window = windowsByIdentity[identity],
-                  windowService.canMoveAndResize(window),
+                  windowService.canMoveAndResize(
+                      window,
+                      messagingTimeout: AXMessagingTimeoutPolicy.interactiveOperation
+                  ),
                   let placement = lockedPlacements[identity],
                   placement.displayID == displayID else { continue }
-            let reference = constraintReference(
-                for: window,
-                zone: placement.zone,
-                on: screen
-            )
+            let resolvedIdentity = resolveAppConstraintIdentity(for: window)
+            let limits = resolvedIdentity.map {
+                appConstraintRegistry.limits(for: $0.identity)
+            } ?? .unknown
+            let learningIdentity = windowService.isEligibleForConstraintLearning(window)
+                ? resolvedIdentity : nil
             participants[identity] = HandleResizeParticipant(
                 window: window,
                 zone: placement.zone,
                 originalFrame: window.frame,
-                constraintReference: reference,
+                appConstraintIdentity: learningIdentity?.identity,
+                appConstraintDisplayName: learningIdentity?.displayName ?? "App",
+                appConstraintLimits: limits,
                 targetFrame: window.frame
             )
         }
@@ -736,14 +1033,24 @@ extension SnapController {
                     return
                 }
                 sides[identity] = side
-                let referenceLength = descriptor.axis == .horizontal
-                    ? participant.constraintReference.width
-                    : participant.constraintReference.height
+                let minimumLength: CGFloat
+                let maximumLength: CGFloat?
+                switch descriptor.axis {
+                case .horizontal:
+                    minimumLength = participant.appConstraintLimits.minWidth
+                        ?? SystemGeometryPolicy.minimumWindowLength
+                    maximumLength = participant.appConstraintLimits.maxWidth
+                case .vertical:
+                    minimumLength = participant.appConstraintLimits.minHeight
+                        ?? SystemGeometryPolicy.minimumWindowLength
+                    maximumLength = participant.appConstraintLimits.maxHeight
+                }
                 geometry.append(SplitResizeParticipantGeometry(
                     stableIdentity: identity,
                     frame: participant.originalFrame,
                     side: side,
-                    minimumLength: max(referenceLength * (1 - tolerance), 1)
+                    minimumLength: minimumLength,
+                    maximumLength: maximumLength
                 ))
             }
             guard sides.count == descriptor.participantIDs.count,
@@ -840,6 +1147,11 @@ extension SnapController {
             liveIdentities: liveIdentities,
             virtualIdentities: virtualIdentities,
             schedulerGeneration: schedulerGeneration,
+            constraintRegistryGeneration: appConstraintRegistry.generation,
+            operationGeneration: interactionGeneration,
+            departureSnapshot: explicitGroupDepartureSnapshot(
+                containing: mainWindow.stableIdentity
+            ),
             snapshots: snapshots,
             participants: participants,
             boundaries: boundaries
@@ -862,7 +1174,9 @@ extension SnapController {
         participantIDs: Set<String>,
         visibleWindows: [ManagedWindow]
     ) -> ManagedWindow? {
-        if let focused = windowService.focusedWindow(),
+        if let focused = windowService.focusedWindow(
+            messagingTimeout: AXMessagingTimeoutPolicy.interactiveOperation
+        ),
            participantIDs.contains(focused.stableIdentity),
            let matching = visibleWindows.first(where: {
                $0.stableIdentity == focused.stableIdentity
@@ -878,6 +1192,7 @@ extension SnapController {
     ) {
         guard var session = handleResizeSession,
               session.interactionID == interaction.id else { return }
+        var effectiveBoundaryChanged = false
         for index in session.boundaries.indices {
             var boundary = session.boundaries[index]
             let proposed = boundary.descriptor.axis == .horizontal ? point.x : point.y
@@ -885,8 +1200,18 @@ extension SnapController {
                 max(proposed, boundary.allowedBoundary.lowerBound),
                 boundary.allowedBoundary.upperBound
             )
+            if abs(coordinate - boundary.coordinate) > 0.001 {
+                effectiveBoundaryChanged = true
+            }
             boundary.coordinate = coordinate
             session.boundaries[index] = boundary
+        }
+        guard effectiveBoundaryChanged else {
+            // The pointer may continue beyond a learned min/max. Once the
+            // clamped boundary stops moving, do not rebuild frames or enqueue
+            // redundant AX writes/overlay work.
+            handleResizeSession = session
+            return
         }
         let targetFrames = HandleResizeGeometry.resizedFrames(
             originalFrames: session.participants.mapValues(\.originalFrame),
@@ -965,9 +1290,11 @@ extension SnapController {
                 span: descriptor.span,
                 screenFrame: descriptor.screenFrame,
                 participantIDs: descriptor.participantIDs,
+                occlusionParticipants: descriptor.occlusionParticipants,
                 presentationStyle: descriptor.presentationStyle,
                 showsResizeCursorAdornment: descriptor.showsResizeCursorAdornment,
-                resizeCursorAdornmentDistance: descriptor.resizeCursorAdornmentDistance
+                resizeCursorAdornmentDistance: descriptor.resizeCursorAdornmentDistance,
+                junctionExclusionSpans: descriptor.junctionExclusionSpans
             )
         }
         quarantinedResizeHandleIDs.removeAll()
@@ -999,25 +1326,68 @@ extension SnapController {
         guard isHandleResizeFinalizing,
               finalizingHandleResizeSession?.schedulerGeneration
                 == session.schedulerGeneration else { return }
-        let operationGeneration = interactionGeneration
         let identities = Set(session.participants.keys)
+        let boundaryActuallyMoved = session.boundaries.contains { boundary in
+            abs(boundary.coordinate - boundary.descriptor.coordinate) > 0.001
+        }
+        guard boundaryActuallyMoved else {
+            // A click/release on a control is not a resize. Do not manufacture
+            // final AX writes or passive learning evidence for a no-op.
+            finishHandleResizePresentation(
+                identities: identities,
+                schedulerGeneration: session.schedulerGeneration
+            )
+            return
+        }
         var pending = session.participants.count
         var allSucceeded = true
         var acceptedWindows: [String: ManagedWindow] = [:]
+        var confirmedRejections: [ConfirmedConstraintRejection] = []
+        var seenPersistentRejectionKeys = Set<String>()
+        var measurementWindowIdentityByApp:
+            [AppConstraintIdentity: String] = [:]
+        var permissionRequests:
+            [AppConstraintIdentity: ConstraintRecordingPermissionRequest] = [:]
+        let measurementEpsilon = SystemGeometryPolicy.measurementEpsilon(
+            backingScaleFactor: screen(withDisplayID: session.displayID)?
+                .backingScaleFactor ?? 1
+        )
 
         for (identity, participant) in session.participants {
-            windowService.setFrameAnchoredReliably(
+            let activeAxes = Set(session.boundaries.compactMap { boundary
+                -> ConstraintProbeAxis? in
+                HandleResizeConstraintEvidencePolicy.activeAxis(
+                    boundaryAxis: boundary.descriptor.axis,
+                    originalCoordinate: boundary.descriptor.coordinate,
+                    finalCoordinate: boundary.coordinate,
+                    participantOwnsBoundary: boundary.sides[identity] != nil
+                )
+            })
+            var requiredCommitSizeAxes: AXFrameSizeAxes = []
+            if activeAxes.contains(.width) {
+                requiredCommitSizeAxes.insert(.width)
+            }
+            if activeAxes.contains(.height) {
+                requiredCommitSizeAxes.insert(.height)
+            }
+            windowService.setFrameAnchoredObserved(
                 participant.targetFrame,
                 sizeConstraintAnchor: participant.zone.sizeConstraintAnchor,
                 requiredOuterEdges: participant.zone.requiredOuterEdges,
+                requiredCommitSizeAxes: requiredCommitSizeAxes.isEmpty
+                    ? nil : requiredCommitSizeAxes,
                 skipInitialWriteWhenVerified: session.liveIdentities.contains(identity),
-                for: participant.window.element
-            ) { [weak self] succeeded in
+                for: participant.window.element,
+                pid: participant.window.pid
+            ) { [weak self] observation in
                 guard let self else { return }
                 guard self.isHandleResizeFinalizing,
                       self.finalizingHandleResizeSession?.schedulerGeneration
                         == session.schedulerGeneration else { return }
-                let refreshed = self.windowService.refreshed(participant.window)
+
+                let refreshed = observation.acceptedFrame.map {
+                    participant.window.replacingFrame($0)
+                } ?? self.windowService.refreshed(participant.window)
                 let edgesMatch = refreshed.map {
                     self.matchesRequiredOuterEdges(
                         $0.frame,
@@ -1025,21 +1395,140 @@ extension SnapController {
                         requiredEdges: participant.zone.requiredOuterEdges
                     )
                 } ?? false
-                allSucceeded = allSucceeded && succeeded && edgesMatch
+                let requiredSizeMatch = refreshed.map {
+                    AXFrameSizePolicy.requiredSizeIsCorrect(
+                        actual: $0.frame.size,
+                        target: participant.targetFrame.size,
+                        exactAxes: requiredCommitSizeAxes
+                    )
+                } ?? false
+                allSucceeded = allSucceeded
+                    && requiredSizeMatch
+                    && AXFrameMutationCommitPolicy.accepts(
+                        observation,
+                        requiredOuterEdgesMatch: edgesMatch
+                    )
                 if let refreshed {
                     acceptedWindows[identity] = refreshed
                 }
+
+                if let constraintIdentity = participant.appConstraintIdentity,
+                   let acceptedFrame = observation.acceptedFrame {
+                    let probe = ConstraintProbeContext(
+                        identity: constraintIdentity,
+                        displayName: participant.appConstraintDisplayName,
+                        requestedFrame: participant.targetFrame,
+                        acceptedFrame: acceptedFrame,
+                        activeAxes: activeAxes,
+                        mutationWasSent: observation.mutationWasSent,
+                        sizeMutationSucceeded: observation.sizeMutationSucceeded,
+                        acceptedFrameIsSettled:
+                            observation.acceptedFrameIsSettled,
+                        liveness: observation.liveness,
+                        screenLimitedAxes:
+                            SystemGeometryPolicy.screenLimitedAxes(
+                                requestedFrame: participant.targetFrame,
+                                acceptedFrame: acceptedFrame,
+                                activeAxes: activeAxes,
+                                screenFrame: session.screenFrame,
+                                epsilon: measurementEpsilon
+                            ),
+                        systemLimitedAxes:
+                            SystemGeometryPolicy.systemLimitedAxes(
+                                requestedFrame: participant.targetFrame,
+                                acceptedFrame: acceptedFrame,
+                                activeAxes: activeAxes,
+                                epsilon: measurementEpsilon
+                            ),
+                        peerLimitedAxes: [],
+                        measurementEpsilon: measurementEpsilon,
+                        operationGeneration: session.operationGeneration
+                    )
+                    if observation.settlementEvidence
+                        .authorizesPersistentConstraintLearning {
+                        let probeAnalysis = ConstraintProbe.analyze(probe)
+                        for rejection in probeAnalysis.confirmedRejections {
+                            let key = "\(rejection.identity.storageKey)|\(rejection.bound.rawValue)"
+                            if seenPersistentRejectionKeys.insert(key).inserted {
+                                confirmedRejections.append(rejection)
+                                let previousWindowIdentity =
+                                    measurementWindowIdentityByApp[
+                                        rejection.identity
+                                    ]
+                                measurementWindowIdentityByApp[
+                                    rejection.identity
+                                ] = min(
+                                    previousWindowIdentity
+                                        ?? participant.window.stableIdentity,
+                                    participant.window.stableIdentity
+                                )
+                            }
+                        }
+                    }
+                    // Axis ambiguity stays passive unknown evidence. The
+                    // passive resize itself never starts calibration; only a
+                    // later explicit choice in the permission prompt may do so.
+                }
+
                 pending -= 1
                 guard pending == 0 else { return }
 
-                if allSucceeded,
-                   self.interactionGeneration == operationGeneration {
-                    for (acceptedIdentity, accepted) in acceptedWindows {
-                        self.observeConstraint(
-                            for: accepted,
-                            requestedSize: session.participants[acceptedIdentity]?.targetFrame.size
-                                ?? accepted.frame.size
+                // Freeze learning evidence before structural cleanup. Candidate
+                // permission never authorizes the departure; only the already
+                // confirmed rejection does.
+                for rejection in confirmedRejections {
+                    let disposition = self.appConstraintRegistry
+                        .observeConfirmedRejection(
+                            rejection,
+                            popupEnabled:
+                                self.settings.constraintRecordingPromptsEnabled
                         )
+                    if disposition == .requestPermission {
+                        permissionRequests[rejection.identity] = self
+                            .mergedConstraintPermissionRequest(
+                                existing: permissionRequests[rejection.identity],
+                                identity: rejection.identity,
+                                displayName: rejection.displayName,
+                                windowStableIdentity:
+                                    measurementWindowIdentityByApp[
+                                        rejection.identity
+                                    ]
+                            )
+                    }
+                    // Contradiction/conflict remain verification debt. No
+                    // passive resize path starts ConstraintMeasurementEngine
+                    // without the later user-authorized prompt decision.
+                }
+
+                if !confirmedRejections.isEmpty {
+                    // Keep the app-accepted frames. A confirmed constraint
+                    // rejection retires only the relationship; rolling peers
+                    // back would re-issue geometry the application just refused.
+                    if let departure = session.departureSnapshot {
+                        _ = self.retireExplicitGroup(
+                            departure,
+                            reason: .confirmedConstraintRejection
+                        )
+                    } else {
+                        // Shared-resize handles are explicit-group owned. This
+                        // branch is defensive and still guarantees no stale
+                        // presentation survives an impossible legacy state.
+                        self.isHandleResizeFinalizing = false
+                        self.finalizingHandleResizeSession = nil
+                        self.inFlightPlacementIDs.subtract(identities)
+                        self.virtualResizeOverlay.hideAll()
+                        self.resizeHandleOverlay.endInteraction()
+                        self.refreshResizeHandles()
+                    }
+                    self.presentConstraintRecordingPermissionRequests(
+                        permissionRequests
+                    )
+                    return
+                }
+
+                if allSucceeded,
+                   self.interactionGeneration == session.operationGeneration {
+                    for (acceptedIdentity, accepted) in acceptedWindows {
                         if var placement = self.lockedPlacements[acceptedIdentity] {
                             placement.appliedFrame = accepted.frame
                             self.lockedPlacements[acceptedIdentity] = placement
@@ -1063,16 +1552,32 @@ extension SnapController {
                         schedulerGeneration: session.schedulerGeneration
                     )
                 } else {
+                    // AX unknown/transient failure is not destruction evidence.
+                    // Restore the pre-drag transaction and leave the group live.
+                    self.isHandleResizeRollbackActive = true
                     self.rollbackTransaction(session.snapshots) { [weak self] _ in
-                        self?.finishHandleResizePresentation(
+                        guard let self else { return }
+                        self.isHandleResizeRollbackActive = false
+                        self.finishHandleResizePresentation(
                             identities: identities,
                             schedulerGeneration: session.schedulerGeneration
+                        )
+                        // A Space/display transition, stop/disable, or newer
+                        // interaction may supersede the user-facing continuation
+                        // while the physical rollback is settling. Complete the
+                        // rollback, but never open a stale permission modal
+                        // from the old resize generation.
+                        guard self.interactionGeneration
+                                == session.operationGeneration else { return }
+                        self.presentConstraintRecordingPermissionRequests(
+                            permissionRequests
                         )
                     }
                 }
             }
         }
     }
+
 
     func finishHandleResizePresentation(
         identities: Set<String>,
@@ -1086,7 +1591,15 @@ extension SnapController {
         inFlightPlacementIDs.subtract(identities)
         virtualResizeOverlay.hideAll()
         resizeHandleOverlay.endInteraction()
-        refreshResizeHandles()
+        // Async settlement/rollback may finish after stop, disable, or another
+        // application-owned transaction has taken presentation ownership. A
+        // stale completion must not resurrect handles/proxies after that newer
+        // lifecycle transition.
+        if canRefreshPresentationAfterAsyncTransaction {
+            refreshResizeHandles()
+        } else {
+            resizeHandleOverlay.hideAll()
+        }
     }
 
     func cancelHandleResize(restoreOriginalFrames: Bool) {
@@ -1114,8 +1627,11 @@ extension SnapController {
                 )
                 return
             }
+            self.isHandleResizeRollbackActive = true
             self.rollbackTransaction(session.snapshots) { [weak self] _ in
-                self?.finishHandleResizePresentation(
+                guard let self else { return }
+                self.isHandleResizeRollbackActive = false
+                self.finishHandleResizePresentation(
                     identities: identities,
                     schedulerGeneration: session.schedulerGeneration
                 )

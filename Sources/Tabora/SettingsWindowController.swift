@@ -1,4 +1,21 @@
 import AppKit
+import CoreGraphics
+
+enum SettingsCategory: Int, CaseIterable {
+    case general
+    case commands
+    case tabRecords
+    case experimental
+
+    var title: String {
+        switch self {
+        case .general: return "一般"
+        case .commands: return "コマンド"
+        case .tabRecords: return "サイズ制約"
+        case .experimental: return "試験的機能"
+        }
+    }
+}
 
 enum SettingsScrollGeometry {
     static func topOrigin(
@@ -20,9 +37,23 @@ enum SettingsScrollGeometry {
 
 final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     var onVisibilityChange: ((Bool) -> Void)?
+    var onConstraintMeasurementWillBegin: (() -> Bool)?
+    var onConstraintMeasurementDidEnd: (() -> Void)?
+    var onMissionControlPreviewMemoryLimitChange: ((Int) -> Void)?
+    var onMissionControlPreviewCacheClear: (() -> Void)?
     private let settings = AppSettings.shared
     private let experimentalWorkspaceSettings = ExperimentalWorkspaceSettings.shared
     private let scrollView = NSScrollView()
+    private let settingsDocumentView = FlippedSettingsDocumentView()
+    private lazy var categoryControl = NSSegmentedControl(
+        labels: SettingsCategory.allCases.map(\.title),
+        trackingMode: .selectOne,
+        target: self,
+        action: #selector(changeSettingsCategory(_:))
+    )
+    private var categoryViews: [SettingsCategory: NSView] = [:]
+    private var categoryContentConstraints: [NSLayoutConstraint] = []
+    private var selectedCategory: SettingsCategory = .general
     private var recordingAction: ShortcutAction?
     private var keyMonitor: Any?
     private var shortcutButtons: [ShortcutAction: NSButton] = [:]
@@ -69,8 +100,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     )
     private let sideDwellDurationSlider = NSSlider()
     private let sideDwellDurationValue = NSTextField(labelWithString: "")
-    private let layoutIntrusionSlider = NSSlider()
-    private let layoutIntrusionValue = NSTextField(labelWithString: "")
     private let workspaceEdgeDelayStatus = NSTextField(labelWithString: "確認中…")
     private lazy var delayWorkspaceEdgeButton = NSButton(
         title: "Space移動を60秒まで遅延",
@@ -82,6 +111,30 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         target: self,
         action: #selector(resetWorkspaceEdgeDelay)
     )
+    private let previewMemoryLimitSlider = NSSlider()
+    private let previewMemoryLimitValue = NSTextField(labelWithString: "")
+    private lazy var clearPreviewCacheButton = NSButton(
+        title: "画像キャッシュを解放",
+        target: self,
+        action: #selector(clearMissionControlPreviewCache)
+    )
+    private let constraintRegistry = AppConstraintRegistry.shared
+    private let constraintIdentityResolver = AppConstraintIdentityResolver()
+    private let constraintWindowService = AXWindowService()
+    private lazy var constraintMeasurementEngine = ConstraintMeasurementEngine(
+        windowService: constraintWindowService
+    )
+    private let constraintMeasurementProgressPanel =
+        ConstraintMeasurementProgressPanel()
+    private let constraintPromptCheckbox = NSButton(
+        checkboxWithTitle: "新しいサイズ制約を確認",
+        target: nil,
+        action: nil
+    )
+    private let constraintRecordsStack = NSStackView()
+    private var constraintIdentitiesByControlID: [String: AppConstraintIdentity] = [:]
+    private var constraintMeasurementInProgress = false
+    private var constraintMeasurementOperationActive = false
 
     init() {
         let window = NSWindow(
@@ -106,6 +159,18 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         finishRecording()
+        constraintMeasurementProgressPanel.dismiss()
+        if constraintMeasurementOperationActive {
+            constraintMeasurementEngine.cancel { [weak self] _ in
+                guard let self else { return }
+                self.constraintMeasurementOperationActive = false
+                self.constraintMeasurementInProgress = false
+                self.onConstraintMeasurementDidEnd?()
+            }
+        } else if constraintMeasurementInProgress {
+            constraintMeasurementInProgress = false
+            refreshConstraintRecords()
+        }
         DispatchQueue.main.async { [weak self] in
             self?.onVisibilityChange?(false)
         }
@@ -130,38 +195,53 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     private func buildUI() {
         guard let content = window?.contentView else { return }
+
+        categoryControl.translatesAutoresizingMaskIntoConstraints = false
+        categoryControl.segmentStyle = .rounded
+        categoryControl.selectedSegment = selectedCategory.rawValue
+        content.addSubview(categoryControl)
+
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.hasVerticalScroller = true
         scrollView.drawsBackground = false
         content.addSubview(scrollView)
         NSLayoutConstraint.activate([
+            categoryControl.topAnchor.constraint(equalTo: content.topAnchor, constant: 16),
+            categoryControl.centerXAnchor.constraint(equalTo: content.centerXAnchor),
+            categoryControl.leadingAnchor.constraint(greaterThanOrEqualTo: content.leadingAnchor, constant: 28),
+            categoryControl.trailingAnchor.constraint(lessThanOrEqualTo: content.trailingAnchor, constant: -28),
             scrollView.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            scrollView.topAnchor.constraint(equalTo: content.topAnchor),
+            scrollView.topAnchor.constraint(equalTo: categoryControl.bottomAnchor, constant: 14),
             scrollView.bottomAnchor.constraint(equalTo: content.bottomAnchor)
         ])
 
-        let documentView = FlippedSettingsDocumentView()
-        documentView.translatesAutoresizingMaskIntoConstraints = false
-        scrollView.documentView = documentView
+        settingsDocumentView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.documentView = settingsDocumentView
         NSLayoutConstraint.activate([
-            documentView.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
-            documentView.heightAnchor.constraint(greaterThanOrEqualTo: scrollView.contentView.heightAnchor)
+            settingsDocumentView.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
+            settingsDocumentView.heightAnchor.constraint(greaterThanOrEqualTo: scrollView.contentView.heightAnchor)
         ])
 
+        categoryViews = [
+            .general: makeGeneralSettingsView(),
+            .commands: makeCommandSettingsView(),
+            .tabRecords: makeTabRecordSettingsView(),
+            .experimental: makeExperimentalSettingsView()
+        ]
+        showSettingsCategory(selectedCategory, resetScroll: false)
+    }
+
+    private func makeSettingsStack() -> NSStackView {
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 14
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        documentView.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: documentView.leadingAnchor, constant: 28),
-            stack.trailingAnchor.constraint(equalTo: documentView.trailingAnchor, constant: -28),
-            stack.topAnchor.constraint(equalTo: documentView.topAnchor, constant: 26),
-            stack.bottomAnchor.constraint(equalTo: documentView.bottomAnchor, constant: -26)
-        ])
+        return stack
+    }
 
+    private func makeGeneralSettingsView() -> NSView {
+        let stack = makeSettingsStack()
         stack.addArrangedSubview(sectionTitle("一般"))
         launchCheckbox.target = self
         launchCheckbox.action = #selector(toggleLaunchAtLogin)
@@ -176,28 +256,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         previewNote.textColor = .secondaryLabelColor
         previewNote.maximumNumberOfLines = 0
         stack.addArrangedSubview(previewNote)
-
-        stack.addArrangedSubview(separator())
-        stack.addArrangedSubview(sectionTitle("実験的設定"))
-        let workspaceEdgeTitle = NSTextField(
-            labelWithString: "画面端でのSpace移動を遅延"
-        )
-        workspaceEdgeTitle.font = .systemFont(ofSize: 13, weight: .medium)
-        stack.addArrangedSubview(workspaceEdgeTitle)
-        let workspaceEdgeNote = NSTextField(
-            wrappingLabelWithString: "macOS全体の未公開Preferenceを変更します。将来のmacOSでは動作しない可能性があり、適用時にDockが再起動します。Tabora終了時には元へ戻しません。"
-        )
-        workspaceEdgeNote.textColor = .secondaryLabelColor
-        workspaceEdgeNote.maximumNumberOfLines = 0
-        stack.addArrangedSubview(workspaceEdgeNote)
-        workspaceEdgeDelayStatus.textColor = .secondaryLabelColor
-        stack.addArrangedSubview(workspaceEdgeDelayStatus)
-        let workspaceEdgeButtons = NSStackView(
-            views: [delayWorkspaceEdgeButton, resetWorkspaceEdgeButton]
-        )
-        workspaceEdgeButtons.orientation = .horizontal
-        workspaceEdgeButtons.spacing = 10
-        stack.addArrangedSubview(workspaceEdgeButtons)
 
         stack.addArrangedSubview(separator())
         stack.addArrangedSubview(sectionTitle("ウィンドウ移動"))
@@ -263,7 +321,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             (
                 .mac,
                 "つまみ表示（mac風）",
-                "中央のつまみだけを表示し、つまみを掴んだ時だけ一緒にリサイズします。"
+                "通常は中央のつまみだけを表示します。交点がある分割では交点操作を優先します。"
             ),
             (
                 .windows,
@@ -299,7 +357,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         }
         linkedResizeOptionsStack.addArrangedSubview(presentationStyleStack)
         let presentationStyleNote = NSTextField(
-            wrappingLabelWithString: "共有リサイズ処理は3方式で共通です。mac風だけ入力を中央のつまみに限定します。"
+            wrappingLabelWithString: "共有リサイズ処理は3方式で共通です。交点では1つの操作領域だけが入力を受け取ります。"
         )
         presentationStyleNote.textColor = .secondaryLabelColor
         presentationStyleNote.maximumNumberOfLines = 0
@@ -380,26 +438,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         stack.addArrangedSubview(linkedResizeOptionsStack)
 
         stack.addArrangedSubview(separator())
-        stack.addArrangedSubview(sectionTitle("最小サイズの判定"))
-        let intrusionScopeNote = NSTextField(
-            wrappingLabelWithString: "新しいスナップと分割ウィンドウのサイズ調整に共通で使用します。"
-        )
-        intrusionScopeNote.textColor = .secondaryLabelColor
-        intrusionScopeNote.maximumNumberOfLines = 0
-        stack.addArrangedSubview(intrusionScopeNote)
-        configureSlider(
-            layoutIntrusionSlider,
-            range: AppSettings.layoutIntrusionToleranceRange,
-            action: #selector(changeLayoutIntrusionTolerance(_:))
-        )
-        stack.addArrangedSubview(settingRow(
-            title: "スナップ保持の許容率",
-            detail: "配置領域がウィンドウの最小サイズをどの程度下回るまで、スナップを保持するか設定します。",
-            slider: layoutIntrusionSlider,
-            valueLabel: layoutIntrusionValue
-        ))
-
-        stack.addArrangedSubview(separator())
         stack.addArrangedSubview(sectionTitle("ドラッグ判定"))
         let detectionNote = NSTextField(wrappingLabelWithString: "画面の端や四隅が反応する範囲を調整します。")
         detectionNote.textColor = .secondaryLabelColor
@@ -450,8 +488,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         resetDetectionButton.bezelStyle = .rounded
         stack.addArrangedSubview(resetDetectionButton)
 
-        stack.addArrangedSubview(separator())
-        stack.addArrangedSubview(sectionTitle("キーボードショートカット"))
+        return stack
+    }
+
+    private func makeCommandSettingsView() -> NSView {
+        let stack = makeSettingsStack()
+        stack.addArrangedSubview(sectionTitle("コマンド"))
         let note = NSTextField(wrappingLabelWithString: "ボタンを押してキーを入力します。Escでキャンセルできます。")
         note.textColor = .secondaryLabelColor
         note.maximumNumberOfLines = 0
@@ -482,6 +524,141 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         stack.addArrangedSubview(grid)
 
         stack.addArrangedSubview(NSButton(title: "すべてのショートカットを消去", target: self, action: #selector(clearShortcuts)))
+
+        return stack
+    }
+
+    private func makeTabRecordSettingsView() -> NSView {
+        let stack = makeSettingsStack()
+        stack.addArrangedSubview(sectionTitle("アプリ別のサイズ制約"))
+        constraintPromptCheckbox.target = self
+        constraintPromptCheckbox.action = #selector(toggleConstraintRecordingPrompts)
+        stack.addArrangedSubview(constraintPromptCheckbox)
+        let constraintNote = NSTextField(
+            wrappingLabelWithString: "確認済みの制約を、配置と共有リサイズに使用します。"
+        )
+        constraintNote.textColor = .secondaryLabelColor
+        constraintNote.maximumNumberOfLines = 0
+        stack.addArrangedSubview(constraintNote)
+
+        constraintRecordsStack.orientation = .vertical
+        constraintRecordsStack.alignment = .leading
+        constraintRecordsStack.spacing = 12
+        stack.addArrangedSubview(constraintRecordsStack)
+        return stack
+    }
+
+    private func makeExperimentalSettingsView() -> NSView {
+        let stack = makeSettingsStack()
+        stack.addArrangedSubview(sectionTitle("試験的機能"))
+        let workspaceEdgeTitle = NSTextField(
+            labelWithString: "画面端でのSpace移動を遅延"
+        )
+        workspaceEdgeTitle.font = .systemFont(ofSize: 13, weight: .medium)
+        stack.addArrangedSubview(workspaceEdgeTitle)
+        let workspaceEdgeNote = NSTextField(
+            wrappingLabelWithString: "macOS全体の未公開Preferenceを変更します。将来のmacOSでは動作しない可能性があり、適用時にDockが再起動します。Tabora終了時には元へ戻しません。"
+        )
+        workspaceEdgeNote.textColor = .secondaryLabelColor
+        workspaceEdgeNote.maximumNumberOfLines = 0
+        stack.addArrangedSubview(workspaceEdgeNote)
+        workspaceEdgeDelayStatus.textColor = .secondaryLabelColor
+        stack.addArrangedSubview(workspaceEdgeDelayStatus)
+        let workspaceEdgeButtons = NSStackView(
+            views: [delayWorkspaceEdgeButton, resetWorkspaceEdgeButton]
+        )
+        workspaceEdgeButtons.orientation = .horizontal
+        workspaceEdgeButtons.spacing = 10
+        stack.addArrangedSubview(workspaceEdgeButtons)
+
+        stack.addArrangedSubview(separator())
+
+        let previewMemoryTitle = NSTextField(
+            labelWithString: "Mission Control画像メモリ"
+        )
+        previewMemoryTitle.font = .systemFont(ofSize: 13, weight: .medium)
+        stack.addArrangedSubview(previewMemoryTitle)
+        let previewMemoryNote = NSTextField(
+            wrappingLabelWithString: "ウィンドウ画像に使用するメモリ上限です。上限を増やすと、多数のウィンドウでも画像を高精細に保ちやすくなります。変更時は既存キャッシュだけを解放し、安全な通常画面で再取得します。"
+        )
+        previewMemoryNote.textColor = .secondaryLabelColor
+        previewMemoryNote.maximumNumberOfLines = 0
+        stack.addArrangedSubview(previewMemoryNote)
+
+        previewMemoryLimitSlider.minValue = Double(
+            AppSettings.missionControlPreviewMemoryLimitRange.lowerBound
+        )
+        previewMemoryLimitSlider.maxValue = Double(
+            AppSettings.missionControlPreviewMemoryLimitRange.upperBound
+        )
+        previewMemoryLimitSlider.numberOfTickMarks = 8
+        previewMemoryLimitSlider.allowsTickMarkValuesOnly = true
+        previewMemoryLimitSlider.isContinuous = false
+        previewMemoryLimitSlider.widthAnchor.constraint(
+            equalToConstant: 300
+        ).isActive = true
+        previewMemoryLimitSlider.target = self
+        previewMemoryLimitSlider.action = #selector(
+            changeMissionControlPreviewMemoryLimit
+        )
+        previewMemoryLimitValue.alignment = .right
+        previewMemoryLimitValue.font = .monospacedDigitSystemFont(
+            ofSize: 12,
+            weight: .regular
+        )
+        previewMemoryLimitValue.widthAnchor.constraint(
+            equalToConstant: 70
+        ).isActive = true
+        let previewMemoryRow = NSStackView(
+            views: [previewMemoryLimitSlider, previewMemoryLimitValue]
+        )
+        previewMemoryRow.orientation = .horizontal
+        previewMemoryRow.alignment = .centerY
+        previewMemoryRow.spacing = 12
+        stack.addArrangedSubview(previewMemoryRow)
+        stack.addArrangedSubview(clearPreviewCacheButton)
+
+        return stack
+    }
+
+    @objc private func changeSettingsCategory(_ sender: NSSegmentedControl) {
+        guard let category = SettingsCategory(rawValue: sender.selectedSegment) else {
+            return
+        }
+        finishRecording()
+        showSettingsCategory(category, resetScroll: true)
+    }
+
+    private func showSettingsCategory(
+        _ category: SettingsCategory,
+        resetScroll: Bool
+    ) {
+        guard let view = categoryViews[category] else { return }
+        selectedCategory = category
+        categoryControl.selectedSegment = category.rawValue
+
+        NSLayoutConstraint.deactivate(categoryContentConstraints)
+        categoryContentConstraints.removeAll()
+        for subview in settingsDocumentView.subviews {
+            subview.removeFromSuperview()
+        }
+
+        view.translatesAutoresizingMaskIntoConstraints = false
+        settingsDocumentView.addSubview(view)
+        categoryContentConstraints = [
+            view.leadingAnchor.constraint(equalTo: settingsDocumentView.leadingAnchor, constant: 28),
+            view.trailingAnchor.constraint(equalTo: settingsDocumentView.trailingAnchor, constant: -28),
+            view.topAnchor.constraint(equalTo: settingsDocumentView.topAnchor, constant: 22),
+            view.bottomAnchor.constraint(
+                lessThanOrEqualTo: settingsDocumentView.bottomAnchor,
+                constant: -26
+            )
+        ]
+        NSLayoutConstraint.activate(categoryContentConstraints)
+        settingsDocumentView.layoutSubtreeIfNeeded()
+        if resetScroll {
+            positionScrollViewAtTop()
+        }
     }
 
     private func configureSlider(_ slider: NSSlider, range: ClosedRange<Double>, action: Selector) {
@@ -580,14 +757,331 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         edgeThresholdValue.stringValue = "\(Int(settings.edgeThreshold.rounded())) pt"
         cornerBandSlider.doubleValue = settings.cornerBand
         cornerBandValue.stringValue = "\(Int(settings.cornerBand.rounded())) pt"
-        layoutIntrusionSlider.doubleValue = settings.layoutIntrusionTolerance
-        layoutIntrusionValue.stringValue = "\(Int((settings.layoutIntrusionTolerance * 100).rounded())) %"
+        constraintPromptCheckbox.state = settings.constraintRecordingPromptsEnabled
+            ? .on
+            : .off
+        previewMemoryLimitSlider.doubleValue = Double(
+            settings.missionControlPreviewMemoryLimitMiB
+        )
+        previewMemoryLimitValue.stringValue = String(
+            format: "%d MiB",
+            settings.missionControlPreviewMemoryLimitMiB
+        )
+        let previewControlsAreEnabled = settings.windowPreviewsEnabled
+        previewMemoryLimitSlider.isEnabled = previewControlsAreEnabled
+        clearPreviewCacheButton.isEnabled = previewControlsAreEnabled
+        previewMemoryLimitValue.textColor = previewControlsAreEnabled
+            ? .labelColor
+            : .tertiaryLabelColor
+        refreshConstraintRecords()
 
         let values = settings.shortcuts
         for action in ShortcutAction.allCases {
             let binding = values[action]
             shortcutButtons[action]?.title = binding?.displayText ?? "未設定"
             clearButtons[action]?.isEnabled = binding != nil
+        }
+    }
+
+    private func refreshConstraintRecords() {
+        for view in constraintRecordsStack.arrangedSubviews {
+            constraintRecordsStack.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+        constraintIdentitiesByControlID.removeAll()
+
+        let records = constraintRegistry.records
+        guard !records.isEmpty else {
+            let empty = NSTextField(
+                wrappingLabelWithString: "記録されたアプリはありません。"
+            )
+            empty.textColor = .secondaryLabelColor
+            constraintRecordsStack.addArrangedSubview(empty)
+            return
+        }
+
+        for (index, record) in records.enumerated() {
+            let controlID = "constraint-record-\(index)"
+            constraintIdentitiesByControlID[controlID] = record.identity
+
+            let appName = NSTextField(labelWithString: record.displayName)
+            appName.font = .systemFont(ofSize: 13, weight: .semibold)
+            appName.lineBreakMode = .byTruncatingMiddle
+            appName.toolTip = record.displayName
+            appName.widthAnchor.constraint(equalToConstant: 140).isActive = true
+
+            let hasPending = AppConstraintBound.allCases.contains {
+                if case .candidate = record.state(for: $0) { return true }
+                return false
+            }
+            if hasPending || record.candidateConflict || record.needsVerification {
+                appName.stringValue += (
+                    record.candidateConflict || record.needsVerification
+                        ? "（要確認）"
+                        : "（確認待ち）"
+                )
+            }
+
+            let permissionButton = NSButton(
+                checkboxWithTitle: "記録を許可",
+                target: self,
+                action: #selector(changeConstraintPermission(_:))
+            )
+            permissionButton.identifier = NSUserInterfaceItemIdentifier(controlID)
+            permissionButton.state = record.recordingPermission == .allowed ? .on : .off
+
+            let verifyButton = NSButton(
+                title: "サイズを取得",
+                target: self,
+                action: #selector(acquireConstraintSizes(_:))
+            )
+            verifyButton.identifier = NSUserInterfaceItemIdentifier(controlID)
+            verifyButton.isEnabled = !constraintMeasurementInProgress
+
+            let inspectButton = NSButton(
+                title: "値を確認",
+                target: self,
+                action: #selector(inspectConstraintRecord(_:))
+            )
+            inspectButton.identifier = NSUserInterfaceItemIdentifier(controlID)
+
+            let deleteButton = NSButton(
+                title: "削除",
+                target: self,
+                action: #selector(deleteConstraintRecord(_:))
+            )
+            deleteButton.identifier = NSUserInterfaceItemIdentifier(controlID)
+
+            let buttons = NSStackView(
+                views: [permissionButton, verifyButton, inspectButton, deleteButton]
+            )
+            buttons.orientation = .horizontal
+            buttons.alignment = .centerY
+            buttons.spacing = 8
+
+            let row = NSStackView(
+                views: [appName, buttons]
+            )
+            row.orientation = .horizontal
+            row.alignment = .centerY
+            row.spacing = 12
+            row.widthAnchor.constraint(lessThanOrEqualToConstant: 520).isActive = true
+            constraintRecordsStack.addArrangedSubview(row)
+        }
+    }
+
+    private func constraintDisplayValue(_ value: CGFloat?) -> String {
+        guard let value else { return "未取得" }
+        return String(format: "%.0f pt", value)
+    }
+
+    @objc private func toggleConstraintRecordingPrompts() {
+        settings.constraintRecordingPromptsEnabled = constraintPromptCheckbox.state == .on
+    }
+
+    @objc private func changeConstraintPermission(_ sender: NSButton) {
+        guard let identity = constraintIdentity(for: sender) else { return }
+        constraintRegistry.setPermission(
+            sender.state == .on ? .allowed : .denied,
+            for: identity
+        )
+        refreshConstraintRecords()
+    }
+
+    @objc private func acquireConstraintSizes(_ sender: NSButton) {
+        guard !constraintMeasurementInProgress,
+              let identity = constraintIdentity(for: sender),
+              let record = constraintRegistry.record(for: identity)
+        else { return }
+
+        let windows = constraintWindowService.visibleWindows()
+            .filter { constraintWindowService.isEligibleForConstraintLearning($0) }
+            .filter {
+                constraintIdentityResolver.resolve($0)?.identity == identity
+            }
+            .sorted { lhs, rhs in
+                lhs.title.localizedStandardCompare(rhs.title) == .orderedAscending
+            }
+        guard !windows.isEmpty else {
+            let alert = NSAlert()
+            alert.messageText = "対象ウィンドウを確認できません"
+            alert.informativeText = "\(record.displayName) の標準ウィンドウを開いてから、もう一度実行してください。"
+            alert.runModal()
+            return
+        }
+
+        let window: ManagedWindow
+        if windows.count == 1 {
+            window = windows[0]
+        } else {
+            let selector = NSPopUpButton(
+                frame: NSRect(x: 0, y: 0, width: 360, height: 26),
+                pullsDown: false
+            )
+            var duplicateCounts: [String: Int] = [:]
+            let displayTitles = windows.enumerated().map { index, item in
+                let base = item.title.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+                let title = base.isEmpty ? "ウィンドウ \(index + 1)" : base
+                let nextCount = (duplicateCounts[title] ?? 0) + 1
+                duplicateCounts[title] = nextCount
+                return nextCount == 1 ? title : "\(title) (\(nextCount))"
+            }
+            selector.addItems(withTitles: displayTitles)
+
+            let selectionAlert = NSAlert()
+            selectionAlert.messageText = "対象ウィンドウを選択"
+            selectionAlert.informativeText =
+                "サイズを取得するウィンドウを選んでください。"
+            selectionAlert.accessoryView = selector
+            selectionAlert.addButton(withTitle: "選択")
+            selectionAlert.addButton(withTitle: "キャンセル")
+            guard selectionAlert.runModal() == .alertFirstButtonReturn else {
+                return
+            }
+            let selectedIndex = max(0, selector.indexOfSelectedItem)
+            guard windows.indices.contains(selectedIndex) else { return }
+            window = windows[selectedIndex]
+        }
+
+        guard let screen = bestScreen(for: window.frame) else {
+            let alert = NSAlert()
+            alert.messageText = "対象ウィンドウを確認できません"
+            alert.informativeText =
+                "対象ウィンドウがあるディスプレイを確認できませんでした。"
+            alert.runModal()
+            return
+        }
+
+        let alert = NSAlert()
+        alert.messageText = "サイズを取得"
+        alert.informativeText = "ウィンドウを動かして最小・最大サイズを取得します。"
+        alert.addButton(withTitle: "取得する")
+        alert.addButton(withTitle: "キャンセル")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        guard onConstraintMeasurementWillBegin?() ?? true else {
+            let busy = NSAlert()
+            busy.messageText = "操作の完了後にもう一度実行してください"
+            busy.informativeText =
+                "スナップやリサイズなどの操作中はサイズを取得できません。"
+            busy.runModal()
+            return
+        }
+
+        constraintMeasurementInProgress = true
+        constraintMeasurementOperationActive = true
+        constraintMeasurementProgressPanel.begin(
+            displayName: record.displayName,
+            screen: screen
+        ) { [weak self] in
+            guard let self else { return }
+            self.constraintMeasurementInProgress = false
+            self.refreshConstraintRecords()
+        }
+        refreshConstraintRecords()
+        constraintMeasurementEngine.measure(
+            window: window,
+            screenFrame: screen.visibleFrame,
+            backingScaleFactor: screen.backingScaleFactor,
+            progress: { [weak self] progress in
+                self?.constraintMeasurementProgressPanel.update(progress)
+            }
+        ) { [weak self] result in
+            guard let self else { return }
+            self.constraintMeasurementOperationActive = false
+            self.onConstraintMeasurementDidEnd?()
+            self.constraintRegistry.applyExplicitMeasurement(
+                result.confirmedValues,
+                identity: identity,
+                displayName: record.displayName
+            )
+            self.refreshConstraintRecords()
+            self.constraintMeasurementProgressPanel.finish(
+                confirmedValueCount: result.confirmedValues.count,
+                restoredOriginalFrame: result.restoredOriginalFrame
+            )
+        }
+    }
+
+    @objc private func inspectConstraintRecord(_ sender: NSButton) {
+        guard let identity = constraintIdentity(for: sender),
+              let record = constraintRegistry.record(for: identity)
+        else { return }
+
+        let labels = ["最小幅", "最小高", "最大幅", "最大高"].map {
+            NSTextField(labelWithString: $0)
+        }
+        let values = AppConstraintBound.allCases.map { bound -> NSTextField in
+            let value = NSTextField(
+                labelWithString: constraintDisplayValue(
+                    record.knownValue(for: bound)
+                )
+            )
+            value.alignment = .right
+            value.font = .monospacedDigitSystemFont(
+                ofSize: 12,
+                weight: .regular
+            )
+            value.widthAnchor.constraint(equalToConstant: 110).isActive = true
+            return value
+        }
+        let grid = NSGridView()
+        grid.translatesAutoresizingMaskIntoConstraints = false
+        grid.rowSpacing = 6
+        grid.columnSpacing = 10
+        for index in values.indices {
+            grid.addRow(with: [labels[index], values[index]])
+        }
+
+        // NSAlert does not derive an accessory view's outer size from the
+        // accessory's Auto Layout content. Give it a concrete container so
+        // the value grid cannot collapse to a zero-sized mystery panel.
+        let valuePanel = NSView(
+            frame: NSRect(x: 0, y: 0, width: 250, height: 112)
+        )
+        valuePanel.addSubview(grid)
+        NSLayoutConstraint.activate([
+            grid.leadingAnchor.constraint(equalTo: valuePanel.leadingAnchor),
+            grid.trailingAnchor.constraint(equalTo: valuePanel.trailingAnchor),
+            grid.topAnchor.constraint(equalTo: valuePanel.topAnchor, constant: 4),
+            grid.bottomAnchor.constraint(equalTo: valuePanel.bottomAnchor, constant: -4)
+        ])
+
+        let alert = NSAlert()
+        alert.messageText = "\(record.displayName) の制約値"
+        alert.informativeText = "現在保存されている値です。更新は「サイズを取得」から行います。"
+        alert.accessoryView = valuePanel
+        alert.addButton(withTitle: "閉じる")
+        alert.runModal()
+    }
+
+    @objc private func deleteConstraintRecord(_ sender: NSButton) {
+        guard let identity = constraintIdentity(for: sender),
+              let record = constraintRegistry.record(for: identity)
+        else { return }
+        let alert = NSAlert()
+        alert.messageText = "\(record.displayName) の記録を削除しますか？"
+        alert.addButton(withTitle: "削除")
+        alert.addButton(withTitle: "キャンセル")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        constraintRegistry.deleteRecord(identity: identity)
+        refreshConstraintRecords()
+    }
+
+    private func constraintIdentity(for sender: NSButton) -> AppConstraintIdentity? {
+        guard let key = sender.identifier?.rawValue else { return nil }
+        return constraintIdentitiesByControlID[key]
+    }
+
+    private func bestScreen(for frame: CGRect) -> NSScreen? {
+        NSScreen.screens.max { lhs, rhs in
+            let lhsArea = lhs.visibleFrame.intersection(frame)
+            let rhsArea = rhs.visibleFrame.intersection(frame)
+            let lhsValue = lhsArea.isNull ? 0 : lhsArea.width * lhsArea.height
+            let rhsValue = rhsArea.isNull ? 0 : rhsArea.width * rhsArea.height
+            return lhsValue < rhsValue
         }
     }
 
@@ -607,12 +1101,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let value = (sender.doubleValue * 10).rounded() / 10
         settings.sideDwellDuration = value
         sideDwellDurationValue.stringValue = String(format: "%.1f 秒", value)
-    }
-
-    @objc private func changeLayoutIntrusionTolerance(_ sender: NSSlider) {
-        let value = (sender.doubleValue * 20).rounded() / 20
-        settings.layoutIntrusionTolerance = value
-        layoutIntrusionValue.stringValue = "\(Int((value * 100).rounded())) %"
     }
 
     @objc private func toggleSideDwellExpansion() {
@@ -638,7 +1126,28 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     @objc private func toggleWindowPreviews() {
-        settings.windowPreviewsEnabled = windowPreviewsCheckbox.state == .on
+        let enabled = windowPreviewsCheckbox.state == .on
+        if enabled {
+            // Preview capture is optional derived presentation. Request Screen
+            // Recording only from this explicit user action; background proxy
+            // maintenance must never surprise the user with a permission request.
+            _ = CGRequestScreenCaptureAccess()
+        }
+        settings.windowPreviewsEnabled = enabled
+        refresh()
+    }
+
+    @objc private func changeMissionControlPreviewMemoryLimit() {
+        let value = AppSettings.normalizedMissionControlPreviewMemoryLimitMiB(
+            Int(previewMemoryLimitSlider.doubleValue.rounded())
+        )
+        settings.missionControlPreviewMemoryLimitMiB = value
+        onMissionControlPreviewMemoryLimitChange?(value)
+        refresh()
+    }
+
+    @objc private func clearMissionControlPreviewCache() {
+        onMissionControlPreviewCacheClear?()
     }
 
     @objc private func toggleRestoreSizeOnMove() {

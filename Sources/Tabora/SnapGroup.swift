@@ -113,10 +113,30 @@ enum GroupForegroundSelectionPolicy {
     }
 }
 
+enum MultiMemberReplacementStructuralPolicy {
+    static func matchesCapturedStructure(
+        expectedMemberIDs: Set<String>,
+        expectedZonesByMemberID: [String: SnapZone],
+        currentMemberIDs: Set<String>,
+        currentZonesByMemberID: [String: SnapZone]
+    ) -> Bool {
+        expectedMemberIDs == currentMemberIDs
+            && expectedZonesByMemberID == currentZonesByMemberID
+            && Set(currentZonesByMemberID.keys) == currentMemberIDs
+    }
+}
+
 enum SnapGroupPlacementEligibilityPolicy {
     private struct WindowServerScene {
         let orderedWindows: [SplitZOrderWindow]
         let identityCounts: [String: Int]
+    }
+
+    static func canUseProvisionalPeer(
+        existingIdentity: String,
+        incomingIdentity: String
+    ) -> Bool {
+        existingIdentity != incomingIdentity
     }
 
     static func frontmostGroupIDs(
@@ -222,6 +242,7 @@ enum SnapGroupPlacementEligibilityPolicy {
     static func relationshipRank(
         conflictingMemberCount: Int,
         multiMemberReplacementHasStraightBoundary: Bool,
+        fullGroupReplacementIsExactCover: Bool = false,
         canExtend: Bool
     ) -> Int? {
         if conflictingMemberCount == 1 {
@@ -231,10 +252,21 @@ enum SnapGroupPlacementEligibilityPolicy {
         if conflictingMemberCount >= 2 {
             // A blocked multi-member replacement is a hard veto for this
             // group. It must not fall through and become an extension.
-            return multiMemberReplacementHasStraightBoundary ? 0 : nil
+            return (multiMemberReplacementHasStraightBoundary
+                || fullGroupReplacementIsExactCover) ? 0 : nil
         }
         if canExtend { return 1 }
         return nil
+    }
+}
+
+enum AssistCandidateExclusionPolicy {
+    static func currentExclusions(
+        capturedIDs: Set<String>,
+        lockedIDs: Set<String>,
+        groupedIDs: Set<String>
+    ) -> Set<String> {
+        capturedIDs.intersection(lockedIDs.union(groupedIDs))
     }
 }
 
@@ -320,8 +352,175 @@ enum GroupDegradationConfirmationPolicy {
     }
 }
 
+/// A Space departure is structural only when the same exact group is split
+/// between the active desktop and another desktop. All-visible is ordinary
+/// operation; all-offscreen is an ordinary Space switch. Every member must
+/// still have complete physical identity evidence, and every offscreen member
+/// must remain an eligible, non-hidden, non-minimized AX window.
+enum GroupSpaceSeparationPolicy {
+    static let minimumSettleInterval: TimeInterval = 0.50
+
+    static func fingerprint(
+        memberIDs: Set<String>,
+        onScreenMemberIDs: Set<String>,
+        confirmedExistingMemberIDs: Set<String>,
+        eligibleOffscreenMemberIDs: Set<String>
+    ) -> GroupDegradationFingerprint? {
+        let offscreenMemberIDs = memberIDs.subtracting(onScreenMemberIDs)
+        guard memberIDs.count >= 2,
+              onScreenMemberIDs.isSubset(of: memberIDs),
+              !onScreenMemberIDs.isEmpty,
+              !offscreenMemberIDs.isEmpty,
+              confirmedExistingMemberIDs == memberIDs,
+              offscreenMemberIDs.isSubset(of: eligibleOffscreenMemberIDs)
+        else { return nil }
+        return GroupDegradationFingerprint(
+            missingMemberIDs: offscreenMemberIDs,
+            geometryDisconnected: false
+        )
+    }
+}
+
+enum MissionControlActivationIdentityPolicy {
+    /// Mission Control changes Window Server geometry without changing the
+    /// persisted identity of an existing group member. Explicit proxy
+    /// activation therefore proves member existence from exact persisted
+    /// PID/window-ID bindings and current layer-zero surfaces, not frame
+    /// equality. Geometry remains a separate presentation-settlement check.
+    static func exactSelections(
+        memberIDs: Set<String>,
+        bindings: [PersistedWindowBinding],
+        snapshot: [WindowOcclusionSnapshot]
+    ) -> Set<WindowServerSelectionSnapshot>? {
+        guard memberIDs.count >= 2 else { return nil }
+        let targetBindings = bindings.filter {
+            memberIDs.contains($0.stableIdentity)
+        }
+        guard targetBindings.count == memberIDs.count,
+              Set(targetBindings.map(\.stableIdentity)) == memberIDs else {
+            return nil
+        }
+        let selections = Set(targetBindings.map {
+            WindowServerSelectionSnapshot(
+                pid: $0.pid,
+                windowID: $0.windowID
+            )
+        })
+        guard selections.count == memberIDs.count,
+              selections.allSatisfy({ selection in
+                  snapshot.contains { surface in
+                      surface.pid == selection.pid
+                          && surface.windowID == selection.windowID
+                          && surface.layer == 0
+                  }
+              }) else {
+            return nil
+        }
+        return selections
+    }
+}
+
+enum GroupPresentationTransitionObservation: Equatable {
+    case normal
+    case transformed
+    case unresolvedLive
+    case unavailable
+}
+
+struct GroupPresentationTransitionLease: Equatable {
+    let groupID: SnapGroupID
+    let memberIDs: Set<String>
+    let expiresAt: TimeInterval
+}
+
+enum GroupWindowServerEvidenceBaselinePolicy {
+    static func framesRepresentTheSameDesktopGeometry(
+        accessibilityFrame: CGRect,
+        windowServerFrame: CGRect,
+        tolerance: CGFloat = 2
+    ) -> Bool {
+        guard accessibilityFrame.width > 1,
+              accessibilityFrame.height > 1,
+              windowServerFrame.width > 1,
+              windowServerFrame.height > 1 else {
+            return false
+        }
+        return abs(accessibilityFrame.minX - windowServerFrame.minX)
+                <= tolerance
+            && abs(accessibilityFrame.minY - windowServerFrame.minY)
+                <= tolerance
+            && abs(accessibilityFrame.width - windowServerFrame.width)
+                <= tolerance
+            && abs(accessibilityFrame.height - windowServerFrame.height)
+                <= tolerance
+    }
+}
+
+enum GroupPresentationTransitionLeasePolicy {
+    static let lifetime: TimeInterval = 1.25
+
+    static func make(
+        groupID: SnapGroupID,
+        memberIDs: Set<String>,
+        now: TimeInterval
+    ) -> GroupPresentationTransitionLease {
+        GroupPresentationTransitionLease(
+            groupID: groupID,
+            memberIDs: memberIDs,
+            expiresAt: now + lifetime
+        )
+    }
+
+    static func isValid(
+        _ lease: GroupPresentationTransitionLease?,
+        groupID: SnapGroupID,
+        memberIDs: Set<String>,
+        now: TimeInterval
+    ) -> Bool {
+        guard let lease else { return false }
+        return lease.groupID == groupID
+            && lease.memberIDs == memberIDs
+            && now <= lease.expiresAt
+    }
+
+    static func retainingUnretired(
+        _ leases: [SnapGroupID: GroupPresentationTransitionLease],
+        retiring groupIDs: Set<SnapGroupID>
+    ) -> [SnapGroupID: GroupPresentationTransitionLease] {
+        leases.filter { !groupIDs.contains($0.key) }
+    }
+}
+
 enum GroupPresentationTransitionPolicy {
     static let defaultMinimumScaleDelta: CGFloat = 0.08
+    static let defaultMaximumScaleAnisotropy: CGFloat = 0.04
+
+    static func observe(
+        evidence: [GroupWindowServerEvidence],
+        expectedMemberCount: Int,
+        visibleMemberIDs: Set<String>,
+        snapshot: [WindowOcclusionSnapshot]
+    ) -> GroupPresentationTransitionObservation {
+        guard expectedMemberCount >= 2,
+              evidence.count == expectedMemberCount else {
+            return .unavailable
+        }
+        if visibleMemberIDs.count == expectedMemberCount {
+            return .normal
+        }
+        guard unresolvedMembersRemainLive(
+            evidence: evidence,
+            visibleMemberIDs: visibleMemberIDs,
+            snapshot: snapshot
+        ) else {
+            return .unavailable
+        }
+        return shouldPreserveLastPresentation(
+            evidence: evidence,
+            visibleMemberIDs: visibleMemberIDs,
+            snapshot: snapshot
+        ) ? .transformed : .unresolvedLive
+    }
 
     static func unresolvedMembersRemainLive(
         evidence: [GroupWindowServerEvidence],
@@ -378,8 +577,17 @@ enum GroupPresentationTransitionPolicy {
                 / member.expectedFrame.width
             let heightScale = serverWindow.frame.height
                 / member.expectedFrame.height
-            return abs(widthScale - 1) >= minimumScaleDelta
+            let hasMaterialScaleDelta = abs(widthScale - 1)
+                    >= minimumScaleDelta
                 || abs(heightScale - 1) >= minimumScaleDelta
+            // Mission Control preserves each window's aspect ratio while
+            // scaling its Window Server surface. A normal shared/native resize
+            // changes one axis independently and must never mint a transition
+            // authorization token merely because AX and Window Server settled
+            // on adjacent turns.
+            return hasMaterialScaleDelta
+                && abs(widthScale - heightScale)
+                    <= defaultMaximumScaleAnisotropy
         }
     }
 }

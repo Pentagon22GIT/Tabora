@@ -37,25 +37,139 @@ enum MissionControlTransitionTokenPolicy {
     }
 }
 
+struct MissionControlProxyOrderingSurface: Equatable {
+    let windowID: CGWindowID?
+    let frame: CGRect
+    let belongsToTargetGroup: Bool
+}
+
+enum MissionControlProxyOrderingScopePolicy {
+    static func requiredWindowIDs(
+        proxyFrame: CGRect,
+        surfaces: [MissionControlProxyOrderingSurface]
+    ) -> Set<CGWindowID>? {
+        let ownSurfaces = surfaces.filter(\.belongsToTargetGroup)
+        guard ownSurfaces.count >= 2,
+              ownSurfaces.allSatisfy({ $0.windowID != nil }) else {
+            return nil
+        }
+
+        var required = Set(ownSurfaces.compactMap(\.windowID))
+        guard required.count == ownSurfaces.count else { return nil }
+
+        for surface in surfaces where !surface.belongsToTargetGroup {
+            let intersection = proxyFrame.intersection(surface.frame)
+            guard !intersection.isNull,
+                  intersection.width > 1,
+                  intersection.height > 1 else { continue }
+            guard let windowID = surface.windowID else { return nil }
+            required.insert(windowID)
+        }
+        return required
+    }
+}
+
+
+enum MissionControlProxyOrderingObservation: Equatable {
+    case verifiedBehind
+    case confirmedUnsafe
+    case unresolved
+}
+
 enum MissionControlProxyOrderingPolicy {
-    static func isBehindAllRequiredWindows(
+    static func observation(
         proxyWindowID: CGWindowID,
         requiredWindowIDs: Set<CGWindowID>,
         orderedWindowIDs: [CGWindowID]
-    ) -> Bool {
+    ) -> MissionControlProxyOrderingObservation {
         guard requiredWindowIDs.count >= 2,
               let proxyIndex = orderedWindowIDs.firstIndex(
                 of: proxyWindowID
-              ) else { return false }
+              ) else { return .unresolved }
         let requiredIndices = requiredWindowIDs.compactMap {
             orderedWindowIDs.firstIndex(of: $0)
         }
         guard requiredIndices.count == requiredWindowIDs.count,
               let rearmostRequiredIndex = requiredIndices.max() else {
-            return false
+            return .unresolved
         }
         return proxyIndex > rearmostRequiredIndex
+            ? .verifiedBehind
+            : .confirmedUnsafe
     }
+
+    static func isBehindAllRequiredWindows(
+        proxyWindowID: CGWindowID,
+        requiredWindowIDs: Set<CGWindowID>,
+        orderedWindowIDs: [CGWindowID]
+    ) -> Bool {
+        observation(
+            proxyWindowID: proxyWindowID,
+            requiredWindowIDs: requiredWindowIDs,
+            orderedWindowIDs: orderedWindowIDs
+        ) == .verifiedBehind
+    }
+}
+
+enum MissionControlProxySelectionStructuralPolicy {
+    static func matchesPresentedMembers(
+        presentedMemberIDs: Set<String>,
+        currentMemberIDs: Set<String>
+    ) -> Bool {
+        presentedMemberIDs.count >= 2
+            && presentedMemberIDs == currentMemberIDs
+    }
+}
+
+enum MissionControlProxySelectionDeliveryPolicy {
+    static func allowsPresentationMutation(
+        selectionWasDelivered: Bool,
+        confirmationIsPending: Bool
+    ) -> Bool {
+        !selectionWasDelivered && !confirmationIsPending
+    }
+
+    static func cancelsOnWindowResign(
+        selectionWasDelivered: Bool,
+        confirmationIsPending: Bool
+    ) -> Bool {
+        !selectionWasDelivered && !confirmationIsPending
+    }
+}
+
+struct MissionControlProxySelectionCandidate: Equatable {
+    let generation: UInt64
+    let groupID: SnapGroupID
+    let memberIDs: Set<String>
+}
+
+enum MissionControlProxySelectionCandidatePolicy {
+    static func matches(
+        _ candidate: MissionControlProxySelectionCandidate?,
+        generation: UInt64,
+        groupID: SnapGroupID,
+        memberIDs: Set<String>
+    ) -> Bool {
+        candidate == MissionControlProxySelectionCandidate(
+            generation: generation,
+            groupID: groupID,
+            memberIDs: memberIDs
+        )
+    }
+}
+
+enum MissionControlSelectedProxyPresentationPolicy {
+    static func allowsGenericOrderingRevalidation(
+        selectionWasDelivered: Bool
+    ) -> Bool {
+        !selectionWasDelivered
+    }
+
+    // Normal completion removes the selected cover as soon as the exact group
+    // is verified frontmost. This is only a fail-safe visibility ceiling: the
+    // transparent Window Server participant remains transaction-owned until
+    // the controller succeeds or explicitly cancels it.
+    static let maximumVisibleHandoffLifetime: TimeInterval = 0.50
 }
 
 enum MissionControlProxyOrderingRecoveryPolicy {
@@ -112,13 +226,94 @@ enum MissionControlPreviewSizingPolicy {
         guard maximumPixels > 0 else { return nil }
         let scale = min(sqrt(maximumPixels / sourcePixels), 1)
         return MissionControlPreviewPixelSize(
-            width: max(Int((Double(sourceWidth) * scale).rounded()), 1),
-            height: max(Int((Double(sourceHeight) * scale).rounded()), 1)
+            width: max(
+                Int((Double(sourceWidth) * scale).rounded(.down)), 1
+            ),
+            height: max(
+                Int((Double(sourceHeight) * scale).rounded(.down)), 1
+            )
+        )
+    }
+
+    static func reducedPixelSize(
+        width: Int,
+        height: Int,
+        actualByteCost: Int,
+        byteBudget: Int
+    ) -> MissionControlPreviewPixelSize? {
+        guard width > 0, height > 0,
+              actualByteCost > byteBudget,
+              byteBudget >= bytesPerPixel else { return nil }
+        let scale = min(
+            sqrt(Double(byteBudget) / Double(actualByteCost)) * 0.98,
+            0.98
+        )
+        var nextWidth = max(
+            Int((Double(width) * scale).rounded(.down)), 1
+        )
+        var nextHeight = max(
+            Int((Double(height) * scale).rounded(.down)), 1
+        )
+        if nextWidth == width, nextHeight == height {
+            if width >= height, width > 1 {
+                nextWidth -= 1
+            } else if height > 1 {
+                nextHeight -= 1
+            } else {
+                return nil
+            }
+        }
+        return MissionControlPreviewPixelSize(
+            width: nextWidth,
+            height: nextHeight
         )
     }
 }
 
+enum MissionControlPreviewFreshnessPolicy {
+    static let refreshInterval: TimeInterval = 15
+    static let applicationCoalescingInterval: TimeInterval = 0.06
+
+    static func needsRefresh(
+        capturedAt: TimeInterval?,
+        now: TimeInterval
+    ) -> Bool {
+        guard let capturedAt else { return true }
+        return now - capturedAt >= refreshInterval
+    }
+}
+
+enum MissionControlProxyStructuralUpdatePolicy {
+    static func requiresOrderingRestart(
+        lastFrame: CGRect?,
+        newFrame: CGRect,
+        lastMemberWindowIDs: Set<CGWindowID>,
+        requiredMemberWindowIDs: Set<CGWindowID>?,
+        presentationIsStableOrValidating: Bool
+    ) -> Bool {
+        guard let lastFrame,
+              let requiredMemberWindowIDs,
+              framesAreApproximatelyEqual(lastFrame, newFrame),
+              lastMemberWindowIDs == requiredMemberWindowIDs,
+              presentationIsStableOrValidating else {
+            return true
+        }
+        return false
+    }
+
+    private static func framesAreApproximatelyEqual(
+        _ lhs: CGRect,
+        _ rhs: CGRect
+    ) -> Bool {
+        abs(lhs.minX - rhs.minX) < 1
+            && abs(lhs.minY - rhs.minY) < 1
+            && abs(lhs.width - rhs.width) < 1
+            && abs(lhs.height - rhs.height) < 1
+    }
+}
+
 struct MissionControlGroupProxyMember {
+    let stableIdentity: String
     let frame: CGRect
     let preview: NSImage?
     let icon: NSImage?
@@ -128,29 +323,78 @@ private struct MissionControlPreviewCacheKey: Hashable {
     let pid: pid_t
     let windowID: CGWindowID
     let stableIdentity: String
+    let frameMinX: Int
+    let frameMinY: Int
+    let frameWidth: Int
+    let frameHeight: Int
 }
 
 private struct MissionControlCachedPreview {
     let image: NSImage
     let byteCost: Int
+    let capturedAt: TimeInterval
     var accessEpoch: UInt64
 }
 
 final class MissionControlGroupProxyController {
-    var onSelectGroup: ((SnapGroupID, UInt64) -> Void)?
+    var onSelectGroup: ((SnapGroupID, Set<String>) -> Void)?
     var currentTransitionAuthorization: ((SnapGroupID) -> Bool)?
+    var onPreviewCacheReady: (() -> Void)?
 
     private var windowsByGroupID: [SnapGroupID: MissionControlGroupProxyWindow] = [:]
     private var cachedPreviews: [MissionControlPreviewCacheKey:
         MissionControlCachedPreview] = [:]
     private var previewAccessEpoch: UInt64 = 0
-    private static let maximumCachedPreviewBytes = 32 * 1024 * 1024
+    private let previewQueue: OperationQueue = {
+        let queue = OperationQueue()
+        queue.name = "Tabora.MissionControlPreview"
+        queue.qualityOfService = .utility
+        queue.maxConcurrentOperationCount = 2
+        return queue
+    }()
+    private var previewRequestGenerationByKey =
+        [MissionControlPreviewCacheKey: UInt64]()
+    private var previewCaptureGeneration: UInt64 = 0
+    private var previewsAreEnabled = true
+    private var hasPendingPreviewCacheApplication = false
+    private var previewCacheRefreshNotificationScheduled = false
+    private var maximumCachedPreviewBytes = AppSettings
+        .missionControlPreviewMemoryByteLimit(
+            AppSettings.defaultMissionControlPreviewMemoryLimitMiB
+        )
+    private var activePreviewKeys = Set<MissionControlPreviewCacheKey>()
+    private var activePreviewByteBudget = 0
+    private var latestPreviewProvider: ((CGWindowID?) -> CGImage?)?
+    private var nextPreviewFreshnessCheckAt: TimeInterval = 0
+    private var selectionCandidateGeneration: UInt64 = 0
+    private var activeSelectionCandidate: MissionControlProxySelectionCandidate?
+
+    var hasPendingSelectionConfirmation: Bool {
+        activeSelectionCandidate != nil
+            || windowsByGroupID.values.contains {
+                $0.isSelectionConfirmationPending
+            }
+    }
 
     func update(
         groups: [SnapGroup],
         visibleWindowsByIdentity: [String: ManagedWindow],
-        previewProvider: (CGWindowID?) -> CGImage?
+        preservedGroupIDs: Set<SnapGroupID> = [],
+        previewsEnabled: Bool,
+        previewCacheByteLimit: Int,
+        previewProvider: @escaping (CGWindowID?) -> CGImage?
     ) {
+        setPreviewCacheByteLimit(previewCacheByteLimit)
+        if previewsEnabled != previewsAreEnabled {
+            previewCaptureGeneration &+= 1
+            previewsAreEnabled = previewsEnabled
+        }
+        if !previewsEnabled {
+            clearPreviewCache()
+            activePreviewKeys.removeAll()
+            activePreviewByteBudget = 0
+            latestPreviewProvider = nil
+        }
         let presentableGroups = groups.filter { group in
             group.memberIDs.count >= 2
                 && group.memberIDs.allSatisfy {
@@ -158,17 +402,16 @@ final class MissionControlGroupProxyController {
                 }
         }
         let activeGroupIDs = Set(presentableGroups.map(\.id))
+            .union(preservedGroupIDs)
         let activeWindows = presentableGroups.flatMap { group in
             group.memberIDs.compactMap { visibleWindowsByIdentity[$0] }
         }
-        let activeWindowIDs = Set(activeWindows.compactMap(\.cgWindowID))
-        let activePreviewKeys = Set(activeWindows.compactMap { window
+        let currentPreviewKeys = Set(activeWindows.compactMap { window
             -> MissionControlPreviewCacheKey? in
             guard let windowID = window.cgWindowID else { return nil }
-            return MissionControlPreviewCacheKey(
-                pid: window.pid,
-                windowID: windowID,
-                stableIdentity: window.stableIdentity
+            return Self.previewCacheKey(
+                for: window,
+                windowID: windowID
             )
         })
         // Split the existing bounded preview budget across every currently
@@ -178,14 +421,29 @@ final class MissionControlGroupProxyController {
         // than the old fixed 720x480 cap.
         let previewByteBudget = MissionControlPreviewSizingPolicy
             .perImageByteBudget(
-                totalByteBudget: Self.maximumCachedPreviewBytes,
-                presentableMemberCount: activePreviewKeys.count
+                totalByteBudget: maximumCachedPreviewBytes,
+                presentableMemberCount: currentPreviewKeys.count
             )
-        cachedPreviews = cachedPreviews.filter {
-            activePreviewKeys.contains($0.key)
+        if previewsEnabled {
+            activePreviewKeys = currentPreviewKeys
+            activePreviewByteBudget = previewByteBudget
+            latestPreviewProvider = previewProvider
+            // Inactive frame-key variants have no current presentation value.
+            // Retiring them before new captures guarantees that the complete
+            // active set can occupy the configured budget together.
+            cachedPreviews = cachedPreviews.filter {
+                currentPreviewKeys.contains($0.key)
+            }
         }
         for groupID in Array(windowsByGroupID.keys) where
             !activeGroupIDs.contains(groupID) {
+            guard windowsByGroupID[groupID]?.allowsPresentationMutation
+                    != false else {
+                // A click-confirmation lease owns this exact proxy for one
+                // bounded turn. Structural validation still occurs before the
+                // callback can authorize real windows.
+                continue
+            }
             windowsByGroupID.removeValue(forKey: groupID)?.retire()
         }
 
@@ -197,12 +455,7 @@ final class MissionControlGroupProxyController {
             let bounds = memberWindows.dropFirst().reduce(first.frame) {
                 $0.union($1.frame)
             }
-            guard bounds.width > 1,
-                  bounds.height > 1,
-                  Self.coverageRatio(
-                      frames: memberWindows.map(\.frame),
-                      within: bounds
-                  ) >= 0.995 else {
+            guard bounds.width > 1, bounds.height > 1 else {
                 windowsByGroupID.removeValue(forKey: group.id)?.retire()
                 continue
             }
@@ -215,64 +468,149 @@ final class MissionControlGroupProxyController {
                 windowsByGroupID[group.id] = proxyWindow
             }
             proxyWindow.groupID = group.id
-            proxyWindow.revision = group.revision
+            proxyWindow.presentedMemberIDs = group.memberIDs
+            proxyWindow.beginSelectionConfirmation = {
+                [weak self] groupID, memberIDs in
+                self?.beginSelectionConfirmation(
+                    groupID: groupID,
+                    memberIDs: memberIDs
+                ) ?? 0
+            }
+            proxyWindow.consumeSelectionConfirmation = {
+                [weak self] generation, groupID, memberIDs in
+                self?.consumeSelectionConfirmation(
+                    generation: generation,
+                    groupID: groupID,
+                    memberIDs: memberIDs
+                ) ?? false
+            }
+            proxyWindow.releaseSelectionConfirmation = {
+                [weak self] generation, groupID, memberIDs in
+                self?.releaseSelectionConfirmation(
+                    generation: generation,
+                    groupID: groupID,
+                    memberIDs: memberIDs
+                )
+            }
             proxyWindow.currentTransitionAuthorization = { [weak self] groupID in
                 self?.currentTransitionAuthorization?(groupID) ?? false
             }
-            proxyWindow.onSelected = { [weak self, weak proxyWindow] in
-                guard let self, let proxyWindow else { return }
-                self.onSelectGroup?(
-                    proxyWindow.groupID,
-                    proxyWindow.revision
-                )
+            proxyWindow.onSelected = { [weak self] groupID, memberIDs in
+                self?.onSelectGroup?(groupID, memberIDs)
             }
             let members = memberWindows.map { window in
                 MissionControlGroupProxyMember(
+                    stableIdentity: window.stableIdentity,
                     frame: window.frame.offsetBy(
                         dx: -bounds.minX,
                         dy: -bounds.minY
                     ),
-                    preview: previewImage(
+                    preview: previewsEnabled ? previewImage(
                         for: window,
                         byteBudget: previewByteBudget,
                         previewProvider: previewProvider
-                    ),
+                    ) : nil,
                     icon: window.appIcon
                 )
             }
+            let orderingSurfaces = activeWindows.map { window in
+                MissionControlProxyOrderingSurface(
+                    windowID: window.cgWindowID,
+                    frame: window.frame,
+                    belongsToTargetGroup: group.memberIDs.contains(
+                        window.stableIdentity
+                    )
+                )
+            }
+            let requiredWindowIDs = MissionControlProxyOrderingScopePolicy
+                .requiredWindowIDs(
+                    proxyFrame: bounds,
+                    surfaces: orderingSurfaces
+                )
             proxyWindow.update(
                 title: "グループ \(index + 1)",
                 frame: bounds,
                 members: members,
-                // Multiple groups may occupy the same desktop rectangle. A
-                // proxy that is merely behind its own members can still sit
-                // above another group's real windows and become a visible,
-                // clickable desktop cover. Require every proxy to be behind
-                // every currently presentable real group member.
-                memberWindowIDs: activeWindowIDs
+                requiredWindowIDs: requiredWindowIDs
             )
         }
+        hasPendingPreviewCacheApplication = false
     }
 
     var hasPresentationRecoveryDebt: Bool {
         windowsByGroupID.values.contains { $0.needsPresentationRecovery }
     }
 
-    func hideAll() {
+    var hasPendingPreviewCacheRefresh: Bool {
+        hasPendingPreviewCacheApplication
+    }
+
+    func hasPresentation(for groupID: SnapGroupID) -> Bool {
+        windowsByGroupID[groupID] != nil
+    }
+
+    func hideAll(clearPreviewCache: Bool = false) {
         for window in windowsByGroupID.values {
             window.retire()
         }
         windowsByGroupID.removeAll()
+        activeSelectionCandidate = nil
+        if clearPreviewCache {
+            self.clearPreviewCache()
+        }
+    }
+
+    func setPreviewCacheByteLimit(_ byteLimit: Int) {
+        let normalized = max(byteLimit, 0)
+        guard maximumCachedPreviewBytes != normalized else { return }
+        maximumCachedPreviewBytes = normalized
+        clearPreviewCache()
+    }
+
+    func clearPreviewCache() {
+        previewCaptureGeneration &+= 1
         cachedPreviews.removeAll()
+        previewRequestGenerationByKey.removeAll()
+        hasPendingPreviewCacheApplication = false
+        nextPreviewFreshnessCheckAt = 0
+    }
+
+    func refreshStalePreviewCacheIfNeeded(
+        now: TimeInterval = ProcessInfo.processInfo.systemUptime
+    ) {
+        guard previewsAreEnabled,
+              now >= nextPreviewFreshnessCheckAt,
+              activePreviewByteBudget > 0,
+              let previewProvider = latestPreviewProvider else { return }
+        nextPreviewFreshnessCheckAt = now
+            + MissionControlPreviewFreshnessPolicy.refreshInterval
+        for key in activePreviewKeys where
+            MissionControlPreviewFreshnessPolicy.needsRefresh(
+                capturedAt: cachedPreviews[key]?.capturedAt,
+                now: now
+            ) {
+            schedulePreviewCapture(
+                key: key,
+                byteBudget: activePreviewByteBudget,
+                previewProvider: previewProvider
+            )
+        }
     }
 
     func hide(groupID: SnapGroupID) {
+        if activeSelectionCandidate?.groupID == groupID {
+            activeSelectionCandidate = nil
+        }
         windowsByGroupID.removeValue(forKey: groupID)?.retire()
     }
 
     func requireOrderingRevalidation() {
-        for window in windowsByGroupID.values {
-            window.requireOrderingRevalidation()
+        requireOrderingRevalidation(groupIDs: Set(windowsByGroupID.keys))
+    }
+
+    func requireOrderingRevalidation(groupIDs: Set<SnapGroupID>) {
+        for groupID in groupIDs {
+            windowsByGroupID[groupID]?.requireOrderingRevalidation()
         }
     }
 
@@ -284,60 +622,210 @@ final class MissionControlGroupProxyController {
         windowsByGroupID[groupID]?.cancelSelectionTransition()
     }
 
+    private func beginSelectionConfirmation(
+        groupID: SnapGroupID,
+        memberIDs: Set<String>
+    ) -> UInt64 {
+        selectionCandidateGeneration &+= 1
+        activeSelectionCandidate = MissionControlProxySelectionCandidate(
+            generation: selectionCandidateGeneration,
+            groupID: groupID,
+            memberIDs: memberIDs
+        )
+        return selectionCandidateGeneration
+    }
+
+    private func consumeSelectionConfirmation(
+        generation: UInt64,
+        groupID: SnapGroupID,
+        memberIDs: Set<String>
+    ) -> Bool {
+        guard MissionControlProxySelectionCandidatePolicy.matches(
+            activeSelectionCandidate,
+            generation: generation,
+            groupID: groupID,
+            memberIDs: memberIDs
+        ) else { return false }
+        activeSelectionCandidate = nil
+        for (candidateGroupID, window) in windowsByGroupID where
+            candidateGroupID != groupID {
+            window.cancelSelectionTransition()
+        }
+        return true
+    }
+
+    private func releaseSelectionConfirmation(
+        generation: UInt64,
+        groupID: SnapGroupID,
+        memberIDs: Set<String>
+    ) {
+        guard MissionControlProxySelectionCandidatePolicy.matches(
+            activeSelectionCandidate,
+            generation: generation,
+            groupID: groupID,
+            memberIDs: memberIDs
+        ) else { return }
+        activeSelectionCandidate = nil
+    }
+
     func owns(window: NSWindow?) -> Bool {
         guard let window else { return false }
         return windowsByGroupID.values.contains { $0 === window }
     }
 
+    private static func previewCacheKey(
+        for window: ManagedWindow,
+        windowID: CGWindowID
+    ) -> MissionControlPreviewCacheKey {
+        MissionControlPreviewCacheKey(
+            pid: window.pid,
+            windowID: windowID,
+            stableIdentity: window.stableIdentity,
+            frameMinX: Int(window.frame.minX.rounded()),
+            frameMinY: Int(window.frame.minY.rounded()),
+            frameWidth: max(Int(window.frame.width.rounded()), 1),
+            frameHeight: max(Int(window.frame.height.rounded()), 1)
+        )
+    }
+
     private func previewImage(
         for window: ManagedWindow,
         byteBudget: Int,
-        previewProvider: (CGWindowID?) -> CGImage?
+        previewProvider: @escaping (CGWindowID?) -> CGImage?
     ) -> NSImage? {
         guard let windowID = window.cgWindowID else { return nil }
-        let key = MissionControlPreviewCacheKey(
-            pid: window.pid,
-            windowID: windowID,
-            stableIdentity: window.stableIdentity
+        let key = Self.previewCacheKey(
+            for: window,
+            windowID: windowID
         )
         previewAccessEpoch &+= 1
         if var cached = cachedPreviews[key],
            cached.byteCost <= byteBudget {
             cached.accessEpoch = previewAccessEpoch
             cachedPreviews[key] = cached
+            if MissionControlPreviewFreshnessPolicy.needsRefresh(
+                capturedAt: cached.capturedAt,
+                now: ProcessInfo.processInfo.systemUptime
+            ) {
+                schedulePreviewCapture(
+                    key: key,
+                    byteBudget: byteBudget,
+                    previewProvider: previewProvider
+                )
+            }
             return cached.image
         }
-        // The number of active group members may have increased since this
-        // image was cached. A formerly valid large preview must be resized to
-        // the new shared budget instead of escaping the global memory bound.
+
+        // Never synchronously capture a client window from the main thread.
+        // Screen sharing can make Window Server capture slow enough to stall
+        // snapping, foregrounding and unrelated groups. Return the icon-backed
+        // placeholder immediately and populate this bounded cache off-main.
         cachedPreviews.removeValue(forKey: key)
-        guard let source = previewProvider(windowID),
-              let image = Self.makePreviewImage(
-                  from: source,
-                  byteBudget: byteBudget
-              ) else {
-            return nil
-        }
-        let preview = NSImage(cgImage: image, size: window.frame.size)
-        let cost = max(image.bytesPerRow * image.height, image.width * image.height * 4)
-        cachedPreviews[key] = MissionControlCachedPreview(
-            image: preview,
-            byteCost: cost,
-            accessEpoch: previewAccessEpoch
+        schedulePreviewCapture(
+            key: key,
+            byteBudget: byteBudget,
+            previewProvider: previewProvider
         )
-        trimPreviewCacheIfNeeded()
-        return preview
+        return nil
+    }
+
+    private func schedulePreviewCapture(
+        key: MissionControlPreviewCacheKey,
+        byteBudget: Int,
+        previewProvider: @escaping (CGWindowID?) -> CGImage?
+    ) {
+        guard byteBudget > 0,
+              previewRequestGenerationByKey[key] == nil else { return }
+        let captureGeneration = previewCaptureGeneration
+        previewRequestGenerationByKey[key] = captureGeneration
+        previewQueue.addOperation { [weak self] in
+            guard let self else { return }
+            let rendered: (CGImage, Int)? = previewProvider(key.windowID).flatMap { source in
+                guard let image = Self.makePreviewImage(
+                    from: source,
+                    byteBudget: byteBudget
+                ) else { return nil }
+                let cost = max(
+                    image.bytesPerRow * image.height,
+                    image.width * image.height * 4
+                )
+                return (image, cost)
+            }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                if self.previewRequestGenerationByKey[key]
+                    == captureGeneration {
+                    self.previewRequestGenerationByKey.removeValue(
+                        forKey: key
+                    )
+                }
+                guard self.previewCaptureGeneration == captureGeneration,
+                      self.previewsAreEnabled,
+                      self.activePreviewKeys.contains(key) else { return }
+                guard byteBudget == self.activePreviewByteBudget else {
+                    // The number of active members changed while this capture
+                    // was running. Never insert an image rendered against the
+                    // old larger share; immediately requeue this exact active
+                    // key using the current globally divided budget.
+                    if self.activePreviewByteBudget > 0,
+                       let currentProvider = self.latestPreviewProvider {
+                        self.schedulePreviewCapture(
+                            key: key,
+                            byteBudget: self.activePreviewByteBudget,
+                            previewProvider: currentProvider
+                        )
+                    }
+                    return
+                }
+                guard let (image, cost) = rendered else { return }
+                self.previewAccessEpoch &+= 1
+                let preview = NSImage(
+                    cgImage: image,
+                    size: NSSize(width: CGFloat(image.width), height: CGFloat(image.height))
+                )
+                self.cachedPreviews[key] = MissionControlCachedPreview(
+                    image: preview,
+                    byteCost: cost,
+                    capturedAt: ProcessInfo.processInfo.systemUptime,
+                    accessEpoch: self.previewAccessEpoch
+                )
+                self.trimPreviewCacheIfNeeded()
+                self.hasPendingPreviewCacheApplication = true
+                // Never mutate a managed proxy from an asynchronous capture
+                // completion. Ask the controller for one coalesced normal update
+                // instead. That update revalidates identity/geometry and already
+                // refuses to rebuild presentation during a Window Server transform.
+                self.schedulePreviewCacheRefreshNotification()
+            }
+        }
+    }
+
+
+    private func schedulePreviewCacheRefreshNotification() {
+        guard !previewCacheRefreshNotificationScheduled else { return }
+        previewCacheRefreshNotificationScheduled = true
+        DispatchQueue.main.asyncAfter(
+            deadline: .now()
+                + MissionControlPreviewFreshnessPolicy
+                    .applicationCoalescingInterval
+        ) { [weak self] in
+            guard let self else { return }
+            self.previewCacheRefreshNotificationScheduled = false
+            guard self.hasPendingPreviewCacheApplication,
+                  self.previewsAreEnabled else { return }
+            self.onPreviewCacheReady?()
+        }
     }
 
     private func trimPreviewCacheIfNeeded() {
         var totalCost = cachedPreviews.values.reduce(0) {
             $0 + $1.byteCost
         }
-        guard totalCost > Self.maximumCachedPreviewBytes else { return }
+        guard totalCost > maximumCachedPreviewBytes else { return }
         for key in cachedPreviews.sorted(by: {
             $0.value.accessEpoch < $1.value.accessEpoch
         }).map(\.key) {
-            guard totalCost > Self.maximumCachedPreviewBytes,
+            guard totalCost > maximumCachedPreviewBytes,
                   let removed = cachedPreviews.removeValue(forKey: key) else {
                 break
             }
@@ -387,84 +875,97 @@ final class MissionControlGroupProxyController {
         let bitmapInfo = CGBitmapInfo.byteOrder32Little.union(
             CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue)
         )
-        guard let context = CGContext(
-            data: nil,
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bytesPerRow: 0,
-            space: colorSpace,
-            bitmapInfo: bitmapInfo.rawValue
-        ) else { return nil }
-        context.interpolationQuality = .high
-        context.draw(source, in: CGRect(x: 0, y: 0, width: width, height: height))
-        return context.makeImage()
-    }
-
-    private static func coverageRatio(
-        frames: [CGRect],
-        within bounds: CGRect
-    ) -> CGFloat {
-        let clipped = frames.map { $0.intersection(bounds) }.filter {
-            !$0.isNull && $0.width > 0 && $0.height > 0
-        }
-        guard !clipped.isEmpty, bounds.width > 0, bounds.height > 0 else {
-            return 0
-        }
-        let xCoordinates = Set(
-            clipped.flatMap { [$0.minX, $0.maxX] }
-        ).sorted()
-        var coveredArea: CGFloat = 0
-
-        for index in 0..<(xCoordinates.count - 1) {
-            let minX = xCoordinates[index]
-            let maxX = xCoordinates[index + 1]
-            guard maxX > minX else { continue }
-            let intervals = clipped.compactMap { frame
-                -> ClosedRange<CGFloat>? in
-                guard frame.minX < maxX, frame.maxX > minX else {
-                    return nil
-                }
-                return frame.minY...frame.maxY
-            }.sorted { $0.lowerBound < $1.lowerBound }
-            guard var current = intervals.first else { continue }
-            var coveredHeight: CGFloat = 0
-            for interval in intervals.dropFirst() {
-                if interval.lowerBound <= current.upperBound {
-                    current = current.lowerBound...max(
-                        current.upperBound,
-                        interval.upperBound
-                    )
-                } else {
-                    coveredHeight += current.upperBound - current.lowerBound
-                    current = interval
-                }
+        for _ in 0..<8 {
+            guard let context = CGContext(
+                data: nil,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: 0,
+                space: colorSpace,
+                bitmapInfo: bitmapInfo.rawValue
+            ) else { return nil }
+            let storageCost = max(
+                context.bytesPerRow * height,
+                width * height
+                    * MissionControlPreviewSizingPolicy.bytesPerPixel
+            )
+            if storageCost > byteBudget {
+                guard let reduced = MissionControlPreviewSizingPolicy
+                    .reducedPixelSize(
+                        width: width,
+                        height: height,
+                        actualByteCost: storageCost,
+                        byteBudget: byteBudget
+                    ) else { return nil }
+                width = reduced.width
+                height = reduced.height
+                continue
             }
-            coveredHeight += current.upperBound - current.lowerBound
-            coveredArea += (maxX - minX) * coveredHeight
+            context.interpolationQuality = .high
+            context.draw(
+                source,
+                in: CGRect(x: 0, y: 0, width: width, height: height)
+            )
+            guard let image = context.makeImage() else { return nil }
+            let imageCost = max(
+                image.bytesPerRow * image.height,
+                image.width * image.height
+                    * MissionControlPreviewSizingPolicy.bytesPerPixel
+            )
+            if imageCost <= byteBudget { return image }
+            guard let reduced = MissionControlPreviewSizingPolicy
+                .reducedPixelSize(
+                    width: width,
+                    height: height,
+                    actualByteCost: imageCost,
+                    byteBudget: byteBudget
+                ) else { return nil }
+            width = reduced.width
+            height = reduced.height
         }
-        return min(max(coveredArea / (bounds.width * bounds.height), 0), 1)
+        return nil
     }
+
 }
 
 private final class MissionControlGroupProxyWindow: NSWindow, NSWindowDelegate {
     var groupID = SnapGroupID()
-    var revision: UInt64 = 0
-    var onSelected: (() -> Void)?
+    var presentedMemberIDs = Set<String>()
+    var beginSelectionConfirmation: ((SnapGroupID, Set<String>) -> UInt64)?
+    var consumeSelectionConfirmation:
+        ((UInt64, SnapGroupID, Set<String>) -> Bool)?
+    var releaseSelectionConfirmation:
+        ((UInt64, SnapGroupID, Set<String>) -> Void)?
+    var onSelected: ((SnapGroupID, Set<String>) -> Void)?
     var currentTransitionAuthorization: ((SnapGroupID) -> Bool)?
 
     private let proxyView = MissionControlGroupProxyView()
     private var selectionWasDelivered = false
+    private var selectionConfirmationIsPending = false
     private var presentationGeneration = 0
     private var selectionConfirmationGeneration = 0
     private var lastPresentedFrame: CGRect?
     private var lastPresentedMemberWindowIDs: Set<CGWindowID> = []
     private var isSafelyPresented = false
     private var hasOrderingValidationDebt = false
+    private var orderingValidationIsInFlight = false
     private var transitionToken: MissionControlTransitionToken?
+
+    var isSelectionConfirmationPending: Bool {
+        selectionConfirmationIsPending
+    }
 
     var needsPresentationRecovery: Bool {
         hasOrderingValidationDebt && !selectionWasDelivered
+    }
+
+    var allowsPresentationMutation: Bool {
+        MissionControlProxySelectionDeliveryPolicy
+            .allowsPresentationMutation(
+                selectionWasDelivered: selectionWasDelivered,
+                confirmationIsPending: selectionConfirmationIsPending
+            )
     }
 
     init() {
@@ -486,7 +987,7 @@ private final class MissionControlGroupProxyWindow: NSWindow, NSWindowDelegate {
         isMovable = false
         isMovableByWindowBackground = false
         ignoresMouseEvents = true
-        sharingType = .none
+        sharingType = .readOnly
         contentView = proxyView
     }
 
@@ -497,28 +998,33 @@ private final class MissionControlGroupProxyWindow: NSWindow, NSWindowDelegate {
         title: String,
         frame: CGRect,
         members: [MissionControlGroupProxyMember],
-        memberWindowIDs: Set<CGWindowID>
+        requiredWindowIDs: Set<CGWindowID>?
     ) {
         // App activation and AX focus notifications may refresh presentation
         // while the selected proxy is covering the ordered group transition.
         // Do not demote that cover until the controller reports success or
         // explicitly cancels the bounded attempt.
-        guard !selectionWasDelivered else { return }
+        guard allowsPresentationMutation else { return }
         level = .normal
         self.title = title
         setFrame(frame, display: false)
         proxyView.members = members
         proxyView.needsDisplay = true
 
-        let presentationIsUnchanged = isSafelyPresented
-            && lastPresentedFrame.map {
-                Self.framesAreApproximatelyEqual($0, frame)
-            } == true
-            && lastPresentedMemberWindowIDs == memberWindowIDs
-        guard !presentationIsUnchanged else { return }
+        let requiresOrderingRestart =
+            MissionControlProxyStructuralUpdatePolicy
+                .requiresOrderingRestart(
+                    lastFrame: lastPresentedFrame,
+                    newFrame: frame,
+                    lastMemberWindowIDs: lastPresentedMemberWindowIDs,
+                    requiredMemberWindowIDs: requiredWindowIDs,
+                    presentationIsStableOrValidating: isSafelyPresented
+                        || orderingValidationIsInFlight
+                )
+        guard requiresOrderingRestart else { return }
 
         // The proxy occupies exactly the current split-group bounds and is
-        // ordered behind its foreign member windows. It therefore remains
+        // ordered behind its own member windows. It therefore remains
         // covered on the desktop while still being a managed Mission Control
         // participant. This behavior is intentionally experimental.
         presentationGeneration &+= 1
@@ -528,9 +1034,29 @@ private final class MissionControlGroupProxyWindow: NSWindow, NSWindowDelegate {
         hasOrderingValidationDebt = true
         alphaValue = 0
         ignoresMouseEvents = true
+        guard let requiredWindowIDs else {
+            // The target group's own Window Server identities are mandatory.
+            // Keep explicit recovery debt instead of authorizing the proxy from
+            // a partial ordering snapshot.
+            lastPresentedFrame = frame
+            lastPresentedMemberWindowIDs = []
+            orderingValidationIsInFlight = false
+            // Ordering authorization is unresolved. Preserve the controller-owned
+            // recovery debt, but withdraw this transparent managed surface from
+            // Window Server until a later update can re-prove safe desktop ordering.
+            // Leaving it registered here creates an invisible Mission Control
+            // participant with no authorized presentation or input.
+            orderOut(nil)
+            return
+        }
+        // Capture structural identity before asynchronous verification starts.
+        // Preview-only updates can now refresh the view without invalidating
+        // or restarting this exact in-flight ordering transaction.
+        lastPresentedFrame = frame
+        lastPresentedMemberWindowIDs = requiredWindowIDs
         scheduleOrderingValidation(
             frame: frame,
-            memberWindowIDs: memberWindowIDs,
+            memberWindowIDs: requiredWindowIDs,
             generation: generation,
             attempt: 0,
             delay: MissionControlProxyOrderingRecoveryPolicy
@@ -541,13 +1067,19 @@ private final class MissionControlGroupProxyWindow: NSWindow, NSWindowDelegate {
     func retire() {
         presentationGeneration &+= 1
         selectionConfirmationGeneration &+= 1
+        selectionWasDelivered = false
+        beginSelectionConfirmation = nil
+        consumeSelectionConfirmation = nil
+        releaseSelectionConfirmation = nil
         onSelected = nil
         currentTransitionAuthorization = nil
+        selectionConfirmationIsPending = false
         proxyView.members = []
         lastPresentedFrame = nil
         lastPresentedMemberWindowIDs = []
         isSafelyPresented = false
         hasOrderingValidationDebt = false
+        orderingValidationIsInFlight = false
         transitionToken = nil
         level = .normal
         alphaValue = 0
@@ -556,37 +1088,91 @@ private final class MissionControlGroupProxyWindow: NSWindow, NSWindowDelegate {
     }
 
     func requireOrderingRevalidation() {
-        let remainsSafe = isSafelyBehindAllMembers(
+        // Selection confirmation owns this proxy until delivery. Generic
+        // ordering recovery must not mutate it during that bounded handoff.
+        guard !selectionConfirmationIsPending,
+              MissionControlSelectedProxyPresentationPolicy
+            .allowsGenericOrderingRevalidation(
+                selectionWasDelivered: selectionWasDelivered
+            ) else { return }
+
+        let observation = orderingObservationBehindAllMembers(
             lastPresentedMemberWindowIDs
         )
-        isSafelyPresented = remainsSafe
         transitionToken = nil
-        if remainsSafe {
+        switch observation {
+        case .verifiedBehind:
+            isSafelyPresented = true
             hasOrderingValidationDebt = false
+            orderingValidationIsInFlight = false
             return
+
+        case .confirmedUnsafe:
+            // This is real negative ordering evidence. Hide synchronously,
+            // then use the existing bounded orderBack/revalidation path.
+            isSafelyPresented = false
+            hasOrderingValidationDebt = true
+            presentationGeneration &+= 1
+            let generation = presentationGeneration
+            alphaValue = 0
+            ignoresMouseEvents = true
+            guard let frame = lastPresentedFrame,
+                  !lastPresentedMemberWindowIDs.isEmpty else {
+                orderOut(nil)
+                return
+            }
+            scheduleOrderingValidation(
+                frame: frame,
+                memberWindowIDs: lastPresentedMemberWindowIDs,
+                generation: generation,
+                attempt: 0,
+                delay: MissionControlProxyOrderingRecoveryPolicy
+                    .verificationDelays[0],
+                reorderBeforeValidation: true,
+                preservePresentedLeaseOnUnresolved: false
+            )
+
+        case .unresolved:
+            // A previously verified, unchanged proxy keeps its bounded
+            // last-known-good ordering lease while Window Server evidence is
+            // temporarily incomplete. Do not turn one missing snapshot into
+            // physical Mission Control withdrawal. New/unverified proxies do
+            // not receive this lease and remain fail-closed.
+            let canPreserveLease = isSafelyPresented
+                && lastPresentedFrame != nil
+                && !lastPresentedMemberWindowIDs.isEmpty
+            presentationGeneration &+= 1
+            let generation = presentationGeneration
+            hasOrderingValidationDebt = true
+            guard let frame = lastPresentedFrame,
+                  !lastPresentedMemberWindowIDs.isEmpty else {
+                isSafelyPresented = false
+                alphaValue = 0
+                ignoresMouseEvents = true
+                orderOut(nil)
+                return
+            }
+            if canPreserveLease {
+                // Preserve the managed Window Server participant, but do not
+                // let incomplete ordering evidence grant new desktop input
+                // ownership. Verification re-enables interaction.
+                ignoresMouseEvents = true
+            } else {
+                isSafelyPresented = false
+                alphaValue = 0
+                ignoresMouseEvents = true
+            }
+            scheduleOrderingValidation(
+                frame: frame,
+                memberWindowIDs: lastPresentedMemberWindowIDs,
+                generation: generation,
+                attempt: 0,
+                delay: MissionControlProxyOrderingRecoveryPolicy
+                    .verificationDelays[0],
+                reorderBeforeValidation: !canPreserveLease,
+                preservePresentedLeaseOnUnresolved: canPreserveLease
+            )
         }
-        // Ordering uncertainty is a presentation authorization failure. Hide
-        // synchronously so a large proxy can never remain exposed/clickable,
-        // then reacquire ordering with bounded checks. A single transient
-        // Window Server snapshot must not permanently remove the MC candidate.
-        presentationGeneration &+= 1
-        let generation = presentationGeneration
-        alphaValue = 0
-        ignoresMouseEvents = true
-        hasOrderingValidationDebt = true
-        guard let frame = lastPresentedFrame,
-              !lastPresentedMemberWindowIDs.isEmpty else {
-            orderOut(nil)
-            return
-        }
-        scheduleOrderingValidation(
-            frame: frame,
-            memberWindowIDs: lastPresentedMemberWindowIDs,
-            generation: generation,
-            attempt: 0,
-            delay: MissionControlProxyOrderingRecoveryPolicy
-                .verificationDelays[0]
-        )
     }
 
     func noteMissionControlTransitionObserved() {
@@ -598,19 +1184,29 @@ private final class MissionControlGroupProxyWindow: NSWindow, NSWindowDelegate {
     }
 
     func cancelSelectionTransition() {
+        presentationGeneration &+= 1
         selectionConfirmationGeneration &+= 1
         selectionWasDelivered = false
+        selectionConfirmationIsPending = false
         isSafelyPresented = false
-        hasOrderingValidationDebt = false
+        orderingValidationIsInFlight = false
+        hasOrderingValidationDebt = lastPresentedFrame != nil
+            && !lastPresentedMemberWindowIDs.isEmpty
         transitionToken = nil
         level = .normal
         alphaValue = 0
         ignoresMouseEvents = true
-        orderBack(nil)
+        // Once a proxy has been selected, cancellation must remove that exact
+        // cover from Window Server. orderBack() kept the managed window alive
+        // as a Mission Control participant and allowed a stale composite to
+        // remain visible until the transition ended. Recovery may rebuild it
+        // later from fresh ordering evidence.
+        orderOut(nil)
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
-        guard !selectionWasDelivered else { return }
+        guard !selectionWasDelivered,
+              !selectionConfirmationIsPending else { return }
         if !MissionControlTransitionTokenPolicy.isValid(
             transitionToken,
             groupID: groupID,
@@ -624,54 +1220,115 @@ private final class MissionControlGroupProxyWindow: NSWindow, NSWindowDelegate {
                 presentationGeneration: presentationGeneration
             )
         }
+        guard MissionControlTransitionTokenPolicy.isValid(
+            transitionToken,
+            groupID: groupID,
+            presentationGeneration: presentationGeneration
+        ) else { return }
         // Entering Mission Control can perturb key-window state without the
         // user choosing this proxy. Confirm the selection only after Tabora
         // is genuinely the active/frontmost application. This is a bounded
         // one-shot confirmation, not a capture or polling loop.
         selectionConfirmationGeneration &+= 1
         let generation = selectionConfirmationGeneration
+        selectionConfirmationIsPending = true
+        let selectedGroupID = groupID
+        let selectedMemberIDs = presentedMemberIDs
+        let selectedPresentationGeneration = presentationGeneration
+        guard let selectionCandidateGeneration = beginSelectionConfirmation?(
+            selectedGroupID,
+            selectedMemberIDs
+        ), selectionCandidateGeneration != 0 else {
+            selectionConfirmationIsPending = false
+            return
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.14) { [weak self] in
-            guard let self,
-                  self.selectionConfirmationGeneration == generation,
-                  self.isKeyWindow,
+            guard let self else { return }
+            var selectionWasConsumed = false
+            defer {
+                if !selectionWasConsumed {
+                    self.releaseSelectionConfirmation?(
+                        selectionCandidateGeneration,
+                        selectedGroupID,
+                        selectedMemberIDs
+                    )
+                }
+            }
+            guard self.selectionConfirmationGeneration == generation else {
+                return
+            }
+            self.selectionConfirmationIsPending = false
+            guard
+                  self.groupID == selectedGroupID,
+                  self.presentedMemberIDs == selectedMemberIDs,
+                  self.presentationGeneration
+                    == selectedPresentationGeneration,
                   NSApp.isActive,
                   NSWorkspace.shared.frontmostApplication?
                     .processIdentifier == ProcessInfo.processInfo.processIdentifier,
                   MissionControlTransitionTokenPolicy.isValid(
                     self.transitionToken,
-                    groupID: self.groupID,
-                    presentationGeneration: self.presentationGeneration
+                    groupID: selectedGroupID,
+                    presentationGeneration: selectedPresentationGeneration
                   ),
-                  !self.selectionWasDelivered else { return }
+                  !self.selectionWasDelivered,
+                  self.consumeSelectionConfirmation?(
+                    selectionCandidateGeneration,
+                    selectedGroupID,
+                    selectedMemberIDs
+                  ) == true else { return }
+            selectionWasConsumed = true
             // One-shot authorization: key-window churn cannot replay the same
             // Mission Control transition evidence.
             self.transitionToken = nil
             self.selectionWasDelivered = true
             self.isSafelyPresented = false
-            // Keep the selected static composite above the real windows while
-            // they settle and are raised as one verified group. Removing the
-            // proxy here exposed each AXRaise in sequence and looked like a
-            // frame/height correction even though no frame was being written.
+            self.orderingValidationIsInFlight = false
+            // The proxy is the Window Server surface that Mission Control is
+            // already returning to the desktop. Keep its frozen composite
+            // above the exact group only while the controller performs the
+            // first per-window AXRaise sequence. Removing that selected
+            // surface in the middle of the compositor transition exposes the
+            // members one by one and looks like a final geometry correction,
+            // even though no frame mutation is being sent here.
             self.level = .floating
             self.orderFrontRegardless()
             self.ignoresMouseEvents = true
-            self.onSelected?()
-            let transitionGeneration = self.selectionConfirmationGeneration
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
-                [weak self] in
+            self.onSelected?(selectedGroupID, selectedMemberIDs)
+            let handoffGeneration = self.selectionConfirmationGeneration
+            DispatchQueue.main.asyncAfter(
+                deadline: .now()
+                    + MissionControlSelectedProxyPresentationPolicy
+                        .maximumVisibleHandoffLifetime
+            ) { [weak self] in
                 guard let self,
                       self.selectionConfirmationGeneration
-                        == transitionGeneration,
+                        == handoffGeneration,
                       self.selectionWasDelivered else { return }
-                self.cancelSelectionTransition()
+                // Never leave a large composite visible if activation cannot
+                // settle. Keep the selected surface registered and inert so
+                // orderOut itself cannot perturb an in-flight Window Server
+                // animation; controller success/cancellation retires it.
+                self.alphaValue = 0
+                self.ignoresMouseEvents = true
             }
         }
     }
 
     func windowDidResignKey(_ notification: Notification) {
+        // Mission Control may resign the proxy while completing the very exit
+        // that selected it. The captured key event remains authoritative for
+        // the bounded confirmation turn; NSApp/frontmost/token checks below
+        // still reject incidental key churn on Mission Control entry.
+        guard MissionControlProxySelectionDeliveryPolicy
+            .cancelsOnWindowResign(
+                selectionWasDelivered: selectionWasDelivered,
+                confirmationIsPending: selectionConfirmationIsPending
+            ) else { return }
         if level != .floating {
             selectionConfirmationGeneration &+= 1
             selectionWasDelivered = false
+            selectionConfirmationIsPending = false
         }
     }
 
@@ -681,50 +1338,90 @@ private final class MissionControlGroupProxyWindow: NSWindow, NSWindowDelegate {
         memberWindowIDs: Set<CGWindowID>,
         generation: Int,
         attempt: Int,
-        delay: TimeInterval
+        delay: TimeInterval,
+        reorderBeforeValidation: Bool = true,
+        preservePresentedLeaseOnUnresolved: Bool = false
     ) {
+        orderingValidationIsInFlight = true
         let perform = { [weak self] in
             guard let self,
                   self.presentationGeneration == generation,
-                  !self.selectionWasDelivered else { return }
-            self.alphaValue = 0
-            self.ignoresMouseEvents = true
-            self.orderBack(nil)
+                  !self.selectionWasDelivered,
+                  !self.selectionConfirmationIsPending else { return }
+            if reorderBeforeValidation {
+                self.alphaValue = 0
+                self.ignoresMouseEvents = true
+                self.orderBack(nil)
+            }
             // Ordering is asynchronous across Window Server. Verify on the
-            // next main-loop turn while the proxy is still invisible and
-            // non-interactive.
+            // next main-loop turn. A preserved lease performs observation only;
+            // confirmed unsafe evidence switches back to the normal hidden
+            // orderBack/revalidation path.
             DispatchQueue.main.async { [weak self] in
                 guard let self,
                       self.presentationGeneration == generation,
-                      !self.selectionWasDelivered else { return }
-                if self.isSafelyBehindAllMembers(memberWindowIDs) {
+                      !self.selectionWasDelivered,
+                      !self.selectionConfirmationIsPending else { return }
+                let observation = self.orderingObservationBehindAllMembers(
+                    memberWindowIDs
+                )
+                switch observation {
+                case .verifiedBehind:
                     self.lastPresentedFrame = frame
                     self.lastPresentedMemberWindowIDs = memberWindowIDs
                     self.isSafelyPresented = true
                     self.hasOrderingValidationDebt = false
+                    self.orderingValidationIsInFlight = false
                     self.alphaValue = 1
                     self.ignoresMouseEvents = false
                     return
-                }
 
-                self.isSafelyPresented = false
-                self.hasOrderingValidationDebt = true
-                if let nextDelay = MissionControlProxyOrderingRecoveryPolicy
-                    .delayAfterFailedAttempt(attempt) {
-                    self.scheduleOrderingValidation(
-                        frame: frame,
-                        memberWindowIDs: memberWindowIDs,
-                        generation: generation,
-                        attempt: attempt + 1,
-                        delay: nextDelay
-                    )
-                } else {
-                    // Fast recovery is bounded. Leave explicit debt for the
-                    // existing 1 Hz Recovery watchdog rather than keeping a
-                    // high-frequency retry loop alive.
+                case .confirmedUnsafe:
+                    self.isSafelyPresented = false
+                    self.hasOrderingValidationDebt = true
                     self.alphaValue = 0
                     self.ignoresMouseEvents = true
-                    self.orderOut(nil)
+                    if let nextDelay = MissionControlProxyOrderingRecoveryPolicy
+                        .delayAfterFailedAttempt(attempt) {
+                        self.scheduleOrderingValidation(
+                            frame: frame,
+                            memberWindowIDs: memberWindowIDs,
+                            generation: generation,
+                            attempt: attempt + 1,
+                            delay: nextDelay,
+                            reorderBeforeValidation: true,
+                            preservePresentedLeaseOnUnresolved: false
+                        )
+                    } else {
+                        self.orderingValidationIsInFlight = false
+                        self.orderOut(nil)
+                    }
+
+                case .unresolved:
+                    self.hasOrderingValidationDebt = true
+                    if let nextDelay = MissionControlProxyOrderingRecoveryPolicy
+                        .delayAfterFailedAttempt(attempt) {
+                        self.scheduleOrderingValidation(
+                            frame: frame,
+                            memberWindowIDs: memberWindowIDs,
+                            generation: generation,
+                            attempt: attempt + 1,
+                            delay: nextDelay,
+                            reorderBeforeValidation:
+                                !preservePresentedLeaseOnUnresolved,
+                            preservePresentedLeaseOnUnresolved:
+                                preservePresentedLeaseOnUnresolved
+                        )
+                    } else {
+                        // Last-known-good presentation is only a bounded lease.
+                        // If Window Server never yields complete evidence, fail
+                        // closed and hand residual liveness debt to Recovery.
+                        self.isSafelyPresented = false
+                        self.orderingValidationIsInFlight = false
+                        self.alphaValue = 0
+                        self.ignoresMouseEvents = true
+                        self.orderOut(nil)
+                    }
                 }
             }
         }
@@ -739,34 +1436,25 @@ private final class MissionControlGroupProxyWindow: NSWindow, NSWindowDelegate {
         }
     }
 
-    private func isSafelyBehindAllMembers(
+    private func orderingObservationBehindAllMembers(
         _ memberWindowIDs: Set<CGWindowID>
-    ) -> Bool {
+    ) -> MissionControlProxyOrderingObservation {
         guard windowNumber > 0,
               memberWindowIDs.count >= 2,
               let info = CGWindowListCopyWindowInfo(
                   [.optionOnScreenOnly, .excludeDesktopElements],
                   kCGNullWindowID
-              ) as? [[String: Any]] else { return false }
+              ) as? [[String: Any]] else { return .unresolved }
         let orderedIDs = info.compactMap {
             ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value
         }
-        return MissionControlProxyOrderingPolicy.isBehindAllRequiredWindows(
+        return MissionControlProxyOrderingPolicy.observation(
             proxyWindowID: UInt32(windowNumber),
             requiredWindowIDs: memberWindowIDs,
             orderedWindowIDs: orderedIDs
         )
     }
 
-    private static func framesAreApproximatelyEqual(
-        _ lhs: CGRect,
-        _ rhs: CGRect
-    ) -> Bool {
-        abs(lhs.minX - rhs.minX) < 1
-            && abs(lhs.minY - rhs.minY) < 1
-            && abs(lhs.width - rhs.width) < 1
-            && abs(lhs.height - rhs.height) < 1
-    }
 }
 
 private final class MissionControlGroupProxyView: NSView {

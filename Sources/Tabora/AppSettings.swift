@@ -100,52 +100,59 @@ final class AppSettings {
     private let sideDwellExpansionEnabledKey = "sideDwellExpansionEnabled"
     private let sideDwellDurationKey = "sideDwellDuration"
     private let windowPreviewsEnabledKey = "windowPreviewsEnabled"
-    private let layoutIntrusionToleranceKey = "layoutIntrusionTolerance"
-    private let legacySplitDetachmentThresholdKey = "splitDetachmentThreshold"
+    private let missionControlPreviewMemoryLimitKey =
+        "missionControlPreviewMemoryLimitMiB"
+    private let constraintRecordingPromptsEnabledKey =
+        "constraintRecordingPromptsEnabled"
 
     static let defaultEdgeThreshold: Double = 26
     static let defaultCornerBand: Double = 120
     static let defaultSideDwellDuration: Double = 2
-    static let defaultLayoutIntrusionTolerance: Double = 0.5
     static let defaultLinkedResizeDisplayMode: LinkedResizeDisplayMode = .lightweight
     static let defaultLinkedResizePresentationStyle: LinkedResizePresentationStyle = .combined
     static let defaultRaiseConnectedWindowsOnClick = false
-    static let defaultResizeCursorAdornmentEnabled = false
+    static let defaultResizeCursorAdornmentEnabled = true
     // Keep 8 pt as both the visual default and the slider midpoint. This gives
     // equal room to tighten or loosen the cursor clearance without silently
     // changing the glyph size.
     static let defaultResizeCursorAdornmentDistance: Double = 8
     static let resizeCursorAdornmentDistanceRange = 4.0...12.0
+    static let defaultMissionControlPreviewMemoryLimitMiB = 32
+    static let missionControlPreviewMemoryLimitRange = 16...128
+    static let missionControlPreviewMemoryLimitStep = 16
 
     static func normalizedResizeCursorAdornmentDistance(_ value: Double) -> Double {
         min(max(value, resizeCursorAdornmentDistanceRange.lowerBound),
             resizeCursorAdornmentDistanceRange.upperBound)
     }
+
+    static func normalizedMissionControlPreviewMemoryLimitMiB(
+        _ value: Int
+    ) -> Int {
+        let clamped = min(
+            max(value, missionControlPreviewMemoryLimitRange.lowerBound),
+            missionControlPreviewMemoryLimitRange.upperBound
+        )
+        let step = missionControlPreviewMemoryLimitStep
+        return Int((Double(clamped) / Double(step)).rounded()) * step
+    }
+
+    static func missionControlPreviewMemoryByteLimit(_ value: Int) -> Int {
+        normalizedMissionControlPreviewMemoryLimitMiB(value) * 1024 * 1024
+    }
     static let edgeThresholdRange: ClosedRange<Double> = 8...80
     static let cornerBandRange: ClosedRange<Double> = 60...300
     static let sideDwellDurationRange: ClosedRange<Double> = 0.5...5
-    static let layoutIntrusionToleranceRange: ClosedRange<Double> = 0.1...0.9
 
-    var layoutIntrusionTolerance: Double {
+    var constraintRecordingPromptsEnabled: Bool {
         get {
-            if defaults.object(forKey: layoutIntrusionToleranceKey) != nil {
-                return Self.layoutIntrusionToleranceRange.clamped(
-                    defaults.double(forKey: layoutIntrusionToleranceKey)
-                )
-            }
-            if defaults.object(forKey: legacySplitDetachmentThresholdKey) != nil {
-                return Self.layoutIntrusionToleranceRange.clamped(
-                    defaults.double(forKey: legacySplitDetachmentThresholdKey)
-                )
-            }
-            return Self.defaultLayoutIntrusionTolerance
+            guard defaults.object(
+                forKey: constraintRecordingPromptsEnabledKey
+            ) != nil else { return true }
+            return defaults.bool(forKey: constraintRecordingPromptsEnabledKey)
         }
         set {
-            defaults.set(
-                Self.layoutIntrusionToleranceRange.clamped(newValue),
-                forKey: layoutIntrusionToleranceKey
-            )
-            defaults.removeObject(forKey: legacySplitDetachmentThresholdKey)
+            defaults.set(newValue, forKey: constraintRecordingPromptsEnabledKey)
             notify()
         }
     }
@@ -159,6 +166,26 @@ final class AppSettings {
         }
         set {
             defaults.set(newValue, forKey: windowPreviewsEnabledKey)
+            notify()
+        }
+    }
+
+    var missionControlPreviewMemoryLimitMiB: Int {
+        get {
+            guard defaults.object(
+                forKey: missionControlPreviewMemoryLimitKey
+            ) != nil else {
+                return Self.defaultMissionControlPreviewMemoryLimitMiB
+            }
+            return Self.normalizedMissionControlPreviewMemoryLimitMiB(
+                defaults.integer(forKey: missionControlPreviewMemoryLimitKey)
+            )
+        }
+        set {
+            defaults.set(
+                Self.normalizedMissionControlPreviewMemoryLimitMiB(newValue),
+                forKey: missionControlPreviewMemoryLimitKey
+            )
             notify()
         }
     }

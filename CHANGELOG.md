@@ -1,5 +1,81 @@
 # 更新履歴
 
+## 1.1.0 — 開発中
+
+### Mission Control / Multi-display
+
+- Mission Control復帰の根本経路を再構築。選択proxyのexact group ID / member集合 / preferred memberを固定し、その明示選択を全member foreground mutationの認可として直接使用する。実windowが既にfrontmostであることをmutation前に要求する循環条件を撤去した。
+- companion raiseを止めていた`placement.appliedFrame`基準のdesktop geometry gateをactivation経路から完全撤去。この値はApp Constraint、共有resize、丸め、復元後の現在frameと一致する保証がなく、前回修正にも残っていた。
+- 各retryは動作確認済みresize toggleと同じ「全companionをraiseし、preferred mainを最後にactivate/raise」を先頭から再実行する。部分成功を次回へ持ち越さず、最大20回の有限retry後もWindow Serverで全memberのfrontmostが確認できなければhandoffだけを中止する。
+- proxy key eventから0.14秒の選択確認中はpreview update、ordering revalidation、通常update、window resignによるpresentation generation変更を禁止。Mission Control exit自身のkey resignで正しいクリックcallbackが失われる競合を除去した。
+- 複数proxyの一時的なkey変化では最初の遅延callbackを採用せず、最後にkeyとなったproxyの世代・group ID・member集合が完全一致する場合だけ選択を消費する。Group 2の選択をGroup 1の古いcallbackへ取り違えない。
+- 選択callbackが成立した時点で大きなcomposite proxyを即時order outし、desktop上のfloating coverとして残さない。成功判定にもproxyを参加させない。
+- first-callback-wins型selection claim、終了後250 ms quarantine、Recoveryからのactivation再始動を撤去。排他は最新proxy候補とcontrollerのactive exact-group transactionが所有する。
+- 成功・失敗・stale構造拒否・外部中断のすべてで、Mission Control遷移中に保留されたfocus/click通知を通常desktop selectionへ再生しない。失敗時はgroup membership、placement lock、従来foreground modeを保持する。
+
+#### 今回担保する範囲
+
+- 選択時に表示されていた同一group ID・同一member集合だけを前面化対象にする。
+- 2 / 3 / 4 memberを同じ全体passで処理し、Group 2失敗を下のGroup 1へfallbackさせない。
+- companionの前面化をplacement frame一致やpreview更新へ依存させない。
+- 選択済みcomposite画像をdesktop背景へ残さない。
+- 成功確認前にforeground modeを変更せず、失敗時にもgroup構造を破壊しない。
+
+#### 今回担保しない範囲
+
+- AccessibilityまたはWindow Serverが全20回の観測中ずっと応答不能な場合の強制成功。
+- macOS private Mission Control動作のOS version横断保証。
+- このLinux監査環境でのmacOS実機動作確認。`swift test`と実操作確認はmacOS側で必要。
+- display境界を越えた直後にdrag callbackなしでmouse-upした場合もdrop時点でdisplay transitionを再評価し、底面を揃えたSidecar等の境界で1pxの越境が外部display snapへ化ける経路を修正。
+
+### 共有リサイズ境界 / UI
+
+- 3 / 4分割のjunctionを交点の単一input ownerとし、single-axis boundary control・hit region・hover・cursor ownershipをjunction exclusion外へ退避する共通geometryへ変更。
+- 2分割はjunctionが存在しないため従来の中央配置を維持し、3分割・4分割専用offsetは追加しない。
+- valid groupのhandle presentationが失われた場合にgroup単位のliveness debtを検出し、bounded fast retryから既存1 Hz Recoveryへ引き継ぐ復帰経路を追加。
+- 別group同士の境界が画面上で交差してもjunctionを合成せず、departure / handle cleanupも対象groupへ限定。
+- shared resize中のgroup departureでinteraction終了が他groupのhandleを一時非表示にした場合も、departure commit完了前にremaining groupのhandle presentationを同期再構築し、1 Hz Recovery待ちにしない。
+
+### Placement / Group policy
+
+- App Constraintで実境界が50%位置から移動していても、incoming snapの所属判定をlive physical contactではなくproposed zone topologyから行い、frontmost既存groupへ合法にextensionできる場合は新規Group 2を作らない。
+- proposed topologyでgroup extension / initial constraint planを共通化し、左右・上下を同じshared-boundary solverへ通す。3 / 4分割専用patchは追加しない。
+- 片側halfをquarter 2枚だけで保持しているgroupへ、そのhalf全体を1枚で明示snapした場合は、incoming zoneが旧groupのlogical cellsを完全一致で覆う時だけfull-group replacementとして認可し、旧groupをAtomic Group Departureでretireする。部分重なりや不確実観測は認可根拠にしない。
+- multi-member replacementで正式にdisplacedされたwindowは、操作開始時の古いlock snapshotをAssist除外根拠として残さず、commit後のauthoritative lock / group stateに従って候補へ復帰できるようにする。
+- initial placementの未使用`targetFrame` bindingを除去し、plan生成成功時にcandidate targetが含まれる既存invariantへ整理。
+
+### Settings UI
+
+- 設定画面上部に `一般 / コマンド / サイズ制約 / 試験的機能` の4カテゴリ切替を追加し、既存設定値・action・永続keyは変更せず表示だけを整理。
+- コマンドページの短い内容を上端へ固定し、document viewの余白配分で項目が上下に分離する表示崩れを修正。
+- アプリ別のサイズ制約をアプリ名・記録許可・サイズ取得・読み取り専用の値確認・削除へ整理し、常時表示の数値と手動編集経路を撤去。
+- 試験的機能へMission Control画像メモリ上限（16〜128 MiB）と手動キャッシュ解放を追加。既存の全member均等配分は維持する。
+- リサイズ方向表示を新規環境でデフォルトONへ変更。既存UserDefaultsの明示設定は保持する。
+- アプリ別のサイズ制約の「値を確認」でaccessory viewがゼロサイズになり値が見えない問題を修正し、最小幅・最小高・最大幅・最大高を`pt`単位で表示。「制約を確認」は実際の動作に合わせて「サイズを取得」へ変更。
+
+### Snap / Assist
+
+- Assist候補をキャンセルした後、同じスナップ済みwindowを画面上端へドラッグすると、provisional peer探索がincoming window自身を既存peerとして採用し、重複Dictionary keyのSwift trapで強制終了する問題を修正。3件のcrash reportはいずれも同一stackであることを確認。
+- Assist panelが消費したmouse-downに対応するmouse-upをdesktop clickとして再処理しないよう、pointer sequence ownershipを分離。
+
+### Mission Control Preview
+
+- frame不変のウィンドウ画像が無期限に残るcache key問題を、通常デスクトップ・操作停止中だけ動く15秒のstale-while-revalidateで修正。古い画像を表示したまま非同期取得し、Mission Control変形中はpresentationを再構築しない。
+- メモリ上限変更時は派生画像cacheと進行中generationだけを無効化し、group identity・member順序・foreground認可・Recovery timerには変更を加えない。
+
+### App Constraint / Correctness
+
+- アプリ自身のconfirmed size rejectionだけをmin/max constraint候補として扱う自己学習・認証式App Constraintを追加。通常resize、AX unknown、screen limitは学習根拠にしない。
+- known constraintをAX write前の2 / 3 / 4共通legal-range solverへ適用し、shared minimum / maximumと反対側participantの不等式をintersectionしてboundaryをclamp。
+- shared resizeのeffective boundaryが変化しない場合はtarget再生成・scheduler submit・AX write・overlay更新を抑制。
+- confirmed rejectionでcommit済みgroupが成立不能になった場合は、group destruction認可とcleanupを分離したAtomic Group Departureからhandle / toggle / proxy / placement / resize ownershipを即時retire。
+- App Constraint recordを専用Codable storeへatomic保存し、app単位の記録許可、pending candidate、known値、explicit verificationを管理。
+- 「サイズ制約」設定を追加し、「アプリ別のサイズ制約」で記録確認ON/OFF、app別min/max、今後の記録許可、サイズ取得、読み取り専用の値確認、record削除を提供。
+- 「サイズを取得」は同一アプリに複数の標準windowがある場合、計測対象をユーザーが選択してから開始する。
+- 明示的なサイズ取得中は固定プログレス表示で4辺の計測と原位置復元を通知し、完了後は別alertを重ねず、同じ表示の「完了」を押すまで結果を保持する。計測ロック自体は復元完了時に解除し、確認待ちで通常操作を停止し続けない。
+- 初回スナップでscreen / system limitでは説明できないoperation-localなサイズ差を観測した場合、永続値やgroup構造を変更せず許可UIだけを先行予約する。confirmed rejectionの永続学習基準と1.8秒のbounded settlementは短縮せず、許可後の全辺明示計測だけをknown値として使用する。
+- App Constraint recordのdormant lifecycleをevent-drivenに同期し、matching identityの実観測はsilent reactivate、確認済みreplacement / observed bundle disappearanceだけをdormant根拠とし、LaunchServices不確実性だけでは状態を変更しない。
+
 ## 1.0.1 — 2026-08-18
 
 ### バグ修正 / Correctness

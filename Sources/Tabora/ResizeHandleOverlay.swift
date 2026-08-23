@@ -68,26 +68,73 @@ final class ResizeHandleOverlay {
     private var activeArrowRestorationFrame: CGRect?
 
     var hasPresentedHandles: Bool {
-        !panels.isEmpty || !junctionPanels.isEmpty
+        panels.values.contains(where: \.isVisible)
+            || junctionPanels.values.contains(where: \.isVisible)
+    }
+
+    var presentedBoundaryIDs: Set<String> {
+        Set(panels.compactMap { id, panel in panel.isVisible ? id : nil })
     }
 
     func update(
         _ descriptors: [ResizeHandleDescriptor],
         quarantinedIDs: Set<String> = []
     ) {
-        let signatures = descriptors.map(ResizeHandlePresentationSignature.init)
+        // Junction ownership is resolved before any boundary panel is laid out.
+        // This makes presentation, tracking, hover and cursor ownership derive
+        // from the same geometry instead of relying on panel Z-order.
+        let rawJunctions = makeJunctions(from: descriptors)
+        let effectiveDescriptors = descriptorsApplyingJunctionExclusions(
+            descriptors,
+            junctions: rawJunctions
+        )
+        let junctions = makeJunctions(from: effectiveDescriptors)
+        let signatures = effectiveDescriptors
+            .map(ResizeHandlePresentationSignature.init)
             .sorted { $0.id < $1.id }
         let effectiveQuarantinedIDs = quarantinedIDs.intersection(
-            Set(descriptors.map(\.id))
+            Set(effectiveDescriptors.map(\.id))
         )
         if signatures == presentedSignatures,
            effectiveQuarantinedIDs == presentedQuarantinedIDs {
+            // A panel can be ordered out by an AppKit/lifecycle edge without
+            // changing descriptor geometry. Reconcile only missing expected
+            // presentation here; do not churn panels that are already visible.
+            if !isPresentationSuspended,
+               activeHandleID == nil, activeJunctionID == nil {
+                for descriptor in effectiveDescriptors {
+                    let panel = panels[descriptor.id] ?? makePanel(for: descriptor)
+                    panels[descriptor.id] = panel
+                    if !panel.isVisible {
+                        panel.update(descriptor: descriptor)
+                        panel.setQuarantined(
+                            effectiveQuarantinedIDs.contains(descriptor.id)
+                        )
+                        panel.setInputSuspended(isInputSuspended)
+                        panel.present()
+                    }
+                }
+                for junction in junctions {
+                    let panel = junctionPanels[junction.id]
+                        ?? makeJunctionPanel(for: junction)
+                    junctionPanels[junction.id] = panel
+                    if !panel.isVisible {
+                        panel.update(descriptor: junction)
+                        panel.setQuarantined(
+                            effectiveQuarantinedIDs.contains(junction.first.id)
+                                || effectiveQuarantinedIDs.contains(junction.second.id)
+                        )
+                        panel.setInputSuspended(isInputSuspended)
+                        panel.present()
+                    }
+                }
+            }
             return
         }
         presentedSignatures = signatures
         presentedQuarantinedIDs = effectiveQuarantinedIDs
 
-        let visibleIDs = Set(descriptors.map(\.id))
+        let visibleIDs = Set(effectiveDescriptors.map(\.id))
         let staleIDs = panels.keys.filter {
             !visibleIDs.contains($0) && $0 != activeHandleID
         }
@@ -95,7 +142,7 @@ final class ResizeHandleOverlay {
             panels.removeValue(forKey: id)?.orderOut(nil)
         }
 
-        for descriptor in descriptors {
+        for descriptor in effectiveDescriptors {
             let panel = panels[descriptor.id] ?? makePanel(for: descriptor)
             panels[descriptor.id] = panel
             panel.update(descriptor: descriptor)
@@ -118,7 +165,6 @@ final class ResizeHandleOverlay {
             }
         }
 
-        let junctions = makeJunctions(from: descriptors)
         let visibleJunctionIDs = Set(junctions.map(\.id))
         let staleJunctionIDs = junctionPanels.keys.filter {
             !visibleJunctionIDs.contains($0) && $0 != activeJunctionID
@@ -127,7 +173,8 @@ final class ResizeHandleOverlay {
             junctionPanels.removeValue(forKey: id)?.orderOut(nil)
         }
         for junction in junctions {
-            let panel = junctionPanels[junction.id] ?? makeJunctionPanel(for: junction)
+            let panel = junctionPanels[junction.id]
+                ?? makeJunctionPanel(for: junction)
             junctionPanels[junction.id] = panel
             panel.update(descriptor: junction)
             panel.setQuarantined(
@@ -256,6 +303,55 @@ final class ResizeHandleOverlay {
         restoreSystemArrowAfterInteractionIfNeeded()
     }
 
+    func removeHandles(participantIDs: Set<String>) {
+        guard !participantIDs.isEmpty else { return }
+        let previousActiveHandleID = activeHandleID
+        let previousActiveJunctionID = activeJunctionID
+        let removedBoundaryIDs = panels.compactMap { id, panel -> String? in
+            guard !participantIDs.isDisjoint(
+                with: panel.handleView.descriptor.participantIDs
+            ) else { return nil }
+            panel.cancelInteraction()
+            panel.orderOut(nil)
+            return id
+        }
+        for id in removedBoundaryIDs {
+            panels.removeValue(forKey: id)
+            if activeHandleID == id { activeHandleID = nil }
+        }
+
+        let removedJunctionIDs = junctionPanels.compactMap {
+            id, panel -> String? in
+            let participants = Set(
+                panel.junctionView.descriptor.interaction.descriptors
+                    .flatMap(\.participantIDs)
+            )
+            guard !participantIDs.isDisjoint(with: participants) else {
+                return nil
+            }
+            panel.cancelInteraction()
+            panel.orderOut(nil)
+            return id
+        }
+        for id in removedJunctionIDs {
+            junctionPanels.removeValue(forKey: id)
+            if activeJunctionID == id { activeJunctionID = nil }
+        }
+        presentedSignatures.removeAll { signature in
+            removedBoundaryIDs.contains(signature.id)
+        }
+        presentedQuarantinedIDs.subtract(removedBoundaryIDs)
+        let removedActiveBoundary = previousActiveHandleID.map {
+            removedBoundaryIDs.contains($0)
+        } ?? false
+        let removedActiveJunction = previousActiveJunctionID.map {
+            removedJunctionIDs.contains($0)
+        } ?? false
+        if removedActiveBoundary || removedActiveJunction {
+            restoreSystemArrowAfterInteractionIfNeeded()
+        }
+    }
+
     private func restoreSystemArrowAfterInteractionIfNeeded() {
         guard let frame = activeArrowRestorationFrame else { return }
         activeArrowRestorationFrame = nil
@@ -313,19 +409,17 @@ final class ResizeHandleOverlay {
     private func makeJunctions(
         from descriptors: [ResizeHandleDescriptor]
     ) -> [ResizeHandleJunctionDescriptor] {
-        // mac presentation promises that only the visible center control is
-        // interactive. Do not create an invisible intersection panel for it.
-        let junctionEligible = descriptors.filter {
-            $0.presentationStyle != .mac
-        }
-        let xBoundaries = junctionEligible.filter { $0.axis == .horizontal }
-        let yBoundaries = junctionEligible.filter { $0.axis == .vertical }
+        let xBoundaries = descriptors.filter { $0.axis == .horizontal }
+        let yBoundaries = descriptors.filter { $0.axis == .vertical }
         let radius = ResizeHandleDescriptor.sharedBoundaryHitThickness / 2
         var result: [ResizeHandleJunctionDescriptor] = []
 
         for xBoundary in xBoundaries {
             for yBoundary in yBoundaries where
-                yBoundary.displayID == xBoundary.displayID {
+                yBoundary.displayID == xBoundary.displayID
+                    && !yBoundary.participantIDs.isDisjoint(
+                        with: xBoundary.participantIDs
+                    ) {
                 let point = CGPoint(
                     x: xBoundary.coordinate,
                     y: yBoundary.coordinate
@@ -349,6 +443,40 @@ final class ResizeHandleOverlay {
             }
         }
         return result
+    }
+
+    private func descriptorsApplyingJunctionExclusions(
+        _ descriptors: [ResizeHandleDescriptor],
+        junctions: [ResizeHandleJunctionDescriptor]
+    ) -> [ResizeHandleDescriptor] {
+        var exclusionsByID: [String: [ClosedRange<CGFloat>]] = [:]
+        for junction in junctions {
+            exclusionsByID[junction.first.id, default: []].append(
+                junction.frame.minY...junction.frame.maxY
+            )
+            exclusionsByID[junction.second.id, default: []].append(
+                junction.frame.minX...junction.frame.maxX
+            )
+        }
+        return descriptors.map { descriptor in
+            ResizeHandleDescriptor(
+                id: descriptor.id,
+                displayID: descriptor.displayID,
+                axis: descriptor.axis,
+                coordinate: descriptor.coordinate,
+                span: descriptor.span,
+                screenFrame: descriptor.screenFrame,
+                participantIDs: descriptor.participantIDs,
+                occlusionParticipants: descriptor.occlusionParticipants,
+                presentationStyle: descriptor.presentationStyle,
+                showsResizeCursorAdornment:
+                    descriptor.showsResizeCursorAdornment,
+                resizeCursorAdornmentDistance:
+                    descriptor.resizeCursorAdornmentDistance,
+                junctionExclusionSpans:
+                    exclusionsByID[descriptor.id] ?? []
+            )
+        }
     }
 
 }
@@ -449,7 +577,7 @@ private final class ResizeHandleView: NSView {
 
     private let guideLayer = CALayer()
     private let pillLayer = CALayer()
-    private var hoverTrackingArea: NSTrackingArea?
+    private var hoverTrackingAreas: [NSTrackingArea] = []
     private var pointerIsInside = false
     private var isHovering = false
     private var hoverActivationGeneration = 0
@@ -490,26 +618,50 @@ private final class ResizeHandleView: NSView {
         updatePillFrame()
     }
 
+    private var interactiveLocalRects: [CGRect] {
+        if descriptor.presentationStyle == .mac {
+            return bounds.isEmpty ? [] : [bounds]
+        }
+        return descriptor.freeInteractionIntervals.compactMap { interval in
+            switch descriptor.axis {
+            case .horizontal:
+                let y = interval.lowerBound - descriptor.span.lowerBound
+                let height = interval.upperBound - interval.lowerBound
+                guard height >= 1 else { return nil }
+                return CGRect(x: 0, y: y, width: bounds.width, height: height)
+            case .vertical:
+                let x = interval.lowerBound - descriptor.span.lowerBound
+                let width = interval.upperBound - interval.lowerBound
+                guard width >= 1 else { return nil }
+                return CGRect(x: x, y: 0, width: width, height: bounds.height)
+            }
+        }
+    }
+
+    private func containsInteractivePoint(_ localPoint: CGPoint) -> Bool {
+        interactiveLocalRects.contains { $0.contains(localPoint) }
+    }
+
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        if let hoverTrackingArea {
-            removeTrackingArea(hoverTrackingArea)
+        hoverTrackingAreas.forEach(removeTrackingArea)
+        hoverTrackingAreas.removeAll()
+        for rect in interactiveLocalRects {
+            let hoverArea = NSTrackingArea(
+                rect: rect,
+                options: [
+                    .activeAlways,
+                    .mouseEnteredAndExited,
+                    .mouseMoved,
+                    .cursorUpdate,
+                    .enabledDuringMouseDrag
+                ],
+                owner: self,
+                userInfo: nil
+            )
+            addTrackingArea(hoverArea)
+            hoverTrackingAreas.append(hoverArea)
         }
-        let hoverArea = NSTrackingArea(
-            rect: bounds,
-            options: [
-                .activeAlways,
-                .mouseEnteredAndExited,
-                .mouseMoved,
-                .cursorUpdate,
-                .enabledDuringMouseDrag,
-                .inVisibleRect
-            ],
-            owner: self,
-            userInfo: nil
-        )
-        addTrackingArea(hoverArea)
-        hoverTrackingArea = hoverArea
     }
 
     override func resetCursorRects() {
@@ -517,7 +669,15 @@ private final class ResizeHandleView: NSView {
         guard ResizeHandleSystemCursorPolicy.usesArrowCursorRect(
             for: descriptor.presentationStyle
         ) else { return }
-        addCursorRect(bounds, cursor: .arrow)
+        for rect in interactiveLocalRects {
+            addCursorRect(rect, cursor: .arrow)
+        }
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard interactiveLocalRects.contains(where: { $0.contains(point) })
+        else { return nil }
+        return super.hitTest(point)
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
@@ -548,6 +708,15 @@ private final class ResizeHandleView: NSView {
     }
 
     override func mouseMoved(with event: NSEvent) {
+        let localPoint = convert(event.locationInWindow, from: nil)
+        guard containsInteractivePoint(localPoint) else {
+            pointerIsInside = false
+            hoverActivationGeneration &+= 1
+            isHovering = false
+            hideCursorAdornment()
+            updatePillAppearance(animated: false)
+            return
+        }
         applySystemArrowIfNeeded()
         guard descriptor.showsResizeCursorAdornment,
               !isInputSuspended,
@@ -560,6 +729,8 @@ private final class ResizeHandleView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         guard event.type == .leftMouseDown else { return }
+        let localPoint = convert(event.locationInWindow, from: nil)
+        guard containsInteractivePoint(localPoint) else { return }
         arrowRestorationGeneration &+= 1
         applySystemArrowIfNeeded()
         if isQuarantined {
@@ -596,7 +767,7 @@ private final class ResizeHandleView: NSView {
         isDragging = false
         isAwaitingFirstDragUpdate = false
         let localPoint = convert(event.locationInWindow, from: nil)
-        if !bounds.contains(localPoint) {
+        if !containsInteractivePoint(localPoint) {
             pointerIsInside = false
             isHovering = false
             hideCursorAdornment()
@@ -672,10 +843,8 @@ private final class ResizeHandleView: NSView {
     func rearmHoverTracking() {
         // Recreate hover tracking whenever a nonactivating panel returns so
         // its visual state does not survive an order-out/order-front cycle.
-        if let hoverTrackingArea {
-            removeTrackingArea(hoverTrackingArea)
-            self.hoverTrackingArea = nil
-        }
+        hoverTrackingAreas.forEach(removeTrackingArea)
+        hoverTrackingAreas.removeAll()
         updateTrackingAreas()
         synchronizeHoverState()
     }
@@ -700,7 +869,7 @@ private final class ResizeHandleView: NSView {
         }
         let windowPoint = window.convertPoint(fromScreen: screenPoint)
         let localPoint = convert(windowPoint, from: nil)
-        let isInside = bounds.contains(localPoint)
+        let isInside = containsInteractivePoint(localPoint)
         pointerIsInside = isInside
         if isInside {
             applySystemArrowIfNeeded()
@@ -820,10 +989,20 @@ private final class ResizeHandleView: NSView {
             CATransaction.setDisableActions(true)
         }
         let controlThickness: CGFloat = isHovering || isDragging ? 7 : 5
-        let controlLength = min(
-            isHovering || isDragging ? 42 : 36,
-            descriptor.spanLength
+        let desiredControlLength: CGFloat = isHovering || isDragging ? 42 : 36
+        let placement = descriptor.controlPlacement(
+            desiredLength: desiredControlLength
         )
+        let controlLength = placement?.length ?? 0
+        let preferredCoordinate = placement?.center
+            ?? (descriptor.span.lowerBound + descriptor.span.upperBound) / 2
+        let localControlCenter: CGFloat
+        if descriptor.presentationStyle == .mac {
+            localControlCenter = descriptor.axis == .horizontal
+                ? bounds.midY : bounds.midX
+        } else {
+            localControlCenter = preferredCoordinate - descriptor.span.lowerBound
+        }
         let boundaryThickness: CGFloat
         switch descriptor.presentationStyle {
         case .mac:
@@ -847,7 +1026,7 @@ private final class ResizeHandleView: NSView {
             )
             pillLayer.frame = CGRect(
                 x: bounds.midX - controlThickness / 2,
-                y: bounds.midY - controlLength / 2,
+                y: localControlCenter - controlLength / 2,
                 width: controlThickness,
                 height: controlLength
             )
@@ -859,7 +1038,7 @@ private final class ResizeHandleView: NSView {
                 height: boundaryThickness
             )
             pillLayer.frame = CGRect(
-                x: bounds.midX - controlLength / 2,
+                x: localControlCenter - controlLength / 2,
                 y: bounds.midY - controlThickness / 2,
                 width: controlLength,
                 height: controlThickness
@@ -1034,9 +1213,14 @@ private final class ResizeHandleJunctionView: NSView {
         guard let layer else { return }
         switch descriptor.first.presentationStyle {
         case .mac:
-            layer.backgroundColor = NSColor.clear.cgColor
-            layer.borderWidth = 0
-            layer.cornerRadius = 0
+            layer.backgroundColor = isDragging
+                ? NSColor.controlAccentColor.cgColor
+                : NSColor.white.withAlphaComponent(
+                    isHovering ? 0.96 : 0.72
+                ).cgColor
+            layer.borderColor = NSColor.black.withAlphaComponent(0.28).cgColor
+            layer.borderWidth = 0.5
+            layer.cornerRadius = min(bounds.width, bounds.height) / 2
         case .windows:
             layer.backgroundColor = isDragging
                 ? NSColor.controlAccentColor.cgColor

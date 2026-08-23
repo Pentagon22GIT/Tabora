@@ -13,6 +13,20 @@ final class SplitLayoutTests: XCTestCase {
         )
     }
 
+    func testOppositeVerticalSnapUsesRemainingFortyPercent() {
+        let bottom = SplitPlacementGeometry(
+            stableIdentity: "bottom",
+            zone: .bottomHalf,
+            frame: CGRect(x: 0, y: 0, width: 1_440, height: 540)
+        )
+        let result = SplitLayoutGeometry.resolvedFrame(
+            for: .topHalf,
+            in: screen,
+            placements: [bottom]
+        )
+        XCTAssertEqual(result, CGRect(x: 0, y: 540, width: 1_440, height: 360))
+    }
+
     func testDistinctFocusedSurfaceVetoesAutomaticGroupRaise() {
         XCTAssertTrue(ActiveWindowIdentitySnapshot(
             pid: 100,
@@ -40,27 +54,6 @@ final class SplitLayoutTests: XCTestCase {
         XCTAssertEqual(result, CGRect(x: 864, y: 0, width: 576, height: 900))
     }
 
-    func testAcceptedIncomingSnapDoesNotManufactureMinimumSizeIntrusion() {
-        let requestedWidth: CGFloat = 576
-        let acceptedSize = CGSize(width: requestedWidth, height: 900)
-        let nominalSize = CGSize(width: 720, height: 900)
-        let reference = WindowConstraintHint().referenceSize(
-            current: acceptedSize,
-            nominal: nominalSize
-        )
-
-        XCTAssertEqual(reference.width, requestedWidth)
-        XCTAssertEqual(
-            SplitLayoutGeometry.invasionRatio(
-                requestedLength: requestedWidth,
-                acceptedLength: acceptedSize.width,
-                referenceLength: reference.width
-            ),
-            0,
-            accuracy: 0.0001
-        )
-    }
-
     func testFullHeightSnapUsesSafeBoundaryAcrossDiscontinuousRows() {
         let topLeft = SplitPlacementGeometry(
             stableIdentity: "top-left",
@@ -79,6 +72,39 @@ final class SplitLayoutTests: XCTestCase {
         )
         XCTAssertEqual(result.minX, 864)
         XCTAssertEqual(result.maxX, screen.maxX)
+    }
+
+    func testQuarterGuidesShareBothDividersFromExistingQuarter() {
+        let frame = CGRect(x: 0, y: 0, width: 1000, height: 1000)
+        let topLeft = SplitPlacementGeometry(
+            stableIdentity: "top-left",
+            zone: .topLeft,
+            frame: CGRect(x: 0, y: 400, width: 600, height: 600)
+        )
+        XCTAssertEqual(
+            SplitLayoutGeometry.resolvedFrame(
+                for: .topRight,
+                in: frame,
+                placements: [topLeft]
+            ),
+            CGRect(x: 600, y: 400, width: 400, height: 600)
+        )
+        XCTAssertEqual(
+            SplitLayoutGeometry.resolvedFrame(
+                for: .bottomLeft,
+                in: frame,
+                placements: [topLeft]
+            ),
+            CGRect(x: 0, y: 0, width: 600, height: 400)
+        )
+        XCTAssertEqual(
+            SplitLayoutGeometry.resolvedFrame(
+                for: .bottomRight,
+                in: frame,
+                placements: [topLeft]
+            ),
+            CGRect(x: 600, y: 0, width: 400, height: 400)
+        )
     }
 
     func testQuarterRelationsOnlyLinkTheSharedFace() {
@@ -216,28 +242,6 @@ final class SplitLayoutTests: XCTestCase {
         )
         XCTAssertEqual(target.minX, 900)
         XCTAssertEqual(target.maxX, 1_440)
-    }
-
-    func testConstraintHintLearnsAnAcceptedMinimumWithoutUsingScreenPoints() {
-        var hint = WindowConstraintHint()
-        hint.observe(
-            requested: CGSize(width: 240, height: 300),
-            accepted: CGSize(width: 600, height: 300)
-        )
-        let reference = hint.referenceSize(
-            current: CGSize(width: 900, height: 700),
-            nominal: CGSize(width: 720, height: 450)
-        )
-        XCTAssertEqual(reference.width, 600)
-        XCTAssertEqual(reference.height, 450)
-    }
-
-    func testUnobservedConstraintUsesWindowAndNominalGeometry() {
-        let reference = WindowConstraintHint().referenceSize(
-            current: CGSize(width: 900, height: 300),
-            nominal: CGSize(width: 720, height: 450)
-        )
-        XCTAssertEqual(reference, CGSize(width: 720, height: 300))
     }
 
     func testNewSplitInvasionUsesTheCandidateConstraintReference() {
@@ -450,6 +454,457 @@ final class SplitLayoutTests: XCTestCase {
             rightHorizontalBoundary?.participantIDs,
             Set(["top-right", "bottom-right"])
         )
+    }
+
+    func testProposedTopologyConnectsAFullHeightWindowToTwoQuarterWindows() {
+        let handles = SplitLayoutGeometry.proposedResizeHandleGeometries(
+            zonesByIdentity: [
+                "left": .leftHalf,
+                "top-right": .topRight,
+                "bottom-right": .bottomRight
+            ],
+            in: screen
+        )
+        let connected = SplitLayoutGeometry.connectedParticipantIDs(
+            startingWith: "left",
+            handles: handles
+        )
+        XCTAssertEqual(connected, Set(["left", "top-right", "bottom-right"]))
+        XCTAssertEqual(
+            handles.first(where: { $0.axis == .horizontal })?.participantIDs,
+            Set(["left", "top-right", "bottom-right"])
+        )
+    }
+
+    func testProposedTopologyIsAxisSymmetricForAFullWidthWindowAndTwoQuarters() {
+        let handles = SplitLayoutGeometry.proposedResizeHandleGeometries(
+            zonesByIdentity: [
+                "top": .topHalf,
+                "bottom-left": .bottomLeft,
+                "bottom-right": .bottomRight
+            ],
+            in: screen
+        )
+        let connected = SplitLayoutGeometry.connectedParticipantIDs(
+            startingWith: "top",
+            handles: handles
+        )
+        XCTAssertEqual(connected, Set(["top", "bottom-left", "bottom-right"]))
+        XCTAssertEqual(
+            handles.first(where: { $0.axis == .vertical })?.participantIDs,
+            Set(["top", "bottom-left", "bottom-right"])
+        )
+    }
+
+
+    func testProposedFourQuarterTopologyKeepsIndependentRowAndColumnBoundaries() {
+        let handles = SplitLayoutGeometry.proposedResizeHandleGeometries(
+            zonesByIdentity: [
+                "top-left": .topLeft,
+                "top-right": .topRight,
+                "bottom-left": .bottomLeft,
+                "bottom-right": .bottomRight
+            ],
+            in: screen
+        )
+
+        let verticalDividers = handles.filter { $0.axis == .horizontal }
+        let horizontalDividers = handles.filter { $0.axis == .vertical }
+        XCTAssertEqual(verticalDividers.count, 2)
+        XCTAssertEqual(horizontalDividers.count, 2)
+        XCTAssertEqual(
+            Set(verticalDividers.map(\.participantIDs)),
+            Set([
+                Set(["top-left", "top-right"]),
+                Set(["bottom-left", "bottom-right"])
+            ])
+        )
+        XCTAssertEqual(
+            Set(horizontalDividers.map(\.participantIDs)),
+            Set([
+                Set(["top-left", "bottom-left"]),
+                Set(["top-right", "bottom-right"])
+            ])
+        )
+    }
+
+
+    func testCanonicalConstraintPartitionUsesEmptySiblingAsLayoutSlack() {
+        let frame = CGRect(x: 0, y: 0, width: 1000, height: 1000)
+        var topRightLimits = AppConstraintLimits.unknown
+        topRightLimits.minHeight = 600
+        let result = SplitLayoutGeometry.canonicalConstraintPartition(
+            members: [
+                CanonicalSplitPartitionMember(
+                    stableIdentity: "left", zone: .leftHalf,
+                    referenceFrame: CGRect(x: 0, y: 0, width: 500, height: 1000),
+                    limits: .unknown
+                ),
+                CanonicalSplitPartitionMember(
+                    stableIdentity: "top-right", zone: .topRight,
+                    referenceFrame: CGRect(x: 500, y: 500, width: 500, height: 500),
+                    limits: topRightLimits
+                )
+            ],
+            incomingIdentity: "top-right",
+            in: frame
+        )
+        guard case .ready(let frames) = result else {
+            return XCTFail("Expected the empty bottom-right cell to provide layout slack")
+        }
+        XCTAssertEqual(frames["top-right"]?.height ?? -1, 600, accuracy: 0.001)
+        XCTAssertEqual(frames["top-right"]?.minY ?? -1, 400, accuracy: 0.001)
+        XCTAssertEqual(frames["left"]?.height ?? -1, 1000, accuracy: 0.001)
+    }
+
+    func testCanonicalConstraintPartitionPreservesExistingDividerWhenAddingSibling() {
+        let frame = CGRect(x: 0, y: 0, width: 1000, height: 1000)
+        let result = SplitLayoutGeometry.canonicalConstraintPartition(
+            members: [
+                CanonicalSplitPartitionMember(
+                    stableIdentity: "top-right", zone: .topRight,
+                    referenceFrame: CGRect(x: 500, y: 400, width: 500, height: 600),
+                    limits: .unknown
+                ),
+                CanonicalSplitPartitionMember(
+                    stableIdentity: "bottom-right", zone: .bottomRight,
+                    referenceFrame: CGRect(x: 500, y: 0, width: 500, height: 500),
+                    limits: .unknown
+                )
+            ],
+            incomingIdentity: "bottom-right",
+            in: frame
+        )
+        guard case .ready(let frames) = result else {
+            return XCTFail("Expected a connected right-column partition")
+        }
+        XCTAssertEqual(frames["top-right"]?.minY ?? -1, 400, accuracy: 0.001)
+        XCTAssertEqual(frames["bottom-right"]?.height ?? -1, 400, accuracy: 0.001)
+    }
+
+    func testCanonicalFourQuarterPartitionPropagatesBothDividers() {
+        let frame = CGRect(x: 0, y: 0, width: 1000, height: 1000)
+        var strong = AppConstraintLimits.unknown
+        strong.minWidth = 600
+        strong.minHeight = 600
+        let result = SplitLayoutGeometry.canonicalConstraintPartition(
+            members: [
+                CanonicalSplitPartitionMember(
+                    stableIdentity: "top-left", zone: .topLeft,
+                    referenceFrame: CGRect(x: 0, y: 500, width: 500, height: 500),
+                    limits: strong
+                ),
+                CanonicalSplitPartitionMember(
+                    stableIdentity: "top-right", zone: .topRight,
+                    referenceFrame: CGRect(x: 500, y: 500, width: 500, height: 500),
+                    limits: .unknown
+                ),
+                CanonicalSplitPartitionMember(
+                    stableIdentity: "bottom-left", zone: .bottomLeft,
+                    referenceFrame: CGRect(x: 0, y: 0, width: 500, height: 500),
+                    limits: .unknown
+                ),
+                CanonicalSplitPartitionMember(
+                    stableIdentity: "bottom-right", zone: .bottomRight,
+                    referenceFrame: CGRect(x: 500, y: 0, width: 500, height: 500),
+                    limits: .unknown
+                )
+            ],
+            incomingIdentity: "top-left",
+            in: frame
+        )
+        guard case .ready(let frames) = result else {
+            return XCTFail("Expected a canonical four-cell partition")
+        }
+        XCTAssertEqual(frames["top-left"]?.width ?? -1, 600, accuracy: 0.001)
+        XCTAssertEqual(frames["bottom-left"]?.width ?? -1, 600, accuracy: 0.001)
+        XCTAssertEqual(frames["top-right"]?.minX ?? -1, 600, accuracy: 0.001)
+        XCTAssertEqual(frames["bottom-right"]?.minX ?? -1, 600, accuracy: 0.001)
+        XCTAssertEqual(frames["top-left"]?.height ?? -1, 600, accuracy: 0.001)
+        XCTAssertEqual(frames["top-right"]?.height ?? -1, 600, accuracy: 0.001)
+        XCTAssertEqual(frames["bottom-left"]?.height ?? -1, 400, accuracy: 0.001)
+        XCTAssertEqual(frames["bottom-right"]?.height ?? -1, 400, accuracy: 0.001)
+    }
+
+    func testCanonicalPartitionRejectsOnlyConfirmedConstraintConflict() {
+        let frame = CGRect(x: 0, y: 0, width: 1000, height: 1000)
+        var leftLimits = AppConstraintLimits.unknown
+        leftLimits.minWidth = 600
+        var rightLimits = AppConstraintLimits.unknown
+        rightLimits.minWidth = 500
+        let result = SplitLayoutGeometry.canonicalConstraintPartition(
+            members: [
+                CanonicalSplitPartitionMember(
+                    stableIdentity: "left", zone: .leftHalf,
+                    referenceFrame: CGRect(x: 0, y: 0, width: 500, height: 1000),
+                    limits: leftLimits
+                ),
+                CanonicalSplitPartitionMember(
+                    stableIdentity: "right", zone: .rightHalf,
+                    referenceFrame: CGRect(x: 500, y: 0, width: 500, height: 1000),
+                    limits: rightLimits
+                )
+            ],
+            incomingIdentity: "right",
+            in: frame
+        )
+        guard case .confirmedInfeasible = result else {
+            return XCTFail("600 + 500 cannot fit in a 1000-point partition")
+        }
+    }
+
+    func testCanonicalPartitionRejectsDisconnectedDiagonalPartialGroup() {
+        let frame = CGRect(x: 0, y: 0, width: 1000, height: 1000)
+        let result = SplitLayoutGeometry.canonicalConstraintPartition(
+            members: [
+                CanonicalSplitPartitionMember(
+                    stableIdentity: "top-left", zone: .topLeft,
+                    referenceFrame: CGRect(x: 0, y: 500, width: 500, height: 500),
+                    limits: .unknown
+                ),
+                CanonicalSplitPartitionMember(
+                    stableIdentity: "bottom-right", zone: .bottomRight,
+                    referenceFrame: CGRect(x: 500, y: 0, width: 500, height: 500),
+                    limits: .unknown
+                )
+            ],
+            incomingIdentity: "bottom-right",
+            in: frame
+        )
+        guard case .confirmedInfeasible = result else {
+            return XCTFail("Diagonal-only cells do not form one split group")
+        }
+    }
+
+    func testAdaptiveConstraintPartitionUsesIncomingConstraintWithoutResizingNonAdjacentHalf() {
+        let frame = CGRect(x: 0, y: 0, width: 1000, height: 1000)
+        var incomingLimits = AppConstraintLimits.unknown
+        incomingLimits.minHeight = 600
+        let result = SplitLayoutGeometry.adaptiveConstraintPartition(
+            members: [
+                CanonicalSplitPartitionMember(
+                    stableIdentity: "left",
+                    zone: .leftHalf,
+                    referenceFrame: CGRect(x: 0, y: 0, width: 500, height: 1000),
+                    limits: .unknown
+                ),
+                CanonicalSplitPartitionMember(
+                    stableIdentity: "top-right",
+                    zone: .topRight,
+                    referenceFrame: CGRect(x: 500, y: 500, width: 500, height: 500),
+                    limits: incomingLimits
+                )
+            ],
+            incomingIdentity: "top-right",
+            preferredIncomingFrame: CGRect(
+                x: 500, y: 500, width: 500, height: 500
+            ),
+            in: frame
+        )
+        guard case .ready(let frames) = result else {
+            return XCTFail("Expected empty bottom-right slack to absorb the incoming minimum")
+        }
+        XCTAssertEqual(frames["top-right"]?.height ?? -1, 600, accuracy: 0.001)
+        XCTAssertEqual(frames["top-right"]?.minY ?? -1, 400, accuracy: 0.001)
+        XCTAssertEqual(frames["left"], CGRect(x: 0, y: 0, width: 500, height: 1000))
+    }
+
+    func testAdaptiveConstraintPartitionTwoMemberPrefersIncomingBoundaryWhenItIsLegal() {
+        let frame = CGRect(x: 0, y: 0, width: 1000, height: 1000)
+        let result = SplitLayoutGeometry.adaptiveConstraintPartition(
+            members: [
+                CanonicalSplitPartitionMember(
+                    stableIdentity: "left",
+                    zone: .leftHalf,
+                    referenceFrame: CGRect(x: 0, y: 0, width: 600, height: 1000),
+                    limits: .unknown
+                ),
+                CanonicalSplitPartitionMember(
+                    stableIdentity: "right",
+                    zone: .rightHalf,
+                    referenceFrame: CGRect(x: 500, y: 0, width: 500, height: 1000),
+                    limits: .unknown
+                )
+            ],
+            incomingIdentity: "right",
+            preferredIncomingFrame: CGRect(x: 500, y: 0, width: 500, height: 1000),
+            in: frame
+        )
+        guard case .ready(let frames) = result else {
+            return XCTFail("Expected a feasible two-member partition")
+        }
+        XCTAssertEqual(frames["left"]?.width ?? -1, 500, accuracy: 0.001)
+        XCTAssertEqual(frames["right"]?.width ?? -1, 500, accuracy: 0.001)
+    }
+
+    func testAdaptiveConstraintPartitionPrefersIncomingBoundaryWhenItIsLegal() {
+        let frame = CGRect(x: 0, y: 0, width: 1000, height: 1000)
+        var incomingLimits = AppConstraintLimits.unknown
+        incomingLimits.minHeight = 250
+        let result = SplitLayoutGeometry.adaptiveConstraintPartition(
+            members: [
+                CanonicalSplitPartitionMember(
+                    stableIdentity: "top-right",
+                    zone: .topRight,
+                    referenceFrame: CGRect(x: 500, y: 400, width: 500, height: 600),
+                    limits: .unknown
+                ),
+                CanonicalSplitPartitionMember(
+                    stableIdentity: "bottom-right",
+                    zone: .bottomRight,
+                    referenceFrame: CGRect(x: 500, y: 0, width: 500, height: 500),
+                    limits: incomingLimits
+                )
+            ],
+            incomingIdentity: "bottom-right",
+            preferredIncomingFrame: CGRect(x: 500, y: 0, width: 500, height: 500),
+            in: frame
+        )
+        guard case .ready(let frames) = result else {
+            return XCTFail("Expected connected right-column partition")
+        }
+        // Existing 60/40 geometry is not authority. The user selected the
+        // bottom-right quarter, so the legal 50% boundary is restored.
+        XCTAssertEqual(frames["top-right"]?.minY ?? -1, 500, accuracy: 0.001)
+        XCTAssertEqual(frames["bottom-right"]?.height ?? -1, 500, accuracy: 0.001)
+    }
+
+    func testAdaptiveConstraintPartitionClampsIncomingBoundaryOnlyWhenKnownMinimumRequiresIt() {
+        let frame = CGRect(x: 0, y: 0, width: 1000, height: 1000)
+        var incomingLimits = AppConstraintLimits.unknown
+        incomingLimits.minHeight = 600
+        var siblingLimits = AppConstraintLimits.unknown
+        siblingLimits.minHeight = 300
+        let result = SplitLayoutGeometry.adaptiveConstraintPartition(
+            members: [
+                CanonicalSplitPartitionMember(
+                    stableIdentity: "top-right",
+                    zone: .topRight,
+                    referenceFrame: CGRect(x: 500, y: 500, width: 500, height: 500),
+                    limits: siblingLimits
+                ),
+                CanonicalSplitPartitionMember(
+                    stableIdentity: "bottom-right",
+                    zone: .bottomRight,
+                    referenceFrame: CGRect(x: 500, y: 0, width: 500, height: 500),
+                    limits: incomingLimits
+                )
+            ],
+            incomingIdentity: "bottom-right",
+            preferredIncomingFrame: CGRect(x: 500, y: 0, width: 500, height: 500),
+            in: frame
+        )
+        guard case .ready(let frames) = result else {
+            return XCTFail("Expected incoming minimum to shift the shared boundary")
+        }
+        XCTAssertEqual(frames["bottom-right"]?.height ?? -1, 600, accuracy: 0.001)
+        XCTAssertEqual(frames["top-right"]?.height ?? -1, 400, accuracy: 0.001)
+    }
+
+    func testAdaptiveConstraintPartitionRejectsOnlyWhenCombinedMinimumsAreTrulyInfeasible() {
+        let frame = CGRect(x: 0, y: 0, width: 1000, height: 1000)
+        var leftLimits = AppConstraintLimits.unknown
+        leftLimits.minWidth = 600
+        var rightLimits = AppConstraintLimits.unknown
+        rightLimits.minWidth = 500
+        let result = SplitLayoutGeometry.adaptiveConstraintPartition(
+            members: [
+                CanonicalSplitPartitionMember(
+                    stableIdentity: "left", zone: .leftHalf,
+                    referenceFrame: CGRect(x: 0, y: 0, width: 500, height: 1000),
+                    limits: leftLimits
+                ),
+                CanonicalSplitPartitionMember(
+                    stableIdentity: "right", zone: .rightHalf,
+                    referenceFrame: CGRect(x: 500, y: 0, width: 500, height: 1000),
+                    limits: rightLimits
+                )
+            ],
+            incomingIdentity: "right",
+            preferredIncomingFrame: CGRect(x: 500, y: 0, width: 500, height: 1000),
+            in: frame
+        )
+        guard case .confirmedInfeasible = result else {
+            return XCTFail("600 + 500 cannot fit in a 1000-point shared boundary")
+        }
+    }
+
+    func testAdaptiveConstraintPartitionThreeMemberRightColumnReflowsAroundKnownMinimum() {
+        let frame = CGRect(x: 0, y: 0, width: 1000, height: 1000)
+        var topLimits = AppConstraintLimits.unknown
+        topLimits.minHeight = 600
+        var bottomLimits = AppConstraintLimits.unknown
+        bottomLimits.minHeight = 300
+        let result = SplitLayoutGeometry.adaptiveConstraintPartition(
+            members: [
+                CanonicalSplitPartitionMember(
+                    stableIdentity: "left", zone: .leftHalf,
+                    referenceFrame: CGRect(x: 0, y: 0, width: 500, height: 1000),
+                    limits: .unknown
+                ),
+                CanonicalSplitPartitionMember(
+                    stableIdentity: "top-right", zone: .topRight,
+                    referenceFrame: CGRect(x: 500, y: 500, width: 500, height: 500),
+                    limits: topLimits
+                ),
+                CanonicalSplitPartitionMember(
+                    stableIdentity: "bottom-right", zone: .bottomRight,
+                    referenceFrame: CGRect(x: 500, y: 0, width: 500, height: 500),
+                    limits: bottomLimits
+                )
+            ],
+            incomingIdentity: "bottom-right",
+            preferredIncomingFrame: CGRect(x: 500, y: 0, width: 500, height: 500),
+            in: frame
+        )
+        guard case .ready(let frames) = result else {
+            return XCTFail("Expected the right-column shared boundary to reflow")
+        }
+        XCTAssertEqual(frames["left"], CGRect(x: 0, y: 0, width: 500, height: 1000))
+        XCTAssertEqual(frames["top-right"]?.height ?? -1, 600, accuracy: 0.001)
+        XCTAssertEqual(frames["bottom-right"]?.height ?? -1, 400, accuracy: 0.001)
+    }
+
+    func testAdaptiveConstraintPartitionFourQuarterTopologyUnifiesBothAxes() {
+        let frame = CGRect(x: 0, y: 0, width: 1000, height: 1000)
+        var topRightLimits = AppConstraintLimits.unknown
+        topRightLimits.minHeight = 600
+        var bottomRightLimits = AppConstraintLimits.unknown
+        bottomRightLimits.minHeight = 300
+        let result = SplitLayoutGeometry.adaptiveConstraintPartition(
+            members: [
+                CanonicalSplitPartitionMember(
+                    stableIdentity: "top-left", zone: .topLeft,
+                    referenceFrame: CGRect(x: 0, y: 500, width: 500, height: 500),
+                    limits: .unknown
+                ),
+                CanonicalSplitPartitionMember(
+                    stableIdentity: "bottom-left", zone: .bottomLeft,
+                    referenceFrame: CGRect(x: 0, y: 0, width: 500, height: 500),
+                    limits: .unknown
+                ),
+                CanonicalSplitPartitionMember(
+                    stableIdentity: "top-right", zone: .topRight,
+                    referenceFrame: CGRect(x: 500, y: 500, width: 500, height: 500),
+                    limits: topRightLimits
+                ),
+                CanonicalSplitPartitionMember(
+                    stableIdentity: "bottom-right", zone: .bottomRight,
+                    referenceFrame: CGRect(x: 500, y: 0, width: 500, height: 500),
+                    limits: bottomRightLimits
+                )
+            ],
+            incomingIdentity: "bottom-right",
+            preferredIncomingFrame: CGRect(x: 500, y: 0, width: 500, height: 500),
+            in: frame
+        )
+        guard case .ready(let frames) = result else {
+            return XCTFail("Expected a feasible four-quarter adaptive topology")
+        }
+        XCTAssertEqual(frames["top-left"]?.minY ?? -1, 400, accuracy: 0.001)
+        XCTAssertEqual(frames["bottom-left"]?.height ?? -1, 400, accuracy: 0.001)
+        XCTAssertEqual(frames["top-right"]?.height ?? -1, 600, accuracy: 0.001)
+        XCTAssertEqual(frames["bottom-right"]?.height ?? -1, 400, accuracy: 0.001)
     }
 
     func testFourQuartersMergeBothBoundariesAcrossTheFullSharedSpan() {
@@ -752,7 +1207,7 @@ final class SplitLayoutTests: XCTestCase {
         )
     }
 
-    func testMacPresentationUsesOnlyTheVisibleCenterControlAsInput() {
+    func testMacStandaloneBoundaryKeepsTheVisibleCenterControlAsInput() {
         let verticalDivider = ResizeHandleDescriptor(
             id: "vertical-divider",
             displayID: 1,
@@ -1237,6 +1692,115 @@ final class SplitLayoutTests: XCTestCase {
                 placements: placements,
                 detachedConnections: [SplitConnectionKey("left", "right")]
             ).isEmpty
+        )
+    }
+
+    func testAllowedBoundaryRangeUsesTheSameConstraintMathOnBothAxes() {
+        let square = CGRect(x: 0, y: 0, width: 1_000, height: 1_000)
+        let horizontal = [
+            SplitResizeParticipantGeometry(
+                stableIdentity: "near",
+                frame: CGRect(x: 0, y: 0, width: 500, height: 1_000),
+                side: .nearOrigin,
+                minimumLength: 320,
+                maximumLength: 620
+            ),
+            SplitResizeParticipantGeometry(
+                stableIdentity: "far",
+                frame: CGRect(x: 500, y: 0, width: 500, height: 1_000),
+                side: .farOrigin,
+                minimumLength: 350,
+                maximumLength: 680
+            )
+        ]
+        let vertical = [
+            SplitResizeParticipantGeometry(
+                stableIdentity: "near",
+                frame: CGRect(x: 0, y: 0, width: 1_000, height: 500),
+                side: .nearOrigin,
+                minimumLength: 320,
+                maximumLength: 620
+            ),
+            SplitResizeParticipantGeometry(
+                stableIdentity: "far",
+                frame: CGRect(x: 0, y: 500, width: 1_000, height: 500),
+                side: .farOrigin,
+                minimumLength: 350,
+                maximumLength: 680
+            )
+        ]
+        XCTAssertEqual(
+            SplitLayoutGeometry.allowedBoundaryRange(
+                axis: .horizontal,
+                participants: horizontal,
+                screenFrame: square
+            ),
+            SplitLayoutGeometry.allowedBoundaryRange(
+                axis: .vertical,
+                participants: vertical,
+                screenFrame: square
+            )
+        )
+    }
+
+    func testStackedPeerConstraintsShrinkTheIncomingHalfOnEitherAxis() {
+        let square = CGRect(x: 0, y: 0, width: 1_000, height: 1_000)
+        let horizontal = [
+            SplitResizeParticipantGeometry(
+                stableIdentity: "incoming-left",
+                frame: CGRect(x: 0, y: 0, width: 500, height: 1_000),
+                side: .nearOrigin,
+                minimumLength: 300
+            ),
+            SplitResizeParticipantGeometry(
+                stableIdentity: "right-top",
+                frame: CGRect(x: 400, y: 500, width: 600, height: 500),
+                side: .farOrigin,
+                minimumLength: 600
+            ),
+            SplitResizeParticipantGeometry(
+                stableIdentity: "right-bottom",
+                frame: CGRect(x: 400, y: 0, width: 600, height: 500),
+                side: .farOrigin,
+                minimumLength: 600
+            )
+        ]
+        let vertical = [
+            SplitResizeParticipantGeometry(
+                stableIdentity: "incoming-bottom",
+                frame: CGRect(x: 0, y: 0, width: 1_000, height: 500),
+                side: .nearOrigin,
+                minimumLength: 300
+            ),
+            SplitResizeParticipantGeometry(
+                stableIdentity: "top-left",
+                frame: CGRect(x: 0, y: 400, width: 500, height: 600),
+                side: .farOrigin,
+                minimumLength: 600
+            ),
+            SplitResizeParticipantGeometry(
+                stableIdentity: "top-right",
+                frame: CGRect(x: 500, y: 400, width: 500, height: 600),
+                side: .farOrigin,
+                minimumLength: 600
+            )
+        ]
+
+        XCTAssertEqual(
+            SplitLayoutGeometry.allowedBoundaryRange(
+                axis: .horizontal,
+                participants: horizontal,
+                screenFrame: square
+            ),
+            300...400
+        )
+        XCTAssertEqual(
+            SplitLayoutGeometry.allowedBoundaryRange(
+                axis: .vertical,
+                participants: vertical,
+                screenFrame: square
+            ),
+            300...400
         )
     }
 

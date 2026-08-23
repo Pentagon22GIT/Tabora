@@ -11,6 +11,18 @@ final class TaboraApp: NSObject, NSApplicationDelegate {
         controller.onVisibilityChange = { [weak self] isVisible in
             self?.controller.setApplicationUIVisible(isVisible)
         }
+        controller.onConstraintMeasurementWillBegin = { [weak self] in
+            self?.controller.beginConstraintMeasurement() ?? false
+        }
+        controller.onConstraintMeasurementDidEnd = { [weak self] in
+            self?.controller.endConstraintMeasurement()
+        }
+        controller.onMissionControlPreviewMemoryLimitChange = { [weak self] value in
+            self?.controller.setMissionControlPreviewMemoryLimitMiB(value)
+        }
+        controller.onMissionControlPreviewCacheClear = { [weak self] in
+            self?.controller.clearMissionControlPreviewCache()
+        }
         return controller
     }()
     private var settingsObserver: NSObjectProtocol?

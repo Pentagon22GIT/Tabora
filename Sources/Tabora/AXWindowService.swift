@@ -2,6 +2,137 @@ import AppKit
 import ApplicationServices
 import CoreGraphics
 
+
+
+struct AXFrameSizeAxes: OptionSet {
+    let rawValue: Int
+
+    static let width = AXFrameSizeAxes(rawValue: 1 << 0)
+    static let height = AXFrameSizeAxes(rawValue: 1 << 1)
+}
+
+enum AXFrameSizePolicy {
+    static func historicalCorrectionAxes(
+        requiredOuterEdges: SnapOuterEdges
+    ) -> AXFrameSizeAxes {
+        var result: AXFrameSizeAxes = []
+        // Preserve the historical correction/timeout behavior. These combined
+        // edge sets mean that both opposite screen edges constrain that size.
+        if requiredOuterEdges.contains(.horizontal) { result.insert(.width) }
+        if requiredOuterEdges.contains(.vertical) { result.insert(.height) }
+        return result
+    }
+
+    static func commitAxes(
+        requiredOuterEdges: SnapOuterEdges,
+        explicitCommitAxes: AXFrameSizeAxes?
+    ) -> AXFrameSizeAxes {
+        explicitCommitAxes ?? historicalCorrectionAxes(
+            requiredOuterEdges: requiredOuterEdges
+        )
+    }
+
+    static func requiredSizeIsCorrect(
+        actual: CGSize,
+        target: CGSize,
+        exactAxes: AXFrameSizeAxes,
+        tolerance: CGFloat = 1
+    ) -> Bool {
+        (!exactAxes.contains(.width)
+            || abs(actual.width - target.width) <= tolerance)
+            && (!exactAxes.contains(.height)
+                || abs(actual.height - target.height) <= tolerance)
+    }
+
+    static func targetDistance(
+        actual: CGSize,
+        target: CGSize,
+        exactAxes: AXFrameSizeAxes
+    ) -> CGFloat {
+        var result: CGFloat = 0
+        if exactAxes.contains(.width) {
+            result += abs(actual.width - target.width)
+        }
+        if exactAxes.contains(.height) {
+            result += abs(actual.height - target.height)
+        }
+        return result
+    }
+}
+
+enum AXFrameSettlementMode {
+    /// Existing callers require the exact requested frame and may use the
+    /// historical bounded correction sequence while that target is settling.
+    case requireExactTarget
+
+    /// Initial snap placement may discover a previously-unknown application
+    /// size boundary. Once a different accepted frame is stably observed,
+    /// return that new evidence instead of reissuing the same impossible size
+    /// mutation. A caller may then authorize a new geometry plan.
+    case returnSettledConstraintResult
+}
+
+enum AXFrameSettlementPolicy {
+    /// Initial snap may stop exact-target correction only after the app has
+    /// accepted a different, stable frame and target progress has stopped.
+    /// This converts the settled frame into observation evidence; it does not
+    /// itself authorize a second mutation. Existing exact-target callers never
+    /// take this path.
+    static func shouldReturnSettledConstraintResult(
+        mode: AXFrameSettlementMode,
+        placementIsAcceptable: Bool,
+        mutationWasSent: Bool,
+        sizeMutationSucceeded: Bool,
+        acceptedSizeIsStable: Bool,
+        settledAfterFinalSizeRequest: Bool,
+        targetProgressWasObserved: Bool,
+        secondsWithoutTargetProgress: TimeInterval
+    ) -> Bool {
+        return mode == .returnSettledConstraintResult
+            && !placementIsAcceptable
+            && mutationWasSent
+            && sizeMutationSucceeded
+            && acceptedSizeIsStable
+            && settledAfterFinalSizeRequest
+            && targetProgressWasObserved
+            && secondsWithoutTargetProgress >= 0.10
+    }
+}
+
+enum AXFrameSettlementEvidence: Equatable {
+    case exactTarget
+    case operationLocalAlternative
+    case boundedAlternative
+    case unresolved
+
+    var authorizesPersistentConstraintLearning: Bool {
+        self == .boundedAlternative
+    }
+}
+
+struct AXFrameMutationObservation {
+    let requestedFrame: CGRect
+    let acceptedFrame: CGRect?
+    let mutationWasSent: Bool
+    let sizeMutationSucceeded: Bool
+    let acceptedFrameIsSettled: Bool
+    let liveness: WindowLiveness
+    let completedSuccessfully: Bool
+    let settlementEvidence: AXFrameSettlementEvidence
+}
+
+enum PlacementReadinessResult {
+    case ready(ManagedWindow)
+    case unavailable
+    case indeterminate
+}
+
+enum PersistedWindowRefreshObservation {
+    case available(ManagedWindow)
+    case missing
+    case unknown
+}
+
 struct ManagedWindow {
     let element: AXUIElement
     let pid: pid_t
@@ -69,6 +200,16 @@ struct WindowOcclusionSnapshot {
     let frame: CGRect
     let zIndex: Int
     let layer: Int
+}
+
+struct WindowOcclusionSnapshotObservation {
+    let snapshot: [WindowOcclusionSnapshot]
+    let completeness: WindowDiscoveryCompleteness
+
+    static let unknown = WindowOcclusionSnapshotObservation(
+        snapshot: [],
+        completeness: .unknown
+    )
 }
 
 struct WindowOcclusionParticipant: Equatable {
@@ -204,6 +345,25 @@ struct WindowServerSelectionPollState {
     }
 }
 
+enum AXMessagingTimeoutPolicy {
+    /// Passive/optional observations run on the main actor in several existing
+    /// call paths. Bound one accessibility message to the existing 10 Hz
+    /// observation cadence so an unresponsive/captured application cannot
+    /// indefinitely stall unrelated groups or display-transition recovery.
+    static let passiveObservation: Float = 0.10
+
+    /// Interactive operations already use a 0.45 s placement-readiness bound.
+    /// Reuse that established interaction budget for individual AX messages.
+    /// A timeout remains unknown/procedural failure; callers must verify the
+    /// semantic postcondition before rollback or structural cleanup.
+    static let interactiveOperation: Float = 0.45
+
+    /// Short send-side budget only for the disposable 60 Hz pointer-following
+    /// restore animation. Never use this for snap, rollback, restore, group, or
+    /// App Constraint correctness.
+    static let animationMutation: Float = passiveObservation
+}
+
 final class AXWindowService {
     private struct CGWindowRecord {
         let id: CGWindowID
@@ -218,6 +378,15 @@ final class AXWindowService {
         case matched(ManagedWindow)
         case rejected
     }
+
+    // Preview capture is derived state. Bound cross-subsystem capture
+    // concurrency without holding a lock across the legacy synchronous Window
+    // Server capture call: one stuck capture must not block unrelated preview
+    // workers from even checking capacity. At most two captures may be active;
+    // excess requests fail fast to the existing icon/placeholder path.
+    private static let previewCaptureStateLock = NSLock()
+    private static var previewCapturesInFlight = 0
+    private static let maximumConcurrentPreviewCaptures = 2
 
     private var hasPromptedForPermission = false
     private var frameOperationGenerations: [String: Int] = [:]
@@ -234,12 +403,24 @@ final class AXWindowService {
         return AXIsProcessTrustedWithOptions(options)
     }
 
-    func focusedWindow() -> ManagedWindow? {
+    func focusedWindow(
+        messagingTimeout: Float? = AXMessagingTimeoutPolicy.passiveObservation
+    ) -> ManagedWindow? {
         guard let app = NSWorkspace.shared.frontmostApplication,
               app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return nil }
         let appElement = AXUIElementCreateApplication(app.processIdentifier)
-        guard let window: AXUIElement = copyAttribute(appElement, kAXFocusedWindowAttribute as CFString) else { return nil }
-        return makeManagedWindow(window, pid: app.processIdentifier, app: app, cgWindowID: nil)
+        guard let window: AXUIElement = copyAttribute(
+            appElement,
+            kAXFocusedWindowAttribute as CFString,
+            messagingTimeout: messagingTimeout
+        ) else { return nil }
+        return makeManagedWindow(
+            window,
+            pid: app.processIdentifier,
+            app: app,
+            cgWindowID: nil,
+            messagingTimeout: messagingTimeout
+        )
     }
 
     func activeWindowIdentitySnapshot() -> ActiveWindowIdentitySnapshot? {
@@ -250,11 +431,13 @@ final class AXWindowService {
         let appElement = AXUIElementCreateApplication(app.processIdentifier)
         let focusedWindow: AXUIElement? = copyAttribute(
             appElement,
-            kAXFocusedWindowAttribute as CFString
+            kAXFocusedWindowAttribute as CFString,
+            messagingTimeout: AXMessagingTimeoutPolicy.passiveObservation
         )
         let mainWindow: AXUIElement? = copyAttribute(
             appElement,
-            kAXMainWindowAttribute as CFString
+            kAXMainWindowAttribute as CFString,
+            messagingTimeout: AXMessagingTimeoutPolicy.passiveObservation
         )
         guard focusedWindow != nil || mainWindow != nil else { return nil }
         let focusedIsModal = focusedWindow.map(isModalSurface) ?? false
@@ -318,20 +501,51 @@ final class AXWindowService {
         )
     }
 
-    func refreshed(_ window: ManagedWindow) -> ManagedWindow? {
-        guard let app = NSRunningApplication(processIdentifier: window.pid), !app.isTerminated else { return nil }
+    func focusedWindowServerSelectionSnapshot(
+        matching exactWindow: ManagedWindow,
+        allowsExactIdentityWithTransformedGeometry: Bool
+    ) -> WindowServerSelectionSnapshot? {
+        guard let app = NSWorkspace.shared.frontmostApplication,
+              app.processIdentifier == exactWindow.pid,
+              let focusedWindow = focusedWindow(),
+              focusedWindow.pid == exactWindow.pid,
+              focusedWindow.stableIdentity == exactWindow.stableIdentity else {
+            return nil
+        }
+        let resolved = resolvingWindowServerIdentity(
+            exactWindow,
+            allowsExactIdentityWithTransformedGeometry:
+                allowsExactIdentityWithTransformedGeometry
+        )
+        guard let windowID = resolved.cgWindowID else { return nil }
+        return WindowServerSelectionSnapshot(
+            pid: resolved.pid,
+            windowID: windowID
+        )
+    }
+
+    func refreshed(
+        _ window: ManagedWindow,
+        messagingTimeout: Float? = AXMessagingTimeoutPolicy.interactiveOperation
+    ) -> ManagedWindow? {
+        guard let app = NSRunningApplication(processIdentifier: window.pid),
+              !app.isTerminated else { return nil }
         return makeManagedWindow(
             window.element,
             pid: window.pid,
             app: app,
-            cgWindowID: window.cgWindowID
+            cgWindowID: window.cgWindowID,
+            messagingTimeout: messagingTimeout
         )
     }
 
-    func refreshedFrame(_ window: ManagedWindow) -> CGRect? {
+    func refreshedFrame(
+        _ window: ManagedWindow,
+        messagingTimeout: Float? = AXMessagingTimeoutPolicy.interactiveOperation
+    ) -> CGRect? {
         guard let app = NSRunningApplication(processIdentifier: window.pid),
               !app.isTerminated else { return nil }
-        return frame(of: window.element)
+        return frame(of: window.element, messagingTimeout: messagingTimeout)
     }
 
     func currentFrame(of element: AXUIElement, pid: pid_t) -> CGRect? {
@@ -341,13 +555,18 @@ final class AXWindowService {
         return frame(of: element)
     }
 
-    func resolvingWindowServerIdentity(_ window: ManagedWindow) -> ManagedWindow {
+    func resolvingWindowServerIdentity(
+        _ window: ManagedWindow,
+        allowsExactIdentityWithTransformedGeometry: Bool = false
+    ) -> ManagedWindow {
         let records = onscreenWindowRecords()
         if let windowID = window.cgWindowID,
-           records.contains(where: {
-               $0.id == windowID
-                   && $0.pid == window.pid
-                   && visibleGeometryMatches(axWindow: window, cgWindow: $0)
+           records.contains(where: { record in
+               guard record.id == windowID, record.pid == window.pid else {
+                   return false
+               }
+               return allowsExactIdentityWithTransformedGeometry
+                   || visibleGeometryMatches(axWindow: window, cgWindow: record)
            }) {
             return window
         }
@@ -397,18 +616,123 @@ final class AXWindowService {
         )
     }
 
+    /// Resolve only exact, already-persisted members from current Window Server
+    /// records. Background group presentation/handle maintenance must not turn
+    /// into a whole-desktop AX census: an unresponsive streamed application is
+    /// allowed to make its own member temporarily unknown without blocking
+    /// unrelated groups. No fuzzy reassignment is performed here.
+    func persistedVisibleWindows(
+        persistedBindings: [ManagedWindowBinding],
+        stableIDs: Set<String>
+    ) -> [ManagedWindow] {
+        guard !stableIDs.isEmpty else { return [] }
+        let requestedBindings = persistedBindings.filter {
+            stableIDs.contains($0.identity.stableIdentity)
+        }
+        guard !requestedBindings.isEmpty else { return [] }
+
+        let bindingsByPID = Dictionary(
+            grouping: requestedBindings,
+            by: { $0.identity.pid }
+        )
+        var result: [(window: ManagedWindow, zIndex: Int)] = []
+        var seen = Set<String>()
+
+        for record in onscreenWindowRecords() {
+            guard let processBindings = bindingsByPID[record.pid],
+                  let app = NSRunningApplication(processIdentifier: record.pid),
+                  app.activationPolicy == .regular,
+                  !app.isTerminated else { continue }
+            if case .matched(let window) = persistedManagedWindow(
+                matching: record,
+                app: app,
+                bindings: processBindings,
+                messagingTimeout: AXMessagingTimeoutPolicy.passiveObservation
+            ), stableIDs.contains(window.stableIdentity),
+               seen.insert(window.stableIdentity).inserted {
+                result.append((window, record.zIndex))
+            }
+        }
+
+        return result
+            .sorted { lhs, rhs in
+                if lhs.zIndex == rhs.zIndex {
+                    return lhs.window.stableIdentity < rhs.window.stableIdentity
+                }
+                return lhs.zIndex < rhs.zIndex
+            }
+            .map(\.window)
+    }
+
+    /// Resolves only already-persisted members for an explicit Mission Control
+    /// group activation. During the Window Server transform, AX keeps desktop
+    /// geometry while CG reports scaled geometry, so geometry equality is not an
+    /// existence test here. Exact PID/window ID, AX stable identity, liveness,
+    /// and the current layer-zero Window Server surface all remain mandatory.
+    func missionControlActivationWindows(
+        persistedBindings: [ManagedWindowBinding],
+        memberIDs: Set<String>,
+        snapshot providedSnapshot: [WindowOcclusionSnapshot]? = nil
+    ) -> [ManagedWindow]? {
+        guard memberIDs.count >= 2 else { return nil }
+        let bindings = persistedBindings.filter {
+            memberIDs.contains($0.identity.stableIdentity)
+        }
+        guard bindings.count == memberIDs.count,
+              Set(bindings.map(\.identity.stableIdentity)) == memberIDs else {
+            return nil
+        }
+        let snapshot = providedSnapshot ?? windowOcclusionSnapshot()
+        guard MissionControlActivationIdentityPolicy.exactSelections(
+            memberIDs: memberIDs,
+            bindings: bindings.map(\.identity),
+            snapshot: snapshot
+        ) != nil else {
+            return nil
+        }
+
+        var result: [ManagedWindow] = []
+        result.reserveCapacity(bindings.count)
+        for binding in bindings {
+            let pid = binding.identity.pid
+            guard let app = NSRunningApplication(processIdentifier: pid),
+                  app.activationPolicy == .regular,
+                  !app.isTerminated,
+                  ManagedWindow.stableIdentity(
+                      for: binding.element,
+                      pid: pid
+                  ) == binding.identity.stableIdentity,
+                  !WindowStructuralPolicy.isConfirmedMissing(
+                      windowLiveness(element: binding.element, pid: pid)
+                  ),
+                  let window = makeManagedWindow(
+                      binding.element,
+                      pid: pid,
+                      app: app,
+                      cgWindowID: binding.identity.windowID
+                  ),
+                  !window.isMinimized else {
+                return nil
+            }
+            result.append(window)
+        }
+        return Set(result.map(\.stableIdentity)) == memberIDs ? result : nil
+    }
+
     /// Resolve only the application owning the exact frontmost surface. This
     /// keeps mouse-down acquisition bounded instead of enumerating AX windows
     /// for every running app, while retaining small movable windows.
     func pointerHitTestWindow(
         at point: CGPoint,
         persistedBindings: [ManagedWindowBinding] = [],
-        snapshot providedSnapshot: [WindowOcclusionSnapshot]? = nil
+        snapshot providedSnapshot: [WindowOcclusionSnapshot]? = nil,
+        eventHandlerWindowID: CGWindowID? = nil
     ) -> ManagedWindow? {
         let snapshot = providedSnapshot ?? windowOcclusionSnapshot()
         guard let evidence = pointerDragSurfaceEvidence(
             at: point,
-            snapshot: snapshot
+            snapshot: snapshot,
+            eventHandlerWindowID: eventHandlerWindowID
         ) else { return nil }
         return resolvePointerDragSurface(
             evidence,
@@ -418,9 +742,14 @@ final class AXWindowService {
 
     func pointerDragSurfaceEvidence(
         at point: CGPoint,
-        snapshot: [WindowOcclusionSnapshot]
+        snapshot: [WindowOcclusionSnapshot],
+        eventHandlerWindowID: CGWindowID? = nil
     ) -> PointerDragSurfaceEvidence? {
-        PointerDragSurfaceEvidencePolicy.capture(at: point, snapshot: snapshot)
+        PointerDragSurfaceEvidencePolicy.capture(
+            at: point,
+            snapshot: snapshot,
+            eventHandlerWindowID: eventHandlerWindowID
+        )
     }
 
     /// Resolve only the physical surface captured at mouse-down. This may be
@@ -447,7 +776,8 @@ final class AXWindowService {
         switch persistedManagedWindow(
             matching: record,
             app: app,
-            bindings: persistedBindings
+            bindings: persistedBindings,
+            messagingTimeout: AXMessagingTimeoutPolicy.interactiveOperation
         ) {
         case .matched(let knownWindow):
             return knownWindow
@@ -457,6 +787,10 @@ final class AXWindowService {
             break
         }
 
+        // This is an exact, user-initiated pointer transaction. Resolve only
+        // the owning application, but do not require focus to have already
+        // settled: first-action quality depends on matching the exact physical
+        // Window ID even while activation is still catching up.
         let presentWindowIDs = Set(currentRecords.compactMap { item in
             item.pid == record.pid ? item.id : nil
         })
@@ -474,12 +808,16 @@ final class AXWindowService {
                 $0.pid == record.pid && !registeredWindowIDs.contains($0.id)
             },
             excludingStableIDs: registeredIdentities,
-            usesFocusedWindowHint: false
+            usesFocusedWindowHint: false,
+            messagingTimeout: AXMessagingTimeoutPolicy.interactiveOperation
         )
         return matches.map(\.window).first { window in
             window.cgWindowID == evidence.selection.windowID
                 && !window.isMinimized
-                && canMoveAndResize(window)
+                && canMoveAndResize(
+                    window,
+                    messagingTimeout: AXMessagingTimeoutPolicy.interactiveOperation
+                )
         }
     }
 
@@ -521,8 +859,6 @@ final class AXWindowService {
             case .matched(let managed):
                 claimedWindowIDs.insert(record.id)
                 guard !managed.isMinimized,
-                      managed.frame.width > 180,
-                      managed.frame.height > 100,
                       !excludedStableIDs.contains(managed.stableIdentity),
                       seen.insert(managed.stableIdentity).inserted else {
                     continue
@@ -584,7 +920,8 @@ final class AXWindowService {
     private func persistedManagedWindow(
         matching record: CGWindowRecord,
         app: NSRunningApplication,
-        bindings: [ManagedWindowBinding]
+        bindings: [ManagedWindowBinding],
+        messagingTimeout: Float? = AXMessagingTimeoutPolicy.passiveObservation
     ) -> PersistedManagedWindowResolution {
         switch PersistedWindowBindingPolicy.resolve(
             pid: record.pid,
@@ -606,13 +943,18 @@ final class AXWindowService {
                       pid: record.pid
                   ) == stableIdentity,
                   !WindowStructuralPolicy.isConfirmedMissing(
-                      windowLiveness(element: binding.element, pid: record.pid)
+                      windowLiveness(
+                          element: binding.element,
+                          pid: record.pid,
+                          messagingTimeout: messagingTimeout
+                      )
                   ),
                   let knownWindow = makeManagedWindow(
                       binding.element,
                       pid: record.pid,
                       app: app,
-                      cgWindowID: record.id
+                      cgWindowID: record.id,
+                      messagingTimeout: messagingTimeout
                   ),
                   !knownWindow.isMinimized,
                   visibleGeometryMatches(
@@ -629,14 +971,11 @@ final class AXWindowService {
         guard let app = NSRunningApplication(processIdentifier: pid),
               !app.isTerminated else { return .unknown }
         let appElement = AXUIElementCreateApplication(pid)
-        var rawValue: CFTypeRef?
-        let result = AXUIElementCopyAttributeValue(
+        guard let windows: [AXUIElement] = copyAttribute(
             appElement,
             kAXWindowsAttribute as CFString,
-            &rawValue
-        )
-        guard result == .success,
-              let windows = rawValue as? [AXUIElement] else {
+            messagingTimeout: AXMessagingTimeoutPolicy.passiveObservation
+        ) else {
             return .unknown
         }
         // kAXWindows is the structural census. Do not require frame access or
@@ -682,13 +1021,17 @@ final class AXWindowService {
         Set(visibleWindows().map(\.stableIdentity))
     }
 
-    func windowOcclusionSnapshot() -> [WindowOcclusionSnapshot] {
+    func windowOcclusionSnapshotObservation()
+        -> WindowOcclusionSnapshotObservation {
         let currentPID = ProcessInfo.processInfo.processIdentifier
         guard let info = CGWindowListCopyWindowInfo(
             [.optionOnScreenOnly, .excludeDesktopElements],
             kCGNullWindowID
-        ) as? [[String: Any]] else { return [] }
-        return info.enumerated().compactMap { index, item in
+        ) as? [[String: Any]] else {
+            return .unknown
+        }
+        let snapshot = info.enumerated().compactMap { index, item
+            -> WindowOcclusionSnapshot? in
             guard let id = item[kCGWindowNumber as String] as? NSNumber,
                   let pid = item[kCGWindowOwnerPID as String] as? NSNumber,
                   pid.int32Value != currentPID,
@@ -700,14 +1043,23 @@ final class AXWindowService {
             guard let bounds = CGRect(
                 dictionaryRepresentation: boundsDictionary as CFDictionary
             ), bounds.width > 0, bounds.height > 0 else { return nil }
+            let layer = (item[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0
             return WindowOcclusionSnapshot(
                 windowID: CGWindowID(id.uint32Value),
                 pid: pid.int32Value,
                 frame: cgBoundsToCocoa(bounds).insetBy(dx: -1, dy: -1),
                 zIndex: index,
-                layer: (item[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0
+                layer: layer
             )
         }
+        return WindowOcclusionSnapshotObservation(
+            snapshot: snapshot,
+            completeness: .complete
+        )
+    }
+
+    func windowOcclusionSnapshot() -> [WindowOcclusionSnapshot] {
+        windowOcclusionSnapshotObservation().snapshot
     }
 
     func occludingWindows(
@@ -807,43 +1159,53 @@ final class AXWindowService {
 
     func windowLiveness(
         element: AXUIElement,
-        pid: pid_t
+        pid: pid_t,
+        messagingTimeout: Float? = AXMessagingTimeoutPolicy.interactiveOperation
     ) -> WindowLiveness {
         guard let app = NSRunningApplication(processIdentifier: pid),
               !app.isTerminated else { return .missing }
 
-        var roleValue: CFTypeRef?
-        let roleResult = AXUIElementCopyAttributeValue(
+        return withMessagingTimeout(
             element,
-            kAXRoleAttribute as CFString,
-            &roleValue
-        )
-        if roleResult == .invalidUIElement { return .missing }
-        guard roleResult == .success else { return .unknown }
-        guard (roleValue as? String) == kAXWindowRole else { return .missing }
+            timeout: messagingTimeout
+        ) {
+            var roleValue: CFTypeRef?
+            let roleResult = AXUIElementCopyAttributeValue(
+                element,
+                kAXRoleAttribute as CFString,
+                &roleValue
+            )
+            if roleResult == .invalidUIElement { return .missing }
+            guard roleResult == .success else { return .unknown }
+            guard (roleValue as? String) == kAXWindowRole else {
+                return .missing
+            }
 
-        // Position/size are liveness probes only. A timeout/cannotComplete is
-        // transient evidence, never confirmed disappearance. No short
-        // messaging timeout is installed on the persistent AX element.
-        var positionValue: CFTypeRef?
-        var sizeValue: CFTypeRef?
-        let positionResult = AXUIElementCopyAttributeValue(
-            element,
-            kAXPositionAttribute as CFString,
-            &positionValue
-        )
-        let sizeResult = AXUIElementCopyAttributeValue(
-            element,
-            kAXSizeAttribute as CFString,
-            &sizeValue
-        )
-        if positionResult == .invalidUIElement || sizeResult == .invalidUIElement {
-            return .missing
+            // Position/size are liveness probes only. cannotComplete/timeout
+            // remains transient evidence and never authorizes structural
+            // destruction. The bounded per-element lease protects main-thread
+            // liveness without changing the unknown-vs-missing contract.
+            var positionValue: CFTypeRef?
+            var sizeValue: CFTypeRef?
+            let positionResult = AXUIElementCopyAttributeValue(
+                element,
+                kAXPositionAttribute as CFString,
+                &positionValue
+            )
+            let sizeResult = AXUIElementCopyAttributeValue(
+                element,
+                kAXSizeAttribute as CFString,
+                &sizeValue
+            )
+            if positionResult == .invalidUIElement
+                || sizeResult == .invalidUIElement {
+                return .missing
+            }
+            guard positionResult == .success, sizeResult == .success else {
+                return .unknown
+            }
+            return .alive
         }
-        guard positionResult == .success, sizeResult == .success else {
-            return .unknown
-        }
-        return .alive
     }
 
     func isWindowAlive(element: AXUIElement, pid: pid_t) -> Bool {
@@ -851,14 +1213,173 @@ final class AXWindowService {
     }
 
 
-    func canMoveAndResize(_ window: ManagedWindow) -> Bool {
+    func moveAndResizeCapability(
+        _ window: ManagedWindow,
+        messagingTimeout: Float? = AXMessagingTimeoutPolicy.passiveObservation
+    ) -> WindowInteractionCapabilityObservation {
         guard let application = NSRunningApplication(
             processIdentifier: window.pid
-        ), WindowSnapEligibilityPolicy.isEligible(
+        ), !application.isTerminated else {
+            return .unavailable
+        }
+        guard WindowSnapEligibilityPolicy.isEligible(
             bundleIdentifier: application.bundleIdentifier
-        ) else { return false }
-        return isAttributeSettable(kAXPositionAttribute as CFString, on: window.element)
-            && isAttributeSettable(kAXSizeAttribute as CFString, on: window.element)
+        ) else {
+            return .unavailable
+        }
+        let move = attributeSettableObservation(
+            kAXPositionAttribute as CFString,
+            on: window.element,
+            messagingTimeout: messagingTimeout
+        )
+        let resize = attributeSettableObservation(
+            kAXSizeAttribute as CFString,
+            on: window.element,
+            messagingTimeout: messagingTimeout
+        )
+        return WindowInteractionCapabilityObservation.combining(move, resize)
+    }
+
+    func canMoveAndResize(
+        _ window: ManagedWindow,
+        messagingTimeout: Float? = AXMessagingTimeoutPolicy.passiveObservation
+    ) -> Bool {
+        moveAndResizeCapability(
+            window,
+            messagingTimeout: messagingTimeout
+        ) == .available
+    }
+
+    func refreshedPersistedWindow(
+        element: AXUIElement,
+        pid: pid_t,
+        expectedStableIdentity: String,
+        cgWindowID: CGWindowID?,
+        messagingTimeout: Float? = AXMessagingTimeoutPolicy.interactiveOperation
+    ) -> PersistedWindowRefreshObservation {
+        guard let app = NSRunningApplication(processIdentifier: pid),
+              !app.isTerminated else {
+            return .missing
+        }
+        switch windowLiveness(
+            element: element,
+            pid: pid,
+            messagingTimeout: messagingTimeout
+        ) {
+        case .missing:
+            return .missing
+        case .unknown:
+            return .unknown
+        case .alive:
+            break
+        }
+        guard let window = makeManagedWindow(
+            element,
+            pid: pid,
+            app: app,
+            cgWindowID: cgWindowID,
+            messagingTimeout: messagingTimeout
+        ), window.stableIdentity == expectedStableIdentity else {
+            return .unknown
+        }
+        return .available(window)
+    }
+
+    /// Constraint learning is intentionally narrower than ordinary snap
+    /// eligibility. Only a standard, currently alive content window may be
+    /// used as evidence for an app-level size constraint.
+    func constraintLearningEligibilityObservation(
+        _ window: ManagedWindow,
+        messagingTimeout: Float? = AXMessagingTimeoutPolicy.passiveObservation
+    ) -> WindowInteractionCapabilityObservation {
+        switch moveAndResizeCapability(
+            window,
+            messagingTimeout: messagingTimeout
+        ) {
+        case .available:
+            break
+        case .unavailable:
+            return .unavailable
+        case .unknown:
+            return .unknown
+        }
+        guard !window.isMinimized, !window.isFullscreen else {
+            return .unavailable
+        }
+        switch windowLiveness(
+            element: window.element,
+            pid: window.pid,
+            messagingTimeout: messagingTimeout
+        ) {
+        case .alive:
+            break
+        case .missing:
+            return .unavailable
+        case .unknown:
+            return .unknown
+        }
+
+        let roleObservation = attributeValueObservation(
+            kAXRoleAttribute as CFString,
+            on: window.element,
+            messagingTimeout: messagingTimeout
+        )
+        switch roleObservation.error {
+        case .success:
+            guard let role = roleObservation.value as? String else {
+                return .unknown
+            }
+            guard role == kAXWindowRole else { return .unavailable }
+        case .attributeUnsupported, .invalidUIElement:
+            return .unavailable
+        default:
+            return .unknown
+        }
+
+        let subroleObservation = attributeValueObservation(
+            kAXSubroleAttribute as CFString,
+            on: window.element,
+            messagingTimeout: messagingTimeout
+        )
+        switch subroleObservation.error {
+        case .success:
+            guard let subrole = subroleObservation.value as? String else {
+                return .unknown
+            }
+            guard subrole == kAXStandardWindowSubrole else {
+                return .unavailable
+            }
+        case .attributeUnsupported, .invalidUIElement:
+            return .unavailable
+        default:
+            return .unknown
+        }
+
+        let modalObservation = attributeValueObservation(
+            kAXModalAttribute as CFString,
+            on: window.element,
+            messagingTimeout: messagingTimeout
+        )
+        switch modalObservation.error {
+        case .success:
+            guard let isModal = modalObservation.value as? Bool else {
+                return .unknown
+            }
+            return isModal ? .unavailable : .available
+        case .attributeUnsupported:
+            // Preserve the existing behavior for windows that simply do not
+            // expose AXModal: lack of the optional attribute is not evidence of
+            // a modal window.
+            return .available
+        case .invalidUIElement:
+            return .unavailable
+        default:
+            return .unknown
+        }
+    }
+
+    func isEligibleForConstraintLearning(_ window: ManagedWindow) -> Bool {
+        constraintLearningEligibilityObservation(window) == .available
     }
 
     func snapshot(_ window: ManagedWindow) -> WindowSnapshot {
@@ -879,6 +1400,34 @@ final class AXWindowService {
         return firstPositionResult && sizeResult && finalPositionResult
     }
 
+    /// Best-effort mutation used only by the pointer-following restore
+    /// animation. Its short timeout is intentionally local to derived motion;
+    /// correctness-critical snap, rollback, restore and constraint mutation
+    /// retain the established interactive timeout and semantic settlement.
+    func setFrameForInteractiveAnimation(
+        _ frame: CGRect,
+        for window: AXUIElement
+    ) -> Bool {
+        let firstPositionResult = setPosition(
+            frame.origin,
+            targetHeight: frame.height,
+            for: window,
+            messagingTimeout: AXMessagingTimeoutPolicy.animationMutation
+        )
+        let sizeResult = setSize(
+            frame.size,
+            for: window,
+            messagingTimeout: AXMessagingTimeoutPolicy.animationMutation
+        )
+        guard firstPositionResult, sizeResult else { return false }
+        return setPosition(
+            frame.origin,
+            targetHeight: frame.height,
+            for: window,
+            messagingTimeout: AXMessagingTimeoutPolicy.animationMutation
+        )
+    }
+
     @discardableResult
     func setFrameLightweight(
         _ frame: CGRect,
@@ -892,22 +1441,27 @@ final class AXWindowService {
         var size = frame.size
         guard let positionValue = AXValueCreate(.cgPoint, &position),
               let sizeValue = AXValueCreate(.cgSize, &size) else { return false }
-        let firstPositionResult = AXUIElementSetAttributeValue(
+        return withMessagingTimeout(
             window,
-            kAXPositionAttribute as CFString,
-            positionValue
-        ) == .success
-        let sizeResult = AXUIElementSetAttributeValue(
-            window,
-            kAXSizeAttribute as CFString,
-            sizeValue
-        ) == .success
-        let finalPositionResult = AXUIElementSetAttributeValue(
-            window,
-            kAXPositionAttribute as CFString,
-            positionValue
-        ) == .success
-        return firstPositionResult && sizeResult && finalPositionResult
+            timeout: AXMessagingTimeoutPolicy.interactiveOperation
+        ) {
+            let firstPositionResult = AXUIElementSetAttributeValue(
+                window,
+                kAXPositionAttribute as CFString,
+                positionValue
+            ) == .success
+            let sizeResult = AXUIElementSetAttributeValue(
+                window,
+                kAXSizeAttribute as CFString,
+                sizeValue
+            ) == .success
+            let finalPositionResult = AXUIElementSetAttributeValue(
+                window,
+                kAXPositionAttribute as CFString,
+                positionValue
+            ) == .success
+            return firstPositionResult && sizeResult && finalPositionResult
+        }
     }
 
     func setFrameReliably(
@@ -993,16 +1547,46 @@ final class AXWindowService {
         afterInitialFrameAttempt: (() -> Void)? = nil,
         completion: @escaping (Bool) -> Void
     ) {
-        let operation = beginFrameOperation(for: window)
-        setFrameAnchoredAndObserved(
+        var pid: pid_t = 0
+        _ = AXUIElementGetPid(window, &pid)
+        setFrameAnchoredObserved(
             targetFrame,
             sizeConstraintAnchor: sizeConstraintAnchor,
             requiredOuterEdges: requiredOuterEdges,
             skipInitialWriteWhenVerified: skipInitialWriteWhenVerified,
             for: window,
+            pid: pid,
+            afterInitialFrameAttempt: afterInitialFrameAttempt
+        ) { observation in
+            completion(observation.completedSuccessfully)
+        }
+    }
+
+    func setFrameAnchoredObserved(
+        _ targetFrame: CGRect,
+        sizeConstraintAnchor: CGPoint,
+        requiredOuterEdges: SnapOuterEdges = [],
+        requiredCommitSizeAxes: AXFrameSizeAxes? = nil,
+        skipInitialWriteWhenVerified: Bool = false,
+        for window: AXUIElement,
+        pid: pid_t,
+        afterInitialFrameAttempt: (() -> Void)? = nil,
+        settlementMode: AXFrameSettlementMode = .requireExactTarget,
+        completion: @escaping (AXFrameMutationObservation) -> Void
+    ) {
+        let operation = beginFrameOperation(for: window)
+        setFrameAnchoredAndObserved(
+            targetFrame,
+            sizeConstraintAnchor: sizeConstraintAnchor,
+            requiredOuterEdges: requiredOuterEdges,
+            requiredCommitSizeAxes: requiredCommitSizeAxes,
+            skipInitialWriteWhenVerified: skipInitialWriteWhenVerified,
+            for: window,
+            pid: pid,
             operationKey: operation.key,
             generation: operation.generation,
             afterInitialFrameAttempt: afterInitialFrameAttempt,
+            settlementMode: settlementMode,
             completion: completion
         )
     }
@@ -1011,18 +1595,28 @@ final class AXWindowService {
         _ targetFrame: CGRect,
         sizeConstraintAnchor: CGPoint,
         requiredOuterEdges: SnapOuterEdges,
+        requiredCommitSizeAxes: AXFrameSizeAxes?,
         skipInitialWriteWhenVerified: Bool,
         for window: AXUIElement,
+        pid: pid_t,
         operationKey: String,
         generation: Int,
         afterInitialFrameAttempt: (() -> Void)?,
-        completion: @escaping (Bool) -> Void
+        settlementMode: AXFrameSettlementMode,
+        completion: @escaping (AXFrameMutationObservation) -> Void
     ) {
         let startedAt = ProcessInfo.processInfo.systemUptime
-        let requiresExactWidth = requiredOuterEdges.contains(.horizontal)
-        let requiresExactHeight = requiredOuterEdges.contains(.vertical)
-        let hasRequiredExactDimension = requiresExactWidth || requiresExactHeight
-        let settlingTimeout: TimeInterval = hasRequiredExactDimension ? 1.8 : 0.9
+        let correctionExactAxes = AXFrameSizePolicy.historicalCorrectionAxes(
+            requiredOuterEdges: requiredOuterEdges
+        )
+        let commitExactAxes = AXFrameSizePolicy.commitAxes(
+            requiredOuterEdges: requiredOuterEdges,
+            explicitCommitAxes: requiredCommitSizeAxes
+        )
+        let hasRequiredExactDimension = !correctionExactAxes.isEmpty
+        let tracksExactCommitTarget = !commitExactAxes.isEmpty
+        let settlingTimeout: TimeInterval =
+            (hasRequiredExactDimension || tracksExactCommitTarget) ? 1.8 : 0.9
         let timeoutAt = startedAt + settlingTimeout
         var previousObservedSize: CGSize?
         var stableSizeTransitions = 0
@@ -1033,8 +1627,49 @@ final class AXWindowService {
         var exactCorrectionCount = 0
         var previousTargetDistance: CGFloat?
         var lastTargetProgressAt = startedAt
+        var targetProgressWasObserved = false
         var placementAcceptedAt: TimeInterval?
         var completionDelivered = false
+        var mutationWasSent = false
+        var sizeMutationSucceeded = false
+        var latestSizeMutationSucceeded = false
+        var lastObservedFrame: CGRect?
+
+        func deliver(
+            successful: Bool,
+            acceptedFrame: CGRect?,
+            settled: Bool,
+            evidence: AXFrameSettlementEvidence
+        ) {
+            guard !completionDelivered else { return }
+            completionDelivered = true
+            completion(AXFrameMutationObservation(
+                requestedFrame: targetFrame,
+                acceptedFrame: acceptedFrame,
+                mutationWasSent: mutationWasSent,
+                sizeMutationSucceeded: sizeMutationSucceeded,
+                acceptedFrameIsSettled: settled,
+                liveness: self.windowLiveness(
+                    element: window,
+                    pid: pid,
+                    messagingTimeout: AXMessagingTimeoutPolicy.passiveObservation
+                ),
+                completedSuccessfully: successful,
+                settlementEvidence: evidence
+            ))
+        }
+
+        func performCorrection() {
+            mutationWasSent = true
+            let result = self.setFinalFrameCorrection(
+                targetFrame,
+                sizeConstraintAnchor: sizeConstraintAnchor,
+                for: window
+            )
+            latestSizeMutationSucceeded = result.sizeMutationSucceeded
+            sizeMutationSucceeded = sizeMutationSucceeded
+                || result.sizeMutationSucceeded
+        }
 
         let startedAtVerifiedTarget: Bool
         if skipInitialWriteWhenVerified, let initialFrame = frame(of: window) {
@@ -1063,11 +1698,7 @@ final class AXWindowService {
             finalSizeRequestCount = 2
             finalSizeRequestAt = startedAt - 0.08
         } else {
-            _ = setFinalFrameCorrection(
-                targetFrame,
-                sizeConstraintAnchor: sizeConstraintAnchor,
-                for: window
-            )
+            performCorrection()
             finalSizeRequestCount = 1
         }
 
@@ -1076,11 +1707,12 @@ final class AXWindowService {
             afterInitialFrameAttempt()
             if !startedAtVerifiedTarget,
                isCurrentFrameOperation(key: operationKey, generation: generation) {
-                _ = setFinalFrameCorrection(
-                    targetFrame,
-                    sizeConstraintAnchor: sizeConstraintAnchor,
-                    for: window
-                )
+                // Activation/focus is part of this original mutation phase.
+                // Issue one post-activation write so an inactive app that did
+                // not apply the pre-activation request cannot be mistaken for
+                // a size rejection. No later settlement retry replays this
+                // mutation.
+                performCorrection()
                 finalSizeRequestAt = ProcessInfo.processInfo.systemUptime
                 finalSizeRequestCount += 1
             }
@@ -1101,12 +1733,18 @@ final class AXWindowService {
             let now = ProcessInfo.processInfo.systemUptime
             guard let actualFrame = self.frame(of: window) else {
                 guard now >= timeoutAt else { return }
-                completionDelivered = true
                 timer.invalidate()
                 self.frameAnimationTimers.removeValue(forKey: operationKey)
-                completion(false)
+                deliver(
+                    successful: false,
+                    acceptedFrame: lastObservedFrame,
+                    settled: false,
+                    evidence: .unresolved
+                )
                 return
             }
+
+            lastObservedFrame = actualFrame
 
             if let previousObservedSize,
                self.sizesMatch(actualFrame.size, previousObservedSize, tolerance: 2) {
@@ -1131,24 +1769,37 @@ final class AXWindowService {
                 targetFrame.size,
                 tolerance: 1
             )
-            let requiredSizeIsCorrect =
-                (!requiresExactWidth
-                    || abs(actualFrame.width - targetFrame.width) <= 1)
-                && (!requiresExactHeight
-                    || abs(actualFrame.height - targetFrame.height) <= 1)
+            let correctionRequiredSizeIsCorrect = AXFrameSizePolicy
+                .requiredSizeIsCorrect(
+                    actual: actualFrame.size,
+                    target: targetFrame.size,
+                    exactAxes: correctionExactAxes
+                )
+            let commitRequiredSizeIsCorrect = AXFrameSizePolicy
+                .requiredSizeIsCorrect(
+                    actual: actualFrame.size,
+                    target: targetFrame.size,
+                    exactAxes: commitExactAxes
+                )
             let requiredEdgesAreCorrect = self.requiredOuterEdgesMatch(
                 actualFrame,
                 targetFrame,
                 requiredEdges: requiredOuterEdges
             )
 
-            if hasRequiredExactDimension {
-                let targetDistance = abs(actualFrame.minX - targetFrame.minX)
-                    + abs(actualFrame.minY - targetFrame.minY)
-                    + abs(actualFrame.width - targetFrame.width)
-                    + abs(actualFrame.height - targetFrame.height)
+            if hasRequiredExactDimension || tracksExactCommitTarget {
+                // Progress evidence for an unknown size boundary must come
+                // from the dimensions this operation owns. Position/anchor
+                // movement alone must not make a stale 60% size look like
+                // progress toward a requested 50% size.
+                let targetDistance = AXFrameSizePolicy.targetDistance(
+                    actual: actualFrame.size,
+                    target: targetFrame.size,
+                    exactAxes: commitExactAxes
+                )
                 if let previousTargetDistance,
                    previousTargetDistance - targetDistance >= 1 {
+                    targetProgressWasObserved = true
                     lastTargetProgressAt = now
                 }
                 previousTargetDistance = targetDistance
@@ -1158,7 +1809,7 @@ final class AXWindowService {
             let settledAfterFinalSizeRequest = now - finalSizeRequestAt >= 0.08
             let finalTargetWasObserved = exactSizeIsCorrect
                 || (finalSizeRequestCount >= 2 && settledAfterFinalSizeRequest)
-            let placementIsAcceptable = requiredSizeIsCorrect
+            let placementIsAcceptable = commitRequiredSizeIsCorrect
                 && requiredEdgesAreCorrect
                 && finalTargetWasObserved
 
@@ -1176,25 +1827,57 @@ final class AXWindowService {
             if startedAtVerifiedTarget {
                 verificationDuration = 0.02
             } else {
-                verificationDuration = hasRequiredExactDimension ? 0.08 : 0.04
+                verificationDuration = (hasRequiredExactDimension
+                    || tracksExactCommitTarget) ? 0.08 : 0.04
             }
             if acceptedPlacementSamples >= 2,
                let placementAcceptedAt,
                now - placementAcceptedAt >= verificationDuration {
-                guard !completionDelivered else { return }
-                completionDelivered = true
                 timer.invalidate()
                 self.frameAnimationTimers.removeValue(forKey: operationKey)
-                completion(true)
+                deliver(
+                    successful: true,
+                    acceptedFrame: actualFrame,
+                    settled: true,
+                    evidence: .exactTarget
+                )
+                return
+            }
+
+            if AXFrameSettlementPolicy.shouldReturnSettledConstraintResult(
+                mode: settlementMode,
+                placementIsAcceptable: placementIsAcceptable,
+                mutationWasSent: mutationWasSent,
+                sizeMutationSucceeded: latestSizeMutationSucceeded,
+                acceptedSizeIsStable: acceptedSizeIsStable,
+                settledAfterFinalSizeRequest: settledAfterFinalSizeRequest,
+                targetProgressWasObserved: targetProgressWasObserved,
+                secondsWithoutTargetProgress: now - lastTargetProgressAt
+            ) {
+                // This is a new semantic observation, not a failed retry. The
+                // caller owns whether the accepted frame authorizes a replan.
+                timer.invalidate()
+                self.frameAnimationTimers.removeValue(forKey: operationKey)
+                deliver(
+                    successful: false,
+                    acceptedFrame: actualFrame,
+                    settled: true,
+                    evidence: .operationLocalAlternative
+                )
                 return
             }
 
             guard now < timeoutAt else {
-                guard !completionDelivered else { return }
-                completionDelivered = true
                 timer.invalidate()
                 self.frameAnimationTimers.removeValue(forKey: operationKey)
-                completion(false)
+                let settled = stableSizeTransitions >= 1
+                deliver(
+                    successful: false,
+                    acceptedFrame: actualFrame,
+                    settled: settled,
+                    evidence: settled && latestSizeMutationSucceeded
+                        ? .boundedAlternative : .unresolved
+                )
                 return
             }
 
@@ -1208,13 +1891,9 @@ final class AXWindowService {
                    !applicationIsStillResponding {
                     var issuedCorrection = false
 
-                    if !requiredSizeIsCorrect
+                    if !correctionRequiredSizeIsCorrect
                         || (!exactSizeIsCorrect && finalSizeRequestCount < 2) {
-                        _ = self.setFinalFrameCorrection(
-                            targetFrame,
-                            sizeConstraintAnchor: sizeConstraintAnchor,
-                            for: window
-                        )
+                        performCorrection()
                         finalSizeRequestAt = now
                         finalSizeRequestCount += 1
                         issuedCorrection = true
@@ -1242,11 +1921,7 @@ final class AXWindowService {
                       now - lastCorrectionAt >= 0.10 {
                 if !exactSizeIsCorrect,
                    finalSizeRequestCount < 2 {
-                    _ = self.setFinalFrameCorrection(
-                        targetFrame,
-                        sizeConstraintAnchor: sizeConstraintAnchor,
-                        for: window
-                    )
+                    performCorrection()
                     finalSizeRequestAt = now
                     finalSizeRequestCount += 1
                     previousObservedSize = nil
@@ -1267,19 +1942,29 @@ final class AXWindowService {
         RunLoop.main.add(timer, forMode: .common)
     }
 
+    private struct FrameCorrectionResult {
+        let operationSucceeded: Bool
+        let sizeMutationSucceeded: Bool
+    }
+
     @discardableResult
     private func setFinalFrameCorrection(
         _ targetFrame: CGRect,
         sizeConstraintAnchor: CGPoint,
         for window: AXUIElement
-    ) -> Bool {
+    ) -> FrameCorrectionResult {
         let preparationPositionResult = setPosition(
             targetFrame.origin,
             targetHeight: targetFrame.height,
             for: window
         )
         let sizeResult = setSize(targetFrame.size, for: window)
-        guard let acceptedSize = frame(of: window)?.size else { return false }
+        guard let acceptedSize = frame(of: window)?.size else {
+            return FrameCorrectionResult(
+                operationSucceeded: false,
+                sizeMutationSucceeded: sizeResult
+            )
+        }
         let acceptedFrame = anchoredFrame(
             targetFrame,
             actualSize: acceptedSize,
@@ -1290,7 +1975,11 @@ final class AXWindowService {
             targetHeight: acceptedFrame.height,
             for: window
         )
-        return preparationPositionResult && sizeResult && finalPositionResult
+        return FrameCorrectionResult(
+            operationSucceeded:
+                preparationPositionResult && sizeResult && finalPositionResult,
+            sizeMutationSucceeded: sizeResult
+        )
     }
 
     func cancelFrameOperation(for window: AXUIElement) {
@@ -1323,25 +2012,44 @@ final class AXWindowService {
     }
 
     @discardableResult
-    private func setPosition(_ origin: CGPoint, targetHeight: CGFloat, for window: AXUIElement) -> Bool {
+    private func setPosition(
+        _ origin: CGPoint,
+        targetHeight: CGFloat,
+        for window: AXUIElement,
+        messagingTimeout: Float = AXMessagingTimeoutPolicy.interactiveOperation
+    ) -> Bool {
         var position = cocoaPointToAX(origin, height: targetHeight)
         guard let value = AXValueCreate(.cgPoint, &position) else { return false }
-        return AXUIElementSetAttributeValue(
+        return withMessagingTimeout(
             window,
-            kAXPositionAttribute as CFString,
-            value
-        ) == .success
+            timeout: messagingTimeout
+        ) {
+            AXUIElementSetAttributeValue(
+                window,
+                kAXPositionAttribute as CFString,
+                value
+            ) == .success
+        }
     }
 
     @discardableResult
-    private func setSize(_ targetSize: CGSize, for window: AXUIElement) -> Bool {
+    private func setSize(
+        _ targetSize: CGSize,
+        for window: AXUIElement,
+        messagingTimeout: Float = AXMessagingTimeoutPolicy.interactiveOperation
+    ) -> Bool {
         var size = targetSize
         guard let value = AXValueCreate(.cgSize, &size) else { return false }
-        return AXUIElementSetAttributeValue(
+        return withMessagingTimeout(
             window,
-            kAXSizeAttribute as CFString,
-            value
-        ) == .success
+            timeout: messagingTimeout
+        ) {
+            AXUIElementSetAttributeValue(
+                window,
+                kAXSizeAttribute as CFString,
+                value
+            ) == .success
+        }
     }
 
     private func framesMatch(_ lhs: CGRect, _ rhs: CGRect, tolerance: CGFloat = 5) -> Bool {
@@ -1397,16 +2105,37 @@ final class AXWindowService {
     @discardableResult
     func setFullscreen(_ fullscreen: Bool, for window: AXUIElement) -> Bool {
         let value: CFBoolean = fullscreen ? kCFBooleanTrue : kCFBooleanFalse
-        return AXUIElementSetAttributeValue(window, "AXFullScreen" as CFString, value) == .success
+        return withMessagingTimeout(
+            window,
+            timeout: AXMessagingTimeoutPolicy.interactiveOperation
+        ) {
+            AXUIElementSetAttributeValue(
+                window,
+                "AXFullScreen" as CFString,
+                value
+            ) == .success
+        }
     }
 
     func isFullscreen(_ window: AXUIElement) -> Bool {
-        copyAttribute(window, "AXFullScreen" as CFString) ?? false
+        copyAttribute(
+            window,
+            "AXFullScreen" as CFString,
+            messagingTimeout: AXMessagingTimeoutPolicy.interactiveOperation
+        ) ?? false
     }
 
     @discardableResult
     func raise(_ window: ManagedWindow) -> Bool {
-        AXUIElementPerformAction(window.element, kAXRaiseAction as CFString) == .success
+        withMessagingTimeout(
+            window.element,
+            timeout: AXMessagingTimeoutPolicy.interactiveOperation
+        ) {
+            AXUIElementPerformAction(
+                window.element,
+                kAXRaiseAction as CFString
+            ) == .success
+        }
     }
 
     func focus(_ window: ManagedWindow) {
@@ -1414,42 +2143,109 @@ final class AXWindowService {
         raise(window)
     }
 
+    /// Mission Control group selection needs application activation without
+    /// prematurely selecting/raising one member. The caller observes the
+    /// resulting frontmost application before authorizing any group mutation.
+    @discardableResult
+    func activateApplication(pid: pid_t) -> Bool {
+        guard let application = NSRunningApplication(
+            processIdentifier: pid
+        ) else { return false }
+        return application.activate(options: [.activateIgnoringOtherApps])
+    }
+
+    func isFrontmostApplication(pid: pid_t) -> Bool {
+        NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
+    }
+
     func waitForPlacementReadiness(
         _ window: ManagedWindow,
         minimumDelay: TimeInterval = 0.06,
         timeout: TimeInterval = 0.45,
         shouldContinue: @escaping () -> Bool = { true },
-        completion: @escaping (ManagedWindow?) -> Void
+        completion: @escaping (PlacementReadinessResult) -> Void
     ) {
         let startedAt = ProcessInfo.processInfo.systemUptime
 
-        func checkReadiness() {
-            guard shouldContinue() else { return }
+        func observation(
+            messagingTimeout: Float
+        ) -> (ManagedWindow?, WindowInteractionCapabilityObservation) {
             guard let app = NSRunningApplication(processIdentifier: window.pid),
                   !app.isTerminated else {
-                completion(nil)
-                return
+                return (nil, .unavailable)
             }
+            if let current = refreshed(
+                window,
+                messagingTimeout: messagingTimeout
+            ) {
+                return (
+                    current,
+                    moveAndResizeCapability(
+                        current,
+                        messagingTimeout: messagingTimeout
+                    )
+                )
+            }
+            switch windowLiveness(
+                element: window.element,
+                pid: window.pid,
+                messagingTimeout: messagingTimeout
+            ) {
+            case .missing:
+                return (nil, .unavailable)
+            case .alive, .unknown:
+                return (nil, .unknown)
+            }
+        }
 
+        func finishIfSettled(
+            current: ManagedWindow?,
+            capability: WindowInteractionCapabilityObservation
+        ) -> Bool {
+            switch capability {
+            case .available:
+                guard let current else { return false }
+                completion(.ready(current))
+                return true
+            case .unavailable:
+                completion(.unavailable)
+                return true
+            case .unknown:
+                return false
+            }
+        }
+
+        func checkReadiness() {
+            guard shouldContinue() else { return }
             let elapsed = ProcessInfo.processInfo.systemUptime - startedAt
-            let current = refreshed(window)
-            let isReady = current.map(canMoveAndResize) == true
+            let sample = observation(
+                messagingTimeout: AXMessagingTimeoutPolicy.passiveObservation
+            )
 
-            if elapsed >= minimumDelay, isReady {
-                completion(current)
+            if elapsed >= minimumDelay, finishIfSettled(
+                current: sample.0,
+                capability: sample.1
+            ) {
                 return
             }
 
             guard elapsed < timeout else {
-                if let current, canMoveAndResize(current) {
-                    completion(current)
-                } else {
-                    completion(nil)
+                let finalSample = observation(
+                    messagingTimeout: AXMessagingTimeoutPolicy.interactiveOperation
+                )
+                if !finishIfSettled(
+                    current: finalSample.0,
+                    capability: finalSample.1
+                ) {
+                    completion(.indeterminate)
                 }
                 return
             }
 
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: checkReadiness)
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + 0.05,
+                execute: checkReadiness
+            )
         }
 
         DispatchQueue.main.asyncAfter(
@@ -1466,7 +2262,11 @@ final class AXWindowService {
             }
             waitForFullscreenState(true, for: snapshot.element, completion: completion)
         } else {
-            setFrameReliably(snapshot.frame, for: snapshot.element, completion: completion)
+            setFrameReliably(
+                snapshot.frame,
+                for: snapshot.element,
+                completion: completion
+            )
         }
     }
 
@@ -1497,40 +2297,77 @@ final class AXWindowService {
         _ element: AXUIElement,
         pid: pid_t,
         app: NSRunningApplication,
-        cgWindowID: CGWindowID?
+        cgWindowID: CGWindowID?,
+        messagingTimeout: Float? = AXMessagingTimeoutPolicy.interactiveOperation
     ) -> ManagedWindow? {
-        let role: String? = copyAttribute(element, kAXRoleAttribute as CFString)
-        guard role == kAXWindowRole else { return nil }
-        let subrole: String? = copyAttribute(element, kAXSubroleAttribute as CFString)
-        guard subrole != kAXUnknownSubrole else { return nil }
-        guard let frame = frame(of: element) else { return nil }
-        let title: String = copyAttribute(element, kAXTitleAttribute as CFString) ?? app.localizedName ?? "ウィンドウ"
-        let minimized: Bool = copyAttribute(element, kAXMinimizedAttribute as CFString) ?? false
-        let fullscreen: Bool = copyAttribute(element, "AXFullScreen" as CFString) ?? false
-        return ManagedWindow(
-            element: element,
-            pid: pid,
-            title: title.isEmpty ? (app.localizedName ?? "ウィンドウ") : title,
-            appIcon: app.icon,
-            frame: frame,
-            isMinimized: minimized,
-            isFullscreen: fullscreen,
-            cgWindowID: cgWindowID
-        )
+        withMessagingTimeout(element, timeout: messagingTimeout) {
+            let role: String? = copyAttribute(
+                element,
+                kAXRoleAttribute as CFString
+            )
+            guard role == kAXWindowRole else { return nil }
+            let subrole: String? = copyAttribute(
+                element,
+                kAXSubroleAttribute as CFString
+            )
+            guard subrole != kAXUnknownSubrole else { return nil }
+            guard let frame = frame(of: element, messagingTimeout: nil) else {
+                return nil
+            }
+            let title: String = copyAttribute(
+                element,
+                kAXTitleAttribute as CFString
+            ) ?? app.localizedName ?? "ウィンドウ"
+            let minimized: Bool = copyAttribute(
+                element,
+                kAXMinimizedAttribute as CFString
+            ) ?? false
+            let fullscreen: Bool = copyAttribute(
+                element,
+                "AXFullScreen" as CFString
+            ) ?? false
+            return ManagedWindow(
+                element: element,
+                pid: pid,
+                title: title.isEmpty ? (app.localizedName ?? "ウィンドウ") : title,
+                appIcon: app.icon,
+                frame: frame,
+                isMinimized: minimized,
+                isFullscreen: fullscreen,
+                cgWindowID: cgWindowID
+            )
+        }
     }
 
     private func matchedWindows(
         for app: NSRunningApplication,
         cgWindows: [CGWindowRecord],
         excludingStableIDs excludedStableIDs: Set<String> = [],
-        usesFocusedWindowHint: Bool = true
+        usesFocusedWindowHint: Bool = true,
+        messagingTimeout: Float? = AXMessagingTimeoutPolicy.passiveObservation
     ) -> [(window: ManagedWindow, zIndex: Int)] {
         let pid = app.processIdentifier
         let appElement = AXUIElementCreateApplication(pid)
-        let elements: [AXUIElement] = copyAttribute(appElement, kAXWindowsAttribute as CFString) ?? []
-        let focusedElement: AXUIElement? = copyAttribute(appElement, kAXFocusedWindowAttribute as CFString)
+        let elements: [AXUIElement] = copyAttribute(
+            appElement,
+            kAXWindowsAttribute as CFString,
+            messagingTimeout: messagingTimeout
+        ) ?? []
+        let focusedElement: AXUIElement? = usesFocusedWindowHint
+            ? copyAttribute(
+                appElement,
+                kAXFocusedWindowAttribute as CFString,
+                messagingTimeout: messagingTimeout
+            )
+            : nil
         let baseWindows = elements.compactMap {
-            makeManagedWindow($0, pid: pid, app: app, cgWindowID: nil)
+            makeManagedWindow(
+                $0,
+                pid: pid,
+                app: app,
+                cgWindowID: nil,
+                messagingTimeout: messagingTimeout
+            )
         }.filter {
             !excludedStableIDs.contains($0.stableIdentity)
         }
@@ -1560,7 +2397,8 @@ final class AXWindowService {
                 base.element,
                 pid: pid,
                 app: app,
-                cgWindowID: record.id
+                cgWindowID: record.id,
+                messagingTimeout: messagingTimeout
             ) ?? base
             return (matched, record.zIndex)
         }
@@ -1569,12 +2407,14 @@ final class AXWindowService {
     private func isModalSurface(_ element: AXUIElement) -> Bool {
         let isModal: Bool = copyAttribute(
             element,
-            "AXModal" as CFString
+            "AXModal" as CFString,
+            messagingTimeout: AXMessagingTimeoutPolicy.passiveObservation
         ) ?? false
         if isModal { return true }
         let subrole: String? = copyAttribute(
             element,
-            kAXSubroleAttribute as CFString
+            kAXSubroleAttribute as CFString,
+            messagingTimeout: AXMessagingTimeoutPolicy.passiveObservation
         )
         return subrole == "AXDialog" || subrole == "AXSystemDialog"
     }
@@ -1582,7 +2422,8 @@ final class AXWindowService {
     private func hasAttachedSheets(_ element: AXUIElement) -> Bool {
         let sheets: [AXUIElement] = copyAttribute(
             element,
-            "AXSheets" as CFString
+            "AXSheets" as CFString,
+            messagingTimeout: AXMessagingTimeoutPolicy.passiveObservation
         ) ?? []
         return !sheets.isEmpty
     }
@@ -1618,24 +2459,82 @@ final class AXWindowService {
         return titleScore - sizeDelta * 6 - originDelta * 2
     }
 
-    private func frame(of element: AXUIElement) -> CGRect? {
-        guard let positionValue: AXValue = copyAttribute(element, kAXPositionAttribute as CFString),
-              let sizeValue: AXValue = copyAttribute(element, kAXSizeAttribute as CFString) else { return nil }
-        var point = CGPoint.zero
-        var size = CGSize.zero
-        guard AXValueGetValue(positionValue, .cgPoint, &point),
-              AXValueGetValue(sizeValue, .cgSize, &size) else { return nil }
-        return CGRect(origin: axPointToCocoa(point, height: size.height), size: size)
+    func windowServerFrame(
+        pid: pid_t,
+        windowID: CGWindowID
+    ) -> CGRect? {
+        // Query only the exact physical surface. Snap settlement is verification,
+        // not animation, so avoid broad Window Server census work while screen
+        // capture software may be querying the same subsystem.
+        let requestedIDs = [NSNumber(value: windowID)] as CFArray
+        let descriptions = CGWindowListCreateDescriptionFromArray(requestedIDs)
+            as? [[String: Any]] ?? []
+        guard let item = descriptions.first(where: { item in
+            (item[kCGWindowNumber as String] as? NSNumber)?.uint32Value
+                == windowID
+                && (item[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value
+                    == pid
+                && ((item[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0)
+                    == 0
+        }) else { return nil }
+        let boundsDictionary = item[kCGWindowBounds as String] as? [String: Any]
+            ?? [:]
+        guard let bounds = CGRect(
+            dictionaryRepresentation: boundsDictionary as CFDictionary
+        ), bounds.width > 0, bounds.height > 0 else { return nil }
+        return cgBoundsToCocoa(bounds)
+    }
+
+    private func frame(
+        of element: AXUIElement,
+        messagingTimeout: Float? = AXMessagingTimeoutPolicy.interactiveOperation
+    ) -> CGRect? {
+        withMessagingTimeout(element, timeout: messagingTimeout) {
+            guard let positionValue: AXValue = copyAttribute(
+                element,
+                kAXPositionAttribute as CFString
+            ), let sizeValue: AXValue = copyAttribute(
+                element,
+                kAXSizeAttribute as CFString
+            ) else { return nil }
+            var point = CGPoint.zero
+            var size = CGSize.zero
+            guard AXValueGetValue(positionValue, .cgPoint, &point),
+                  AXValueGetValue(sizeValue, .cgSize, &size) else { return nil }
+            return CGRect(
+                origin: axPointToCocoa(point, height: size.height),
+                size: size
+            )
+        }
     }
 
     func previewCGImage(for windowID: CGWindowID?) -> CGImage? {
-        guard let windowID else { return nil }
+        guard let windowID, Self.beginPreviewCaptureIfAvailable() else {
+            return nil
+        }
+        defer { Self.endPreviewCapture() }
         return CGWindowListCreateImage(
             .null,
             .optionIncludingWindow,
             windowID,
             [.boundsIgnoreFraming, .nominalResolution]
         )
+    }
+
+    private static func beginPreviewCaptureIfAvailable() -> Bool {
+        previewCaptureStateLock.lock()
+        defer { previewCaptureStateLock.unlock() }
+        guard previewCapturesInFlight < maximumConcurrentPreviewCaptures else {
+            return false
+        }
+        previewCapturesInFlight += 1
+        return true
+    }
+
+    private static func endPreviewCapture() {
+        previewCaptureStateLock.lock()
+        previewCapturesInFlight = max(previewCapturesInFlight - 1, 0)
+        previewCaptureStateLock.unlock()
     }
 
     private func onscreenWindowRecords() -> [CGWindowRecord] {
@@ -1691,15 +2590,75 @@ final class AXWindowService {
     }
 
 
-    private func isAttributeSettable(_ attribute: CFString, on element: AXUIElement) -> Bool {
-        var settable = DarwinBoolean(false)
-        guard AXUIElementIsAttributeSettable(element, attribute, &settable) == .success else { return false }
-        return settable.boolValue
+    private func attributeValueObservation(
+        _ attribute: CFString,
+        on element: AXUIElement,
+        messagingTimeout: Float? = AXMessagingTimeoutPolicy.passiveObservation
+    ) -> (error: AXError, value: CFTypeRef?) {
+        withMessagingTimeout(element, timeout: messagingTimeout) {
+            var value: CFTypeRef?
+            let error = AXUIElementCopyAttributeValue(
+                element,
+                attribute,
+                &value
+            )
+            return (error, value)
+        }
     }
 
-    private func copyAttribute<T>(_ element: AXUIElement, _ attribute: CFString) -> T? {
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success else { return nil }
-        return value as? T
+    private func attributeSettableObservation(
+        _ attribute: CFString,
+        on element: AXUIElement,
+        messagingTimeout: Float? = AXMessagingTimeoutPolicy.passiveObservation
+    ) -> WindowInteractionCapabilityObservation {
+        withMessagingTimeout(element, timeout: messagingTimeout) {
+            var settable = DarwinBoolean(false)
+            let result = AXUIElementIsAttributeSettable(
+                element,
+                attribute,
+                &settable
+            )
+            switch result {
+            case .success:
+                return settable.boolValue ? .available : .unavailable
+            case .attributeUnsupported, .invalidUIElement:
+                return .unavailable
+            default:
+                // cannotComplete, transport failure, disabled API, and other
+                // non-semantic failures are indeterminate observations.
+                return .unknown
+            }
+        }
+    }
+
+    private func withMessagingTimeout<T>(
+        _ element: AXUIElement,
+        timeout: Float?,
+        perform: () -> T
+    ) -> T {
+        guard let timeout else { return perform() }
+        _ = AXUIElementSetMessagingTimeout(element, timeout)
+        defer {
+            // For non-system elements, zero restores the current process-wide
+            // default instead of installing a permanent short timeout.
+            _ = AXUIElementSetMessagingTimeout(element, 0)
+        }
+        return perform()
+    }
+
+    private func copyAttribute<T>(
+        _ element: AXUIElement,
+        _ attribute: CFString,
+        messagingTimeout: Float? = nil
+    ) -> T? {
+        withMessagingTimeout(element, timeout: messagingTimeout) {
+            var value: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(
+                element,
+                attribute,
+                &value
+            ) == .success else { return nil }
+            return value as? T
+        }
     }
 }

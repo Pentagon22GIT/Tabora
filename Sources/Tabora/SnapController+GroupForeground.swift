@@ -1,16 +1,44 @@
 import AppKit
 
+struct AutomaticGroupRaiseMutationOutcome: Equatable {
+    let completed: Bool
+    let attemptedMemberIDs: Set<String>
+
+    static let notIssued = AutomaticGroupRaiseMutationOutcome(
+        completed: false,
+        attemptedMemberIDs: []
+    )
+}
+
+enum AutomaticGroupRaiseAttemptPolicy {
+    static func acceptedMemberIDs(
+        current: Set<String>,
+        memberID: String,
+        actionAccepted: Bool
+    ) -> Set<String> {
+        guard actionAccepted else { return current }
+        return current.union([memberID])
+    }
+}
+
+enum ConnectedSnapGroupResolution {
+    case connected([ManagedWindow])
+    case confirmedDisconnected
+    case indeterminate
+}
+
 extension SnapController {
     func scheduleConnectedGroupRaiseForPlainClick(at point: CGPoint) {
         guard isEnabled,
               settings.linkedResizeEnabled,
               settings.raiseConnectedWindowsOnClick,
-              !isApplicationUIVisible,
+              !isApplicationInteractionSuppressed,
               !isSnapPlacementInProgress,
               handleResizeSession == nil,
               !isHandleResizeFinalizing,
               activeSession == nil,
-              !isAssistPlacementPending else { return }
+              !isAssistPlacementPending,
+              !missionControlSelectionTransactionIsActive else { return }
 
         // A Window Server selection cycle is authoritative for Mission Control
         // and app switching. Do not start the pointer fallback while that
@@ -78,7 +106,7 @@ extension SnapController {
         guard groupRaiseGeneration == generation else { return }
         guard isEnabled,
               settings.linkedResizeEnabled,
-              !isApplicationUIVisible,
+              !isApplicationInteractionSuppressed,
               !isSnapPlacementInProgress,
               handleResizeSession == nil,
               !isHandleResizeFinalizing,
@@ -93,7 +121,9 @@ extension SnapController {
             return
         }
 
-        let visibleWindows = managedVisibleWindows()
+        let visibleWindows = clickedIdentity == nil
+            ? managedVisibleWindows()
+            : managedExplicitGroupWindows()
         guard settings.raiseConnectedWindowsOnClick else {
             finishConnectedGroupRaiseCycle(
                 visibleWindows: visibleWindows,
@@ -116,11 +146,7 @@ extension SnapController {
         } else {
             clickedWindow = nil
         }
-        guard let clickedWindow,
-              let groupWindows = connectedSnapGroupWindows(
-                  for: clickedWindow,
-                  visibleWindows: visibleWindows
-              ) else {
+        guard let clickedWindow else {
             if origin == .pointer,
                point != nil,
                resolutionAttempts < maximumPlainClickResolutionAttempts {
@@ -139,6 +165,48 @@ extension SnapController {
             finishConnectedGroupRaiseCycle(
                 visibleWindows: visibleWindows,
                 selectedIdentity: nil,
+                origin: origin,
+                refreshHandles: refreshHandlesWhenSettled
+            )
+            return
+        }
+
+        let groupWindows: [ManagedWindow]
+        switch connectedSnapGroupResolution(
+            for: clickedWindow,
+            visibleWindows: visibleWindows
+        ) {
+        case .connected(let windows):
+            groupWindows = windows
+        case .indeterminate:
+            // Retry observation only. No raise/focus mutation is reissued until
+            // exact membership/geometry becomes usable.
+            if origin == .pointer,
+               point != nil,
+               resolutionAttempts < maximumPlainClickResolutionAttempts {
+                scheduleConnectedGroupRaiseEvaluation(
+                    at: point,
+                    clickedIdentity: clickedWindow.stableIdentity,
+                    origin: .pointer,
+                    refreshHandlesWhenSettled: false,
+                    resolutionAttempts: resolutionAttempts + 1,
+                    completedAttempts: completedAttempts,
+                    generation: generation,
+                    delay: groupRaiseVerificationDelay
+                )
+                return
+            }
+            finishConnectedGroupRaiseCycle(
+                visibleWindows: visibleWindows,
+                selectedIdentity: clickedWindow.stableIdentity,
+                origin: origin,
+                refreshHandles: refreshHandlesWhenSettled
+            )
+            return
+        case .confirmedDisconnected:
+            finishConnectedGroupRaiseCycle(
+                visibleWindows: visibleWindows,
+                selectedIdentity: clickedWindow.stableIdentity,
                 origin: origin,
                 refreshHandles: refreshHandlesWhenSettled
             )
@@ -178,8 +246,27 @@ extension SnapController {
             )
             return
         case .indeterminate:
-            // An incomplete Window Server scene is not authorization to rearm
-            // group foregrounding and is not authorization to AXRaise peers.
+            // A different group becoming selected can leave Window Server / AX
+            // foreground evidence between states for the first observation.
+            // Reuse the existing bounded pointer-resolution budget for passive
+            // re-observation only; no AXRaise is authorized by uncertainty.
+            if GroupForegroundPointerObservationPolicy.shouldRetry(
+                isPointerOrigin: origin == .pointer,
+                completedObservationAttempts: resolutionAttempts,
+                maximumObservationAttempts: maximumPlainClickResolutionAttempts
+            ), let point {
+                scheduleConnectedGroupRaiseEvaluation(
+                    at: point,
+                    clickedIdentity: clickedWindow.stableIdentity,
+                    origin: .pointer,
+                    refreshHandlesWhenSettled: false,
+                    resolutionAttempts: resolutionAttempts + 1,
+                    completedAttempts: completedAttempts,
+                    generation: generation,
+                    delay: groupRaiseVerificationDelay
+                )
+                return
+            }
             finishConnectedGroupRaiseCycle(
                 visibleWindows: visibleWindows,
                 selectedIdentity: clickedWindow.stableIdentity,
@@ -195,9 +282,6 @@ extension SnapController {
             // Intent alone is insufficient: if the complete group never
             // becomes frontmost, keep controls and linked native resize
             // suppressed until a later explicit, successful interaction.
-            setSoloForegroundMode(
-                memberID: clickedWindow.stableIdentity
-            )
             finishConnectedGroupRaiseCycle(
                 visibleWindows: visibleWindows,
                 selectedIdentity: clickedWindow.stableIdentity,
@@ -209,9 +293,28 @@ extension SnapController {
         guard automaticGroupRaiseIsSafe(
             for: clickedWindow
         ) else {
-            setSoloForegroundMode(
-                memberID: clickedWindow.stableIdentity
-            )
+            // Switching from another group requires Window Server selection,
+            // focused-surface identity and AX focus to converge. A false result
+            // here is not permission to weaken that safety gate; for a direct
+            // pointer interaction, passively re-observe within the same bounded
+            // budget and issue no mutation until the original gate succeeds.
+            if GroupForegroundPointerObservationPolicy.shouldRetry(
+                isPointerOrigin: origin == .pointer,
+                completedObservationAttempts: resolutionAttempts,
+                maximumObservationAttempts: maximumPlainClickResolutionAttempts
+            ), let point {
+                scheduleConnectedGroupRaiseEvaluation(
+                    at: point,
+                    clickedIdentity: clickedWindow.stableIdentity,
+                    origin: .pointer,
+                    refreshHandlesWhenSettled: false,
+                    resolutionAttempts: resolutionAttempts + 1,
+                    completedAttempts: completedAttempts,
+                    generation: generation,
+                    delay: groupRaiseVerificationDelay
+                )
+                return
+            }
             finishConnectedGroupRaiseCycle(
                 visibleWindows: visibleWindows,
                 selectedIdentity: nil,
@@ -220,16 +323,14 @@ extension SnapController {
             )
             return
         }
-        guard raiseWindowsForAutomaticSelection(
+        let raiseOutcome = raiseWindowsForAutomaticSelection(
             groupWindows,
             withMainWindow: clickedWindow,
             isRequestCurrent: { [weak self] in
                 self?.groupRaiseGeneration == generation
             }
-        ) else {
-            setSoloForegroundMode(
-                memberID: clickedWindow.stableIdentity
-            )
+        )
+        guard raiseOutcome.completed else {
             finishConnectedGroupRaiseCycle(
                 visibleWindows: nil,
                 selectedIdentity: nil,
@@ -297,34 +398,71 @@ extension SnapController {
         }
     }
 
-    func connectedSnapGroupWindows(
+    func connectedSnapGroupResolution(
         for clickedWindow: ManagedWindow,
         visibleWindows: [ManagedWindow]
-    ) -> [ManagedWindow]? {
-        guard windowService.canMoveAndResize(clickedWindow),
-              let explicitGroup = explicitGroupStore.group(
-                  containing: clickedWindow.stableIdentity
-              ),
-              let placement = lockedPlacements[clickedWindow.stableIdentity],
+    ) -> ConnectedSnapGroupResolution {
+        guard let explicitGroup = explicitGroupStore.group(
+            containing: clickedWindow.stableIdentity
+        ) else {
+            return .confirmedDisconnected
+        }
+        guard let placement = lockedPlacements[clickedWindow.stableIdentity],
               let screen = screen(withDisplayID: placement.displayID),
               let currentDisplayID = displayID(for: screen),
-              explicitGroup.displayID == currentDisplayID else { return nil }
+              explicitGroup.displayID == currentDisplayID else {
+            // Missing controller/display evidence is not proof that persistent
+            // membership disappeared. The foreground operation can wait for a
+            // bounded observation retry without changing structure.
+            return .indeterminate
+        }
 
         let windowsByIdentity = Dictionary(
             visibleWindows.map { ($0.stableIdentity, $0) },
             uniquingKeysWith: { first, _ in first }
         )
-        let placements = lockedPlacements.compactMap { identity, placement
+        var resolvedWindows: [String: ManagedWindow] = [:]
+        for memberID in explicitGroup.memberIDs {
+            guard let memberPlacement = lockedPlacements[memberID],
+                  memberPlacement.displayID == currentDisplayID else {
+                return .indeterminate
+            }
+            if let visible = windowsByIdentity[memberID] {
+                resolvedWindows[memberID] = visible
+                continue
+            }
+            switch windowService.refreshedPersistedWindow(
+                element: memberPlacement.element,
+                pid: memberPlacement.pid,
+                expectedStableIdentity: memberPlacement.stableIdentity,
+                cgWindowID: memberPlacement.cgWindowID,
+                messagingTimeout: AXMessagingTimeoutPolicy.interactiveOperation
+            ) {
+            case .available(let exactWindow):
+                resolvedWindows[memberID] = exactWindow
+            case .missing:
+                // Confirmed absence makes a foreground operation impossible
+                // now, but this function still does not own structural cleanup.
+                return .confirmedDisconnected
+            case .unknown:
+                return .indeterminate
+            }
+        }
+
+        let placements = explicitGroup.memberIDs.compactMap { identity
             -> SplitPlacementGeometry? in
-            guard explicitGroup.memberIDs.contains(identity),
-                  placement.displayID == currentDisplayID,
-                  let currentWindow = windowsByIdentity[identity],
-                  windowService.canMoveAndResize(currentWindow) else { return nil }
+            guard let memberPlacement = lockedPlacements[identity],
+                  let currentWindow = resolvedWindows[identity] else {
+                return nil
+            }
             return SplitPlacementGeometry(
                 stableIdentity: identity,
-                zone: placement.zone,
+                zone: memberPlacement.zone,
                 frame: currentWindow.frame
             )
+        }
+        guard placements.count == explicitGroup.memberIDs.count else {
+            return .indeterminate
         }
         let handles = SplitLayoutGeometry.resizeHandleGeometries(
             placements: placements,
@@ -334,17 +472,21 @@ extension SnapController {
             startingWith: clickedWindow.stableIdentity,
             handles: handles
         )
-        guard groupIDs == explicitGroup.memberIDs,
-              groupIDs.count >= 2 else { return nil }
-        return visibleWindows.filter {
-            explicitGroup.memberIDs.contains($0.stableIdentity)
+        guard groupIDs == explicitGroup.memberIDs, groupIDs.count >= 2 else {
+            // One exact geometry sample can be mid-settlement. Do not convert
+            // it to structural disconnection; callers may perform bounded
+            // observation retry without reissuing any mutation.
+            return .indeterminate
         }
+        return .connected(
+            explicitGroup.memberIDs.compactMap { resolvedWindows[$0] }
+        )
     }
 
     func replayDeferredForegroundSignalIfNeeded() {
         guard pendingGroupRaiseWorkItem == nil,
               pendingSelectionRaiseWorkItem == nil,
-              activeMissionControlProxyActivationGeneration == nil else {
+              !missionControlSelectionTransactionIsActive else {
             return
         }
         if hasDeferredSelectionSignal {
@@ -359,11 +501,22 @@ extension SnapController {
         scheduleConnectedGroupRaiseForPlainClick(at: point)
     }
 
+    func discardDeferredForegroundSignals() {
+        deferredPlainClickPoint = nil
+        deferredSelectionExpectedPID = nil
+        hasDeferredSelectionSignal = false
+    }
+
     func connectedGroupFrontmostEvaluation(
-        _ groupWindows: [ManagedWindow]
+        _ groupWindows: [ManagedWindow],
+        allowsExactIdentityWithTransformedGeometry: Bool = false
     ) -> GroupFrontmostEvaluation {
         let resolved = groupWindows.map {
-            windowService.resolvingWindowServerIdentity($0)
+            windowService.resolvingWindowServerIdentity(
+                $0,
+                allowsExactIdentityWithTransformedGeometry:
+                    allowsExactIdentityWithTransformedGeometry
+            )
         }
         let selections = Set(resolved.compactMap { window in
             window.cgWindowID.map {
@@ -379,27 +532,43 @@ extension SnapController {
     }
 
     func invalidatePendingGroupRaise() {
-        if activeMissionControlProxyActivationGeneration != nil,
-           let groupID = ownedForegroundMutation?.groupID {
+        let invalidatedMissionControlSelection =
+            activeMissionControlProxyActivation != nil
+        if let activation = activeMissionControlProxyActivation {
+            // The selected proxy owns its group identity from the first callback
+            // onward. Cancellation must never depend on a later AX mutation
+            // having been established. A bounded visual handoff cover may
+            // still be registered, so cancellation must withdraw that exact
+            // selected proxy as part of invalidation.
             missionControlGroupProxyController.cancelSelectionTransition(
-                for: groupID
+                for: activation.groupID
             )
         }
         groupRaiseGeneration &+= 1
         pendingGroupRaiseWorkItem?.cancel()
         pendingGroupRaiseWorkItem = nil
-        activeMissionControlProxyActivationGeneration = nil
-        missionControlProxyFocusRequestedGeneration = nil
+        activeMissionControlProxyActivation = nil
         endOwnedForegroundMutation()
+        if invalidatedMissionControlSelection {
+            // A consumed Mission Control selection never donates its queued
+            // focus/click callbacks to the ordinary desktop selection path.
+            discardDeferredForegroundSignals()
+        }
     }
 
     func beginOwnedForegroundMutation(
         groupID: SnapGroupID,
         windows: [ManagedWindow],
-        generation: Int
+        generation: Int,
+        allowsExactIdentityWithTransformedGeometry: Bool = false,
+        requiresExistingOwnershipMatch: Bool = false
     ) -> Bool {
         let resolved = windows.map {
-            windowService.resolvingWindowServerIdentity($0)
+            windowService.resolvingWindowServerIdentity(
+                $0,
+                allowsExactIdentityWithTransformedGeometry:
+                    allowsExactIdentityWithTransformedGeometry
+            )
         }
         let selections = Set(resolved.compactMap { window in
             window.cgWindowID.map {
@@ -421,6 +590,13 @@ extension SnapController {
            current.memberIdentities == memberIdentities,
            current.memberSelections == selections {
             return true
+        }
+        if requiresExistingOwnershipMatch {
+            // A partially-issued Mission Control transaction may continue only
+            // against the exact Window Server identities it originally owned.
+            // Rebinding here would let stale attempted-member evidence skip a
+            // newly-created/reidentified surface.
+            return false
         }
         endOwnedForegroundMutation()
         ownedForegroundMutation = OwnedForegroundMutation(
@@ -450,38 +626,61 @@ extension SnapController {
 
     func automaticGroupRaiseIsSafe(
         for selectedWindow: ManagedWindow,
-        allowedWindowServerIDs: Set<CGWindowID>? = nil
+        allowedWindowServerSelections:
+            Set<WindowServerSelectionSnapshot>? = nil,
+        allowedAccessibilitySelections: [FocusedWindowIdentity]? = nil,
+        allowsExactIdentityWithTransformedGeometry: Bool = false
     ) -> Bool {
         let resolved = windowService.resolvingWindowServerIdentity(
-            selectedWindow
+            selectedWindow,
+            allowsExactIdentityWithTransformedGeometry:
+                allowsExactIdentityWithTransformedGeometry
         )
         guard let selectedWindowID = resolved.cgWindowID else { return false }
+        let selectedServerSurface = WindowServerSelectionSnapshot(
+            pid: resolved.pid,
+            windowID: selectedWindowID
+        )
+        let selectedAccessibilitySurface = FocusedWindowIdentity(
+            pid: resolved.pid,
+            stableIdentity: resolved.stableIdentity
+        )
+        let focusedWindowServerSelection =
+            allowsExactIdentityWithTransformedGeometry
+                ? windowService.focusedWindowServerSelectionSnapshot(
+                    matching: resolved,
+                    allowsExactIdentityWithTransformedGeometry: true
+                )
+                : windowService.focusedWindowServerSelectionSnapshot()
         return ForegroundSafetyPolicy.allowsAutomaticRaise(
             ForegroundSafetyEvidence(
                 selectedPID: resolved.pid,
                 selectedIdentity: resolved.stableIdentity,
                 selectedWindowID: selectedWindowID,
-                allowedWindowServerIDs: allowedWindowServerIDs
-                    ?? [selectedWindowID],
+                allowedWindowServerSelections:
+                    allowedWindowServerSelections ?? [selectedServerSurface],
+                allowedAccessibilitySelections:
+                    allowedAccessibilitySelections
+                        ?? [selectedAccessibilitySurface],
                 windowServerSelection: windowService
                     .windowServerSelectionSnapshot(),
-                focusedWindowServerSelection: windowService
-                    .focusedWindowServerSelectionSnapshot(),
+                focusedWindowServerSelection: focusedWindowServerSelection,
                 accessibilitySelection: windowService
                     .activeWindowIdentitySnapshot()
             )
         )
     }
 
-    /// Revalidates the selected surface immediately before every AXRaise.
-    /// The first failed validation permanently aborts this request; a later
-    /// notification must create a new generation before another attempt.
+    /// Revalidates the selected surface immediately before AXRaise. This is
+    /// exclusively the ordinary desktop-selection path. Mission Control uses
+    /// its own complete-group ordering transaction because a proxy selection
+    /// and a real-window selection have different authorization evidence.
     @discardableResult
     func raiseWindowsForAutomaticSelection(
         _ windows: [ManagedWindow],
         withMainWindow mainWindow: ManagedWindow,
         isRequestCurrent: () -> Bool
-    ) -> Bool {
+    ) -> AutomaticGroupRaiseMutationOutcome {
         var seen = Set<String>()
         let uniqueWindows = windows.filter {
             seen.insert($0.stableIdentity).inserted
@@ -492,12 +691,12 @@ extension SnapController {
         let resolvedMain = windowService.resolvingWindowServerIdentity(
             mainWindow
         )
-        guard let mainWindowID = resolvedMain.cgWindowID else { return false }
+        guard resolvedMain.cgWindowID != nil else { return .notIssued }
         let resolvedFollowers = followers.map {
             windowService.resolvingWindowServerIdentity($0)
         }
         guard resolvedFollowers.allSatisfy({ $0.cgWindowID != nil }) else {
-            return false
+            return .notIssued
         }
         guard let group = explicitGroupStore.group(
             containing: resolvedMain.stableIdentity
@@ -506,53 +705,179 @@ extension SnapController {
             windows: uniqueWindows,
             generation: groupRaiseGeneration
         ) else {
-            return false
+            return .notIssued
         }
-        guard isRequestCurrent(),
-              windowService.isWindowAlive(
-                  element: resolvedMain.element,
-                  pid: resolvedMain.pid
-              ),
-              resolvedFollowers.allSatisfy({
-                  windowService.isWindowAlive(element: $0.element, pid: $0.pid)
-              }),
-              automaticGroupRaiseIsSafe(
-                  for: resolvedMain,
-                  allowedWindowServerIDs: [mainWindowID]
-              ) else {
-            return false
-        }
-        var allowedWindowServerIDs: Set<CGWindowID> = [mainWindowID]
+        var allowedWindowServerSelections = Set<WindowServerSelectionSnapshot>()
+        var allowedAccessibilitySelections: [FocusedWindowIdentity] = []
 
-        for follower in resolvedFollowers.reversed() {
-            guard isRequestCurrent(),
-                  automaticGroupRaiseIsSafe(
-                      for: resolvedMain,
-                      allowedWindowServerIDs: allowedWindowServerIDs
-                  ),
-                  windowService.isWindowAlive(
-                      element: follower.element,
-                      pid: follower.pid
-                  ),
-                  windowService.raise(follower) else {
-                return false
+        func authorize(_ resolved: ManagedWindow) -> Bool {
+            guard let windowID = resolved.cgWindowID else { return false }
+            allowedWindowServerSelections.insert(
+                WindowServerSelectionSnapshot(
+                    pid: resolved.pid,
+                    windowID: windowID
+                )
+            )
+            let accessibility = FocusedWindowIdentity(
+                pid: resolved.pid,
+                stableIdentity: resolved.stableIdentity
+            )
+            if !allowedAccessibilitySelections.contains(accessibility) {
+                allowedAccessibilitySelections.append(accessibility)
             }
-            if let followerWindowID = follower.cgWindowID {
-                allowedWindowServerIDs.insert(followerWindowID)
-            }
+            return true
         }
+
+        guard authorize(resolvedMain) else { return .notIssued }
+
+        let initialLiveness = [resolvedMain] + resolvedFollowers
         guard isRequestCurrent(),
-              automaticGroupRaiseIsSafe(
-                  for: resolvedMain,
-                  allowedWindowServerIDs: allowedWindowServerIDs
-              ),
-              windowService.isWindowAlive(
-                  element: resolvedMain.element,
-                  pid: resolvedMain.pid
-              ) else {
-            return false
+              !initialLiveness.contains(where: {
+                  self.windowService.windowLiveness(
+                      element: $0.element,
+                      pid: $0.pid
+                  ) == .missing
+              }) else {
+            return AutomaticGroupRaiseMutationOutcome(
+                completed: false,
+                attemptedMemberIDs: []
+            )
         }
-        return windowService.raise(resolvedMain)
+        guard initialLiveness.allSatisfy({
+            self.windowService.windowLiveness(
+                element: $0.element,
+                pid: $0.pid
+            ) == .alive
+        }),
+            automaticGroupRaiseIsSafe(
+                for: resolvedMain,
+                allowedWindowServerSelections:
+                    allowedWindowServerSelections,
+                allowedAccessibilitySelections:
+                    allowedAccessibilitySelections,
+                allowsExactIdentityWithTransformedGeometry: false
+            ) else {
+            return AutomaticGroupRaiseMutationOutcome(
+                completed: false,
+                attemptedMemberIDs: []
+            )
+        }
+
+        var attemptedMemberIDs = Set<String>()
+        for follower in resolvedFollowers.reversed() {
+            guard isRequestCurrent() else {
+                return AutomaticGroupRaiseMutationOutcome(
+                    completed: false,
+                    attemptedMemberIDs: attemptedMemberIDs
+                )
+            }
+            guard automaticGroupRaiseIsSafe(
+                for: resolvedMain,
+                allowedWindowServerSelections:
+                    allowedWindowServerSelections,
+                allowedAccessibilitySelections:
+                    allowedAccessibilitySelections,
+                allowsExactIdentityWithTransformedGeometry: false
+            ) else {
+                return AutomaticGroupRaiseMutationOutcome(
+                    completed: false,
+                    attemptedMemberIDs: attemptedMemberIDs
+                )
+            }
+            let liveness = windowService.windowLiveness(
+                element: follower.element,
+                pid: follower.pid
+            )
+            guard liveness != .missing else {
+                return AutomaticGroupRaiseMutationOutcome(
+                    completed: false,
+                    attemptedMemberIDs: attemptedMemberIDs
+                )
+            }
+            guard liveness == .alive else {
+                return AutomaticGroupRaiseMutationOutcome(
+                    completed: false,
+                    attemptedMemberIDs: attemptedMemberIDs
+                )
+            }
+            // Only an accepted AX request advances the one-shot mutation
+            // barrier. Marking a transport failure as attempted permanently
+            // skipped that member on every bounded retry and allowed a partial
+            // group foreground to masquerade as a complete raise sequence.
+            let raiseAccepted = windowService.raise(follower)
+            let acceptedMemberIDs = AutomaticGroupRaiseAttemptPolicy
+                .acceptedMemberIDs(
+                    current: attemptedMemberIDs,
+                    memberID: follower.stableIdentity,
+                    actionAccepted: raiseAccepted
+                )
+            guard acceptedMemberIDs != attemptedMemberIDs else {
+                return AutomaticGroupRaiseMutationOutcome(
+                    completed: false,
+                    attemptedMemberIDs: attemptedMemberIDs
+                )
+            }
+            attemptedMemberIDs = acceptedMemberIDs
+            guard authorize(follower) else {
+                return AutomaticGroupRaiseMutationOutcome(
+                    completed: false,
+                    attemptedMemberIDs: attemptedMemberIDs
+                )
+            }
+        }
+
+        if !attemptedMemberIDs.contains(resolvedMain.stableIdentity) {
+            guard isRequestCurrent() else {
+                return AutomaticGroupRaiseMutationOutcome(
+                    completed: false,
+                    attemptedMemberIDs: attemptedMemberIDs
+                )
+            }
+            guard automaticGroupRaiseIsSafe(
+                for: resolvedMain,
+                allowedWindowServerSelections:
+                    allowedWindowServerSelections,
+                allowedAccessibilitySelections:
+                    allowedAccessibilitySelections,
+                allowsExactIdentityWithTransformedGeometry: false
+            ) else {
+                return AutomaticGroupRaiseMutationOutcome(
+                    completed: false,
+                    attemptedMemberIDs: attemptedMemberIDs
+                )
+            }
+            let mainLiveness = windowService.windowLiveness(
+                element: resolvedMain.element,
+                pid: resolvedMain.pid
+            )
+            guard mainLiveness == .alive else {
+                return AutomaticGroupRaiseMutationOutcome(
+                    completed: false,
+                    attemptedMemberIDs: attemptedMemberIDs
+                )
+            }
+            let raiseAccepted = windowService.raise(resolvedMain)
+            let acceptedMemberIDs = AutomaticGroupRaiseAttemptPolicy
+                .acceptedMemberIDs(
+                    current: attemptedMemberIDs,
+                    memberID: resolvedMain.stableIdentity,
+                    actionAccepted: raiseAccepted
+                )
+            guard acceptedMemberIDs != attemptedMemberIDs else {
+                return AutomaticGroupRaiseMutationOutcome(
+                    completed: false,
+                    attemptedMemberIDs: attemptedMemberIDs
+                )
+            }
+            attemptedMemberIDs = acceptedMemberIDs
+        }
+
+        let expectedMemberIDs = Set(uniqueWindows.map(\.stableIdentity))
+        return AutomaticGroupRaiseMutationOutcome(
+            completed: expectedMemberIDs.isSubset(of: attemptedMemberIDs),
+            attemptedMemberIDs: attemptedMemberIDs
+        )
+
     }
 
     @discardableResult
@@ -594,10 +919,18 @@ extension SnapController {
         on screen: NSScreen,
         requiresConnectedPeer: Bool = false
     ) {
-        let visibleWindows = managedVisibleWindows()
-        guard let groupWindows = connectedSnapGroupWindows(
+        let visibleWindows = managedExplicitGroupWindows()
+        let scopedWindows: [ManagedWindow]
+        if visibleWindows.contains(where: {
+            $0.stableIdentity == mainWindow.stableIdentity
+        }) {
+            scopedWindows = visibleWindows
+        } else {
+            scopedWindows = visibleWindows + [mainWindow]
+        }
+        guard case .connected(let groupWindows) = connectedSnapGroupResolution(
             for: mainWindow,
-            visibleWindows: visibleWindows
+            visibleWindows: scopedWindows
         ) else { return }
         if requiresConnectedPeer, groupWindows.count < 2 { return }
         guard connectedGroupFrontmostEvaluation(groupWindows) == .occluded else {

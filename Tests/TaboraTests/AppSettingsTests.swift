@@ -2,6 +2,13 @@ import XCTest
 @testable import Tabora
 
 final class AppSettingsTests: XCTestCase {
+    func testSettingsCategoriesUseTheRequestedStableOrder() {
+        XCTAssertEqual(
+            SettingsCategory.allCases.map(\.title),
+            ["一般", "コマンド", "サイズ制約", "試験的機能"]
+        )
+    }
+
     func testConnectedWindowForegroundingIsOptIn() {
         XCTAssertFalse(AppSettings.defaultRaiseConnectedWindowsOnClick)
     }
@@ -21,8 +28,31 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(AppSettings.defaultLinkedResizePresentationStyle, .combined)
     }
 
-    func testResizeCursorAdornmentIsOptIn() {
-        XCTAssertFalse(AppSettings.defaultResizeCursorAdornmentEnabled)
+    func testResizeCursorAdornmentIsEnabledByDefault() {
+        XCTAssertTrue(AppSettings.defaultResizeCursorAdornmentEnabled)
+    }
+
+    func testMissionControlPreviewMemoryLimitUsesBoundedSteps() {
+        XCTAssertEqual(
+            AppSettings.defaultMissionControlPreviewMemoryLimitMiB,
+            32
+        )
+        XCTAssertEqual(
+            AppSettings.normalizedMissionControlPreviewMemoryLimitMiB(1),
+            16
+        )
+        XCTAssertEqual(
+            AppSettings.normalizedMissionControlPreviewMemoryLimitMiB(41),
+            48
+        )
+        XCTAssertEqual(
+            AppSettings.normalizedMissionControlPreviewMemoryLimitMiB(999),
+            128
+        )
+        XCTAssertEqual(
+            AppSettings.missionControlPreviewMemoryByteLimit(32),
+            32 * 1024 * 1024
+        )
     }
 
     func testResizeCursorAdornmentDistanceHasSafeDefaultAndClamps() {

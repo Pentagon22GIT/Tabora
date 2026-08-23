@@ -36,6 +36,8 @@ swift test
 - cold launch直後の最初のdragでsnap guideを失わないこと
 - previewが低解像度のまま拡大表示されないこと
 - Preview ON / OFF
+- Mission Control Previewの16 / 32 / 128 MiB、cache解放、多数windowで15秒を跨ぐstale-while-revalidate
+- Activity Monitorでidle / 複数group / 多数window / Preview ON・OFFのCPUとEnergy Impactを比較し、定常的な異常負荷がないこと
 - settings / shortcuts
 - v1.0.1以降では、straight boundaryを持つmulti-member replacement、misaligned boundaryの拒否、blocked後の既存group保持、drag / shortcut / menu parity
 

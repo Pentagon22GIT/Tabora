@@ -58,6 +58,62 @@ enum GroupFrontmostEvaluation: Equatable {
     case indeterminate
 }
 
+enum GroupPreviewActivityEvaluation: Equatable {
+    case observed(exposedMembers: Set<WindowServerSelectionSnapshot>)
+    case indeterminate
+}
+
+enum GroupPreviewActivityPolicy {
+    /// Preview activity is presentation-only and member-scoped. This keeps a
+    /// system-isolated raised member HOT without refreshing its covered peers.
+    /// Missing Window Server evidence never proves that a member became COLD.
+    static func evaluate(
+        memberSelections: Set<WindowServerSelectionSnapshot>,
+        snapshot: [WindowOcclusionSnapshot]
+    ) -> GroupPreviewActivityEvaluation {
+        guard !memberSelections.isEmpty, !snapshot.isEmpty else {
+            return .indeterminate
+        }
+        let members = snapshot.filter { surface in
+            surface.layer == 0
+                && memberSelections.contains(
+                    WindowServerSelectionSnapshot(
+                        pid: surface.pid,
+                        windowID: surface.windowID
+                    )
+                )
+        }
+        guard members.count == memberSelections.count else {
+            return .indeterminate
+        }
+
+        let exposedMembers = Set(members.compactMap { member
+            -> WindowServerSelectionSnapshot? in
+            let memberSelection = WindowServerSelectionSnapshot(
+                pid: member.pid,
+                windowID: member.windowID
+            )
+            let isOccluded = snapshot.contains { surface in
+                let selection = WindowServerSelectionSnapshot(
+                    pid: surface.pid,
+                    windowID: surface.windowID
+                )
+                guard surface.layer == 0,
+                      surface.zIndex < member.zIndex,
+                      selection != memberSelection else {
+                    return false
+                }
+                let intersection = member.frame.intersection(surface.frame)
+                return !intersection.isNull
+                    && intersection.width > 1
+                    && intersection.height > 1
+            }
+            return isOccluded ? nil : memberSelection
+        })
+        return .observed(exposedMembers: exposedMembers)
+    }
+}
+
 enum GroupFrontmostEvaluationPolicy {
     static func evaluate(
         memberSelections: Set<WindowServerSelectionSnapshot>,

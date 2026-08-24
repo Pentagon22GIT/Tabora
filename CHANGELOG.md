@@ -1,6 +1,25 @@
 # 更新履歴
 
-## 1.1.0 — 開発中
+## 1.1.1 — 2026-08-24
+
+### Security / Resource Safety
+
+- Mission Control画像をmember単位のHOT / cooling / COLDへ分離。新規memberは1回取得し、露出中のmemberだけ15秒更新、隠れたmemberは3秒settle後の最終取得1回で凍結する。単独memberだけの前面化と複数displayも同じWindow Server露出判定を使う。
+- group/member数やメモリ上限の変更で1枚当たりの配分が縮小しても、既存画像を先に削除せずstale-while-reencodeで差し替える。現在候補をLRU順で画像なしへ落とさない。
+- 定期更新を1回最大2件、実行中と待機中を合計最大4件へ制限。HOT member数に比例するWindow Server取得backlogを作らず、rotationで古い候補を順番に更新する。
+- login sessionが非アクティブな間はMission Control画像取得と10 Hzの選択pollingを停止し、1 Hz Recoveryはevent monitor再登録だけを維持する。復帰時は古い派生結果を採用せず、現在のdesktop evidenceから再開する。
+- Assist候補画像は枚数を制限せず、ユニーク候補数で32 MiBを均等分割して全候補を取得する。候補数増加時は欠落ではなく解像度を下げ、panel終了時は待機中取得をcancelして世代不一致の遅延結果を破棄する。
+- Mission ControlとAssistがglobal画像取得2枠を競合した場合、両方ともmain threadを塞がず最大0.45秒だけ取得枠を待つ。同時取得数2と有限retryは維持し、一時的な競合だけでretryを消費する経路を防ぐ。
+- UserDefaults内の座標・待機時間設定が破損してNaN / infinityになった場合は、タイマーや表示座標へ流す前に既存の初期値へ戻す。正常な設定値の範囲とUXは変更しない。
+- AX frame operationの所有keyへPIDを追加し、単調増加tokenと終了時cleanupを導入。別processのelement hash衝突と、終了済みoperation stateの無期限保持を防止する。
+
+### Correctness / Scope
+
+- Mission Control preview、Assist picker、session observer、selection polling、Recovery、AX mutationの開始から終了までを横断監査し、派生処理の上限とcancel ownershipだけを変更した。
+- 通常時の10 Hz selection polling、1 Hz Recovery、15秒preview freshness、Mission Control foreground ordering、group identity、snap/resize geometry、App Constraintの学習条件は変更していない。
+- AX呼び出し全体への新規deadlineとpassive censusの縮小は、未知状態をmissingへ誤変換する危険があるため本版には含めない。Preview activityの判定不能はCOLDへ落とさず前回状態を保持する。
+
+## 1.1.0 — 2026-08-23
 
 ### Mission Control / Multi-display
 

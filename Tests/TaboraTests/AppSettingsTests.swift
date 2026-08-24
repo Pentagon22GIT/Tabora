@@ -75,6 +75,25 @@ final class AppSettingsTests: XCTestCase {
         )
     }
 
+    func testNonFiniteGeometrySettingsReturnEstablishedDefaults() {
+        XCTAssertEqual(
+            AppSettings.normalizedResizeCursorAdornmentDistance(.nan),
+            AppSettings.defaultResizeCursorAdornmentDistance
+        )
+        XCTAssertEqual(
+            AppSettings.normalizedEdgeThreshold(.infinity),
+            AppSettings.defaultEdgeThreshold
+        )
+        XCTAssertEqual(
+            AppSettings.normalizedCornerBand(-Double.infinity),
+            AppSettings.defaultCornerBand
+        )
+        XCTAssertEqual(
+            AppSettings.normalizedSideDwellDuration(.nan),
+            AppSettings.defaultSideDwellDuration
+        )
+    }
+
     func testAdornmentDistanceControlsOnlyCursorClearance() {
         for distance: CGFloat in [4, 6, 8, 10, 12] {
             let nearestEdge = ResizeCursorAdornmentMetrics.centerOffset(

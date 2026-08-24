@@ -4,7 +4,7 @@ Taboraは、macOSのウィンドウを画面端・四隅・分割領域へ配置
 
 Tabora v1.0.0は、技術的に完成したSnapFlow Final v1.3.0の挙動を凍結し、製品identity、version、ドキュメント、署名trust domain、GitHub基盤だけを新しいプロジェクトとして移行したものです。移行そのものによるSnap / Group / Resize / Recovery / AX / Mission Controlのアルゴリズム変更は行いません。由来と移行境界は[ORIGIN.md](Documentation/ORIGIN.md)と[MIGRATION_AUDIT.md](Documentation/MIGRATION_AUDIT.md)を参照してください。
 
-Tabora v1.1.0では、3 / 4分割の共有リサイズ交点をjunctionの単一input ownerとして整理し、single-axis control・hit region・hover・cursorの重複を解消します。また、アプリ自身のconfirmed size rejectionだけを学習するApp Constraintを導入し、known min/maxを2 / 3 / 4共通のshared-boundary legal rangeへ事前適用します。AX / Window Serverの一時的unknown、multi-group isolation、低頻度Recoveryなど既存の安全境界は維持します。
+Tabora v1.1.1は、v1.1.0のSnap / Group / Resize / App Constraintの意味を維持したセキュリティ・リソース安全性更新です。Mission Control画像は露出中のmemberだけを15秒更新し、隠れたmemberはsettle後の最終画像で凍結します。Mission ControlとAssistの派生画像取得には総仕事量上限とcancel ownershipを追加し、非アクティブlogin sessionではdesktop由来の取得・pollingを停止します。AX / Window Serverの一時的unknown、multi-group isolation、低頻度Recoveryなど既存の安全境界は維持します。
 
 ## 主な機能
 

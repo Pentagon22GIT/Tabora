@@ -3,6 +3,93 @@ import XCTest
 @testable import Tabora
 
 final class MissionControlGroupProxyTests: XCTestCase {
+    func testPeriodicPreviewRefreshHasAConstantWorkBudget() {
+        XCTAssertEqual(
+            MissionControlPreviewWorkPolicy.periodicRequestCount(
+                staleCount: 100,
+                outstandingCount: 0
+            ),
+            2
+        )
+        XCTAssertEqual(
+            MissionControlPreviewWorkPolicy.periodicRequestCount(
+                staleCount: 100,
+                outstandingCount: 3
+            ),
+            1
+        )
+        XCTAssertEqual(
+            MissionControlPreviewWorkPolicy.periodicRequestCount(
+                staleCount: 100,
+                outstandingCount: 4
+            ),
+            0
+        )
+        XCTAssertGreaterThan(
+            MissionControlPreviewWorkPolicy.coolingFinalCaptureDelay,
+            0
+        )
+        XCTAssertLessThanOrEqual(
+            MissionControlPreviewWorkPolicy.coolingFinalCaptureDelay,
+            5
+        )
+    }
+
+    func testPeriodicPreviewRefreshRotatesFairlyAcrossStaleKeys() {
+        XCTAssertEqual(
+            MissionControlPreviewWorkPolicy.periodicRequestIndices(
+                staleCount: 5,
+                cursor: 0,
+                requestCount: 2
+            ),
+            [0, 1]
+        )
+        XCTAssertEqual(
+            MissionControlPreviewWorkPolicy.periodicRequestIndices(
+                staleCount: 5,
+                cursor: 2,
+                requestCount: 2
+            ),
+            [2, 3]
+        )
+        XCTAssertEqual(
+            MissionControlPreviewWorkPolicy.periodicRequestIndices(
+                staleCount: 5,
+                cursor: 4,
+                requestCount: 2
+            ),
+            [4, 0]
+        )
+    }
+
+    func testPreviewActivityPreservesPriorStateOnlyWhenEvidenceIsUnknown() {
+        let groups = ["group": Set(["left", "right"])]
+        XCTAssertEqual(
+            MissionControlPreviewActivityPolicy.desiredHotMemberIDs(
+                previousHotMemberIDs: ["left"],
+                currentMemberIDsByGroupID: groups,
+                observedExposedMemberIDsByGroupID: [:]
+            ),
+            ["left"]
+        )
+        XCTAssertEqual(
+            MissionControlPreviewActivityPolicy.desiredHotMemberIDs(
+                previousHotMemberIDs: ["left"],
+                currentMemberIDsByGroupID: groups,
+                observedExposedMemberIDsByGroupID: ["group": ["right"]]
+            ),
+            ["right"]
+        )
+        XCTAssertEqual(
+            MissionControlPreviewActivityPolicy.desiredHotMemberIDs(
+                previousHotMemberIDs: ["left"],
+                currentMemberIDsByGroupID: groups,
+                observedExposedMemberIDsByGroupID: ["group": []]
+            ),
+            []
+        )
+    }
+
     func testSelectedProxyRequiresTheExactPresentedMemberSet() {
         XCTAssertTrue(
             MissionControlProxySelectionStructuralPolicy.matchesPresentedMembers(

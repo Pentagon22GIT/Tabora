@@ -66,4 +66,15 @@ final class MonitoringLifecyclePolicyTests: XCTestCase {
             lockedPlacementCount: 4
         ))
     }
+
+    func testInactiveUserSessionStopsSelectionPollingOnly() {
+        XCTAssertFalse(MonitoringLifecyclePolicy.shouldRunSelectionPolling(
+            controllerIsRunning: true,
+            taboraIsEnabled: true,
+            linkedResizeIsEnabled: true,
+            connectedWindowRaiseIsEnabled: true,
+            lockedPlacementCount: 4,
+            userSessionIsActive: false
+        ))
+    }
 }

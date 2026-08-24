@@ -122,8 +122,35 @@ final class AppSettings {
     static let missionControlPreviewMemoryLimitStep = 16
 
     static func normalizedResizeCursorAdornmentDistance(_ value: Double) -> Double {
-        min(max(value, resizeCursorAdornmentDistanceRange.lowerBound),
-            resizeCursorAdornmentDistanceRange.upperBound)
+        normalizedFiniteValue(
+            value,
+            range: resizeCursorAdornmentDistanceRange,
+            fallback: defaultResizeCursorAdornmentDistance
+        )
+    }
+
+    static func normalizedEdgeThreshold(_ value: Double) -> Double {
+        normalizedFiniteValue(
+            value,
+            range: edgeThresholdRange,
+            fallback: defaultEdgeThreshold
+        )
+    }
+
+    static func normalizedCornerBand(_ value: Double) -> Double {
+        normalizedFiniteValue(
+            value,
+            range: cornerBandRange,
+            fallback: defaultCornerBand
+        )
+    }
+
+    static func normalizedSideDwellDuration(_ value: Double) -> Double {
+        normalizedFiniteValue(
+            value,
+            range: sideDwellDurationRange,
+            fallback: defaultSideDwellDuration
+        )
     }
 
     static func normalizedMissionControlPreviewMemoryLimitMiB(
@@ -143,6 +170,15 @@ final class AppSettings {
     static let edgeThresholdRange: ClosedRange<Double> = 8...80
     static let cornerBandRange: ClosedRange<Double> = 60...300
     static let sideDwellDurationRange: ClosedRange<Double> = 0.5...5
+
+    private static func normalizedFiniteValue(
+        _ value: Double,
+        range: ClosedRange<Double>,
+        fallback: Double
+    ) -> Double {
+        guard value.isFinite else { return fallback }
+        return min(max(value, range.lowerBound), range.upperBound)
+    }
 
     var constraintRecordingPromptsEnabled: Bool {
         get {
@@ -317,10 +353,15 @@ final class AppSettings {
             guard defaults.object(forKey: sideDwellDurationKey) != nil else {
                 return Self.defaultSideDwellDuration
             }
-            return Self.sideDwellDurationRange.clamped(defaults.double(forKey: sideDwellDurationKey))
+            return Self.normalizedSideDwellDuration(
+                defaults.double(forKey: sideDwellDurationKey)
+            )
         }
         set {
-            defaults.set(Self.sideDwellDurationRange.clamped(newValue), forKey: sideDwellDurationKey)
+            defaults.set(
+                Self.normalizedSideDwellDuration(newValue),
+                forKey: sideDwellDurationKey
+            )
             notify()
         }
     }
@@ -343,10 +384,15 @@ final class AppSettings {
             guard defaults.object(forKey: edgeThresholdKey) != nil else {
                 return Self.defaultEdgeThreshold
             }
-            return Self.edgeThresholdRange.clamped(defaults.double(forKey: edgeThresholdKey))
+            return Self.normalizedEdgeThreshold(
+                defaults.double(forKey: edgeThresholdKey)
+            )
         }
         set {
-            defaults.set(Self.edgeThresholdRange.clamped(newValue), forKey: edgeThresholdKey)
+            defaults.set(
+                Self.normalizedEdgeThreshold(newValue),
+                forKey: edgeThresholdKey
+            )
             notify()
         }
     }
@@ -356,10 +402,15 @@ final class AppSettings {
             guard defaults.object(forKey: cornerBandKey) != nil else {
                 return Self.defaultCornerBand
             }
-            return Self.cornerBandRange.clamped(defaults.double(forKey: cornerBandKey))
+            return Self.normalizedCornerBand(
+                defaults.double(forKey: cornerBandKey)
+            )
         }
         set {
-            defaults.set(Self.cornerBandRange.clamped(newValue), forKey: cornerBandKey)
+            defaults.set(
+                Self.normalizedCornerBand(newValue),
+                forKey: cornerBandKey
+            )
             notify()
         }
     }
@@ -389,12 +440,5 @@ final class AppSettings {
 
     private func notify() {
         NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
-    }
-}
-
-
-private extension ClosedRange where Bound == Double {
-    func clamped(_ value: Double) -> Double {
-        Swift.min(Swift.max(value, lowerBound), upperBound)
     }
 }

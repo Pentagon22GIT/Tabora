@@ -60,6 +60,12 @@ enum AXFrameSizePolicy {
     }
 }
 
+enum FrameOperationOwnershipPolicy {
+    static func key(pid: pid_t, elementHash: String) -> String {
+        "ax:\(pid):\(elementHash)"
+    }
+}
+
 enum AXFrameSettlementMode {
     /// Existing callers require the exact requested frame and may use the
     /// historical bounded correction sequence while that target is settling.
@@ -364,6 +370,24 @@ enum AXMessagingTimeoutPolicy {
     static let animationMutation: Float = passiveObservation
 }
 
+enum PreviewCaptureAdmissionPolicy {
+    /// Both preview systems are derived background work. If the other system
+    /// briefly owns both global capture slots, wait off-main for one
+    /// established interactive readiness interval instead of consuming a
+    /// finite retry as an immediate contention failure.
+    static let maximumCapacityWait: TimeInterval = 0.45
+    static let assistCapacityWait = maximumCapacityWait
+    static let missionControlCapacityWait = maximumCapacityWait
+
+    static func effectiveWait(
+        requested: TimeInterval,
+        isMainThread: Bool
+    ) -> TimeInterval {
+        guard !isMainThread, requested.isFinite, requested > 0 else { return 0 }
+        return min(requested, maximumCapacityWait)
+    }
+}
+
 final class AXWindowService {
     private struct CGWindowRecord {
         let id: CGWindowID
@@ -381,16 +405,18 @@ final class AXWindowService {
 
     // Preview capture is derived state. Bound cross-subsystem capture
     // concurrency without holding a lock across the legacy synchronous Window
-    // Server capture call: one stuck capture must not block unrelated preview
-    // workers from even checking capacity. At most two captures may be active;
-    // excess requests fail fast to the existing icon/placeholder path.
-    private static let previewCaptureStateLock = NSLock()
-    private static var previewCapturesInFlight = 0
+    // Server capture call. At most two captures may be active. Callers may wait
+    // off-main for one bounded readiness interval so brief cross-subsystem
+    // contention does not consume their finite image retries.
     private static let maximumConcurrentPreviewCaptures = 2
+    private static let previewCaptureAdmission = DispatchSemaphore(
+        value: maximumConcurrentPreviewCaptures
+    )
 
     private var hasPromptedForPermission = false
     private var frameOperationGenerations: [String: Int] = [:]
     private var frameAnimationTimers: [String: Timer] = [:]
+    private var nextFrameOperationGeneration = 0
 
     var isTrusted: Bool { AXIsProcessTrusted() }
 
@@ -1475,7 +1501,13 @@ final class AXWindowService {
             for: window,
             operationKey: operation.key,
             generation: operation.generation,
-            completion: completion
+            completion: { [weak self] succeeded in
+                self?.finishFrameOperation(
+                    key: operation.key,
+                    generation: operation.generation
+                )
+                completion(succeeded)
+            }
         )
     }
 
@@ -1587,7 +1619,13 @@ final class AXWindowService {
             generation: operation.generation,
             afterInitialFrameAttempt: afterInitialFrameAttempt,
             settlementMode: settlementMode,
-            completion: completion
+            completion: { [weak self] observation in
+                self?.finishFrameOperation(
+                    key: operation.key,
+                    generation: operation.generation
+                )
+                completion(observation)
+            }
         )
     }
 
@@ -1985,26 +2023,37 @@ final class AXWindowService {
     func cancelFrameOperation(for window: AXUIElement) {
         let key = frameOperationKey(for: window)
         frameAnimationTimers.removeValue(forKey: key)?.invalidate()
-        frameOperationGenerations[key, default: 0] += 1
+        frameOperationGenerations.removeValue(forKey: key)
     }
 
     func cancelAllFrameOperations() {
-        let keys = Set(frameOperationGenerations.keys).union(frameAnimationTimers.keys)
         frameAnimationTimers.values.forEach { $0.invalidate() }
         frameAnimationTimers.removeAll()
-        keys.forEach { frameOperationGenerations[$0, default: 0] += 1 }
+        frameOperationGenerations.removeAll()
     }
 
     private func beginFrameOperation(for window: AXUIElement) -> (key: String, generation: Int) {
         let key = frameOperationKey(for: window)
         frameAnimationTimers.removeValue(forKey: key)?.invalidate()
-        let generation = frameOperationGenerations[key, default: 0] + 1
+        nextFrameOperationGeneration &+= 1
+        let generation = nextFrameOperationGeneration
         frameOperationGenerations[key] = generation
         return (key, generation)
     }
 
     private func frameOperationKey(for window: AXUIElement) -> String {
-        "ax:\(CFHash(window))"
+        var pid: pid_t = 0
+        _ = AXUIElementGetPid(window, &pid)
+        return FrameOperationOwnershipPolicy.key(
+            pid: pid,
+            elementHash: String(CFHash(window))
+        )
+    }
+
+    private func finishFrameOperation(key: String, generation: Int) {
+        guard isCurrentFrameOperation(key: key, generation: generation) else { return }
+        frameAnimationTimers.removeValue(forKey: key)?.invalidate()
+        frameOperationGenerations.removeValue(forKey: key)
     }
 
     private func isCurrentFrameOperation(key: String, generation: Int) -> Bool {
@@ -2508,8 +2557,16 @@ final class AXWindowService {
         }
     }
 
-    func previewCGImage(for windowID: CGWindowID?) -> CGImage? {
-        guard let windowID, Self.beginPreviewCaptureIfAvailable() else {
+    func previewCGImage(
+        for windowID: CGWindowID?,
+        capacityWait requestedCapacityWait: TimeInterval
+    ) -> CGImage? {
+        guard let windowID else { return nil }
+        let capacityWait = PreviewCaptureAdmissionPolicy.effectiveWait(
+            requested: requestedCapacityWait,
+            isMainThread: Thread.isMainThread
+        )
+        guard Self.beginPreviewCapture(waitingUpTo: capacityWait) else {
             return nil
         }
         defer { Self.endPreviewCapture() }
@@ -2521,20 +2578,15 @@ final class AXWindowService {
         )
     }
 
-    private static func beginPreviewCaptureIfAvailable() -> Bool {
-        previewCaptureStateLock.lock()
-        defer { previewCaptureStateLock.unlock() }
-        guard previewCapturesInFlight < maximumConcurrentPreviewCaptures else {
-            return false
-        }
-        previewCapturesInFlight += 1
-        return true
+    private static func beginPreviewCapture(
+        waitingUpTo wait: TimeInterval
+    ) -> Bool {
+        let deadline: DispatchTime = wait > 0 ? .now() + wait : .now()
+        return previewCaptureAdmission.wait(timeout: deadline) == .success
     }
 
     private static func endPreviewCapture() {
-        previewCaptureStateLock.lock()
-        previewCapturesInFlight = max(previewCapturesInFlight - 1, 0)
-        previewCaptureStateLock.unlock()
+        previewCaptureAdmission.signal()
     }
 
     private func onscreenWindowRecords() -> [CGWindowRecord] {

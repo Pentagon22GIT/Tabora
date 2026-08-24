@@ -262,6 +262,56 @@ final class SnapGroupTests: XCTestCase {
         )
     }
 
+    func testPreviewActivityKeepsOnlyExposedMembersHot() {
+        let leftSelection = WindowServerSelectionSnapshot(pid: 100, windowID: 10)
+        let rightSelection = WindowServerSelectionSnapshot(pid: 200, windowID: 20)
+        let members: Set<WindowServerSelectionSnapshot> = [
+            leftSelection, rightSelection
+        ]
+        let left = WindowOcclusionSnapshot(
+            windowID: 10, pid: 100,
+            frame: CGRect(x: 0, y: 0, width: 500, height: 900),
+            zIndex: 0, layer: 0
+        )
+        let cover = WindowOcclusionSnapshot(
+            windowID: 99, pid: 300,
+            frame: CGRect(x: 500, y: 0, width: 500, height: 900),
+            zIndex: 1, layer: 0
+        )
+        let right = WindowOcclusionSnapshot(
+            windowID: 20, pid: 200,
+            frame: CGRect(x: 500, y: 0, width: 500, height: 900),
+            zIndex: 2, layer: 0
+        )
+
+        XCTAssertEqual(
+            GroupPreviewActivityPolicy.evaluate(
+                memberSelections: members,
+                snapshot: [left, cover, right]
+            ),
+            .observed(exposedMembers: [leftSelection])
+        )
+    }
+
+    func testPreviewActivityDoesNotFreezeOnIncompleteEvidence() {
+        let members: Set<WindowServerSelectionSnapshot> = [
+            WindowServerSelectionSnapshot(pid: 100, windowID: 10),
+            WindowServerSelectionSnapshot(pid: 200, windowID: 20)
+        ]
+        let onlyOne = WindowOcclusionSnapshot(
+            windowID: 10, pid: 100,
+            frame: CGRect(x: 0, y: 0, width: 500, height: 900),
+            zIndex: 0, layer: 0
+        )
+        XCTAssertEqual(
+            GroupPreviewActivityPolicy.evaluate(
+                memberSelections: members,
+                snapshot: [onlyOne]
+            ),
+            .indeterminate
+        )
+    }
+
     private let displayID: CGDirectDisplayID = 1
     private let left = SplitPlacementGeometry(
         stableIdentity: "left",

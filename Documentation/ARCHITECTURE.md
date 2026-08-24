@@ -1,6 +1,6 @@
 # アーキテクチャ
 
-この文書は、SnapFlow Final Baselineから継承したTaboraの構造と、v1.0.1までのplacement安定化、v1.1.0で追加されたApp Constraint / shared-resize boundary ownership / atomic group departureを説明するものです。これは実装の説明文書であり、実コードとは別の新しい挙動を定義するものではありません。
+この文書は、SnapFlow Final Baselineから継承したTaboraの構造と、v1.0.1までのplacement安定化、v1.1.0で追加されたApp Constraint / shared-resize boundary ownership / atomic group departure、v1.1.1の派生処理budget / cancel ownershipを説明するものです。これは実装の説明文書であり、実コードとは別の新しい挙動を定義するものではありません。
 
 ## アプリケーション起動と設定
 
@@ -27,6 +27,10 @@
 - v1.1.0ではknown App ConstraintをAX mutation前に`SplitLayoutGeometry.allowedBoundaryRange`へ合成します。shared boundaryへ参加するwindowのmin/max不等式を2 / 3 / 4共通トポロジーでintersectionし、feasibleならrequested boundaryを合法範囲へclamp、infeasibleならprovisional group / toggle / proxyをcommitしません。Previewとinitial placementは同じgeometry planを使用します。
 - placement authorizationでは、App Constraint適用後のruntime frameがnominal 50%境界へ既に接触していることを要求しません。incoming zoneと既存layout zoneからproposed shared-boundary topologyを作り、そのtopologyを対象にknown constraintを解きます。live handle / group validationは引き続き実frameから行い、proposed topologyをauthoritative runtime existence evidenceには使いません。
 - v1.1.0のfull-group replacementは、incoming zoneが既存groupのlogical cellsを完全一致で覆い、commit直前のgroup revision / member集合 / AX current frame再検証にも成功した場合だけ認可します。この場合だけ旧groupを共通Atomic Group Departureで完全retireし、incomingはprovisional singleとして開始します。部分重なりを理由にgroup全体を壊しません。
+- v1.1.1ではWindow Serverの完全なsurface evidenceからmember単位の露出を判定します。新規memberは1回取得、露出中は15秒周期、露出を失ったmemberは3秒settle後の最終取得でCOLD freezeします。一部memberだけが前面なら、そのmemberだけHOTです。判定不能時は前回状態を保持します。
+- 周期取得はglobal admission（1 tick最大2件、outstanding最大4件）へ通します。generic proxy updateはstale画像を表示するだけで、別keyの再取得を連鎖させません。
+- login session非アクティブ中はpreview captureとselection pollingを停止します。Recovery coreのevent monitor rearmは維持し、復帰後はgenerationを更新して古い派生結果を拒否します。
+- Assist pickerのpreview loaderは32 MiBの画像budgetをユニーク候補数で分割し、枚数を理由に候補を打ち切りません。hide時はqueued workとcallback ownershipを破棄します。Window Serverが有限retry後も取得元画像を返さない場合のみ、既存のicon/placeholder表示へfallbackします。
 - Assistの候補除外はplacement開始時snapshotを永続的な権威にせず、replacement commit後のcurrent lock / explicit-group stateで再評価します。
 
 ## 明示的groupとresize
@@ -63,11 +67,12 @@
 
 ## AssistとPreview
 
+- Mission ControlとAssistは同時取得数2のglobal gateを共有します。両系統ともbackground threadで最大0.45秒の枠待機を行います。main threadを塞がず、一時的な枠競合とWindow Serverが画像を返さない場合を分離します。
 - `WindowPickerPanel.swift` はcandidate windowを表示します。
 - `AXWindowService.previewCGImage` はPreview機能が有効な場合だけpreview画像を取得します。
-- Assist候補画像は候補panelが必要としたwindowだけを非同期取得し、0.45秒以内に完了しなければplaceholderを先に表示します。遅れて完了した画像は同じpanelへ適用します。
+- Assist候補画像は候補panelが必要としたwindowだけを非同期取得し、0.45秒以内に完了しなければplaceholderを先に表示します。枚数上限は設けず、ユニーク候補数で32 MiBを均等分割して全候補を取得します。遅れて完了した画像は同じpanelへ適用し、一時的な取得失敗は0.18秒、0.55秒の有限backoffで最大3回まで試行します。
 - Mission Control画像はproxy構築時にcache missした対象だけを非同期取得し、以後は通常desktopで操作transactionが停止している時だけ、1 Hz Recoveryから15秒のfreshness gateを通過したactive memberをstale-while-revalidateします。したがって1秒ごとの画像取得でもファイル走査でもありません。画像取得はWindow Serverのexact window IDを対象とし、utility queueと共通capture gateの両方で最大2件並列です。
-- Preview dataはderived / bounded / disposable stateであり、window identityやplacement correctnessの権威にはなりません。Mission Control previewは固定720×480 capではなく、現在presentation可能な全memberで設定されたcache budget（初期値32 MiB）を均等共有し、実byte costが割当を超える画像は縮小または不採用にします。cacheはメモリ内だけに保持し、無効化・上限変更・機能OFF・終了時に世代を切って破棄します。
+- Preview dataはderived / bounded / disposable stateであり、window identityやplacement correctnessの権威にはなりません。Mission Control previewは固定720×480 capではなく、現在presentation可能な全memberで設定されたcache budget（初期値32 MiB）を均等共有し、実byte costが割当を超える画像は割当内まで縮小します。現在候補はLRU順では削除せず、OSが画像自体を返さない場合だけicon fallbackを使用します。cacheはメモリ内だけに保持し、無効化・機能OFF・終了時に世代を切って破棄します。
 
 ## Recovery
 

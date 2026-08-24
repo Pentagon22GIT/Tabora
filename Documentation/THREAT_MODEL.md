@@ -56,7 +56,16 @@ public repository、GitHub Actions dependency、release tag、hash、code signin
 - optional discoveryにはbudgetを設定可能だがcorrectness-critical targetにはそのhard capを流用しない
 - relevant-scene Recovery
 - bounded / disposable preview cache
+- Mission Control / Assist間でglobal capture concurrencyを共有し、両系統の枠待機はbackgroundの有限時間に限定
 - group / descriptor単位のrecovery debt
+
+### 破損した永続設定
+
+脅威:
+- UserDefaultsの座標・距離・時間値がNaNまたはinfinityになり、geometry計算やtimer deadlineを不定にする
+
+対策:
+- 範囲制限の前に有限性を検証し、非有限値は対応する既存の初期値へ戻す
 
 ### Identity ambiguity
 

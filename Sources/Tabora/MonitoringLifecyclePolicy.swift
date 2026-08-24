@@ -10,10 +10,12 @@ enum MonitoringLifecyclePolicy {
         taboraIsEnabled: Bool,
         linkedResizeIsEnabled: Bool,
         connectedWindowRaiseIsEnabled: Bool,
-        lockedPlacementCount: Int
+        lockedPlacementCount: Int,
+        userSessionIsActive: Bool = true
     ) -> Bool {
         controllerIsRunning
             && taboraIsEnabled
+            && userSessionIsActive
             && linkedResizeIsEnabled
             && connectedWindowRaiseIsEnabled
             && lockedPlacementCount >= 2

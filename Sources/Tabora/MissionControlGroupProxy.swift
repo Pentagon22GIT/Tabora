@@ -283,6 +283,67 @@ enum MissionControlPreviewFreshnessPolicy {
     }
 }
 
+enum MissionControlPreviewWorkPolicy {
+    /// Two captures may run and two more may wait. A large number of groups
+    /// must not create an equally large Window Server backlog.
+    static let maximumOutstandingCaptureCount = 4
+    /// Periodic freshness is derived work. Bound it globally per watchdog
+    /// interval even when many members are simultaneously exposed.
+    static let maximumPeriodicCapturesPerRefresh = 2
+    /// A covered member receives one final settled image, then freezes.
+    static let coolingFinalCaptureDelay: TimeInterval = 3
+
+    static func periodicRequestCount(
+        staleCount: Int,
+        outstandingCount: Int
+    ) -> Int {
+        let available = max(
+            maximumOutstandingCaptureCount - max(outstandingCount, 0),
+            0
+        )
+        return min(
+            max(staleCount, 0),
+            maximumPeriodicCapturesPerRefresh,
+            available
+        )
+    }
+
+    static func periodicRequestIndices(
+        staleCount: Int,
+        cursor: Int,
+        requestCount: Int
+    ) -> [Int] {
+        guard staleCount > 0, requestCount > 0 else { return [] }
+        let start = max(cursor, 0) % staleCount
+        return (0..<min(requestCount, staleCount)).map {
+            (start + $0) % staleCount
+        }
+    }
+}
+
+enum MissionControlPreviewActivityPolicy {
+    static func desiredHotMemberIDs<GroupID: Hashable>(
+        previousHotMemberIDs: Set<String>,
+        currentMemberIDsByGroupID: [GroupID: Set<String>],
+        observedExposedMemberIDsByGroupID: [GroupID: Set<String>]
+    ) -> Set<String> {
+        let currentMemberIDs = currentMemberIDsByGroupID.values.reduce(
+            into: Set<String>()
+        ) { $0.formUnion($1) }
+        var desired = previousHotMemberIDs.intersection(currentMemberIDs)
+        for (groupID, memberIDs) in currentMemberIDsByGroupID {
+            guard let exposed = observedExposedMemberIDsByGroupID[groupID]
+            else {
+                // An incomplete Window Server census preserves prior activity.
+                continue
+            }
+            desired.subtract(memberIDs)
+            desired.formUnion(exposed.intersection(memberIDs))
+        }
+        return desired
+    }
+}
+
 enum MissionControlProxyStructuralUpdatePolicy {
     static func requiresOrderingRestart(
         lastFrame: CGRect?,
@@ -336,6 +397,11 @@ private struct MissionControlCachedPreview {
     var accessEpoch: UInt64
 }
 
+private struct MissionControlPreviewRequest {
+    let generation: UInt64
+    var retryRemaining: Bool
+}
+
 final class MissionControlGroupProxyController {
     var onSelectGroup: ((SnapGroupID, Set<String>) -> Void)?
     var currentTransitionAuthorization: ((SnapGroupID) -> Bool)?
@@ -352,10 +418,11 @@ final class MissionControlGroupProxyController {
         queue.maxConcurrentOperationCount = 2
         return queue
     }()
-    private var previewRequestGenerationByKey =
-        [MissionControlPreviewCacheKey: UInt64]()
+    private var previewRequestsByKey =
+        [MissionControlPreviewCacheKey: MissionControlPreviewRequest]()
     private var previewCaptureGeneration: UInt64 = 0
     private var previewsAreEnabled = true
+    private var previewCaptureIsSuspended = false
     private var hasPendingPreviewCacheApplication = false
     private var previewCacheRefreshNotificationScheduled = false
     private var maximumCachedPreviewBytes = AppSettings
@@ -363,9 +430,16 @@ final class MissionControlGroupProxyController {
             AppSettings.defaultMissionControlPreviewMemoryLimitMiB
         )
     private var activePreviewKeys = Set<MissionControlPreviewCacheKey>()
+    private var knownPreviewMemberIDs = Set<String>()
+    private var hotPreviewKeys = Set<MissionControlPreviewCacheKey>()
+    private var immediatePreviewKeys = Set<MissionControlPreviewCacheKey>()
+    private var interruptedPreviewKeys = Set<MissionControlPreviewCacheKey>()
+    private var coolingPreviewDeadlines:
+        [MissionControlPreviewCacheKey: TimeInterval] = [:]
     private var activePreviewByteBudget = 0
     private var latestPreviewProvider: ((CGWindowID?) -> CGImage?)?
     private var nextPreviewFreshnessCheckAt: TimeInterval = 0
+    private var periodicPreviewRefreshCursor = 0
     private var selectionCandidateGeneration: UInt64 = 0
     private var activeSelectionCandidate: MissionControlProxySelectionCandidate?
 
@@ -380,6 +454,7 @@ final class MissionControlGroupProxyController {
         groups: [SnapGroup],
         visibleWindowsByIdentity: [String: ManagedWindow],
         preservedGroupIDs: Set<SnapGroupID> = [],
+        exposedPreviewMemberIDsByGroupID: [SnapGroupID: Set<String>] = [:],
         previewsEnabled: Bool,
         previewCacheByteLimit: Int,
         previewProvider: @escaping (CGWindowID?) -> CGImage?
@@ -392,6 +467,11 @@ final class MissionControlGroupProxyController {
         if !previewsEnabled {
             clearPreviewCache()
             activePreviewKeys.removeAll()
+            knownPreviewMemberIDs.removeAll()
+            hotPreviewKeys.removeAll()
+            immediatePreviewKeys.removeAll()
+            interruptedPreviewKeys.removeAll()
+            coolingPreviewDeadlines.removeAll()
             activePreviewByteBudget = 0
             latestPreviewProvider = nil
         }
@@ -414,6 +494,23 @@ final class MissionControlGroupProxyController {
                 windowID: windowID
             )
         })
+        let previewKeysByGroupID = Dictionary(
+            uniqueKeysWithValues: presentableGroups.map { group in
+                let keys = Set(group.memberIDs.compactMap { memberID in
+                    visibleWindowsByIdentity[memberID].flatMap { window
+                        -> MissionControlPreviewCacheKey? in
+                        guard let windowID = window.cgWindowID else {
+                            return nil
+                        }
+                        return Self.previewCacheKey(
+                            for: window,
+                            windowID: windowID
+                        )
+                    }
+                })
+                return (group.id, keys)
+            }
+        )
         // Split the existing bounded preview budget across every currently
         // presentable member, not across a hard-coded layout count. This keeps
         // 2 / 3 / 4 and multiple independent groups on the same policy while
@@ -425,15 +522,48 @@ final class MissionControlGroupProxyController {
                 presentableMemberCount: currentPreviewKeys.count
             )
         if previewsEnabled {
+            let perImageBudgetBecameSmaller = activePreviewByteBudget > 0
+                && previewByteBudget < activePreviewByteBudget
             activePreviewKeys = currentPreviewKeys
             activePreviewByteBudget = previewByteBudget
             latestPreviewProvider = previewProvider
+            // A frame-only key change must not turn a frozen COLD member into
+            // a new member and start an unbounded sequence of captures. Carry
+            // its derived image to the new geometry key; HOT evidence below
+            // still requests a fresh image immediately.
+            for key in currentPreviewKeys where cachedPreviews[key] == nil {
+                if let previous = cachedPreviews.first(where: {
+                    $0.key.pid == key.pid
+                        && $0.key.windowID == key.windowID
+                        && $0.key.stableIdentity == key.stableIdentity
+                })?.value {
+                    cachedPreviews[key] = previous
+                }
+            }
             // Inactive frame-key variants have no current presentation value.
             // Retiring them before new captures guarantees that the complete
             // active set can occupy the configured budget together.
             cachedPreviews = cachedPreviews.filter {
                 currentPreviewKeys.contains($0.key)
             }
+            let activityNow = ProcessInfo.processInfo.systemUptime
+            updatePreviewActivity(
+                currentPreviewKeys: currentPreviewKeys,
+                previewKeysByGroupID: previewKeysByGroupID,
+                exposedMemberIDsByGroupID:
+                    exposedPreviewMemberIDsByGroupID,
+                now: activityNow
+            )
+            if perImageBudgetBecameSmaller {
+                // Adding another group reduces every member's share.
+                // Re-encode COLD members once too; otherwise an oversized old
+                // cache entry would be rejected and never replaced.
+                immediatePreviewKeys.formUnion(currentPreviewKeys)
+            }
+            schedulePriorityPreviewCaptures(
+                now: activityNow,
+                previewProvider: previewProvider
+            )
         }
         for groupID in Array(windowsByGroupID.keys) where
             !activeGroupIDs.contains(groupID) {
@@ -565,30 +695,77 @@ final class MissionControlGroupProxyController {
         guard maximumCachedPreviewBytes != normalized else { return }
         maximumCachedPreviewBytes = normalized
         clearPreviewCache()
+        // A budget change invalidates every encoded size. Rebuild every active
+        // member once; COLD status controls only later periodic refreshes.
+        immediatePreviewKeys.formUnion(activePreviewKeys)
     }
 
     func clearPreviewCache() {
         previewCaptureGeneration &+= 1
+        previewQueue.cancelAllOperations()
         cachedPreviews.removeAll()
-        previewRequestGenerationByKey.removeAll()
+        previewRequestsByKey.removeAll()
         hasPendingPreviewCacheApplication = false
         nextPreviewFreshnessCheckAt = 0
+        periodicPreviewRefreshCursor = 0
+        immediatePreviewKeys.formUnion(hotPreviewKeys)
+    }
+
+    func setPreviewCaptureSuspended(_ suspended: Bool) {
+        guard previewCaptureIsSuspended != suspended else { return }
+        previewCaptureIsSuspended = suspended
+        previewCaptureGeneration &+= 1
+        interruptedPreviewKeys.formUnion(previewRequestsByKey.keys)
+        previewRequestsByKey.removeAll()
+        previewQueue.cancelAllOperations()
+        nextPreviewFreshnessCheckAt = 0
+        if !suspended {
+            // A queued/running initial or cooling capture may have been
+            // interrupted at lock time. Resume those exact active keys once.
+            immediatePreviewKeys.formUnion(
+                interruptedPreviewKeys.intersection(activePreviewKeys)
+            )
+            interruptedPreviewKeys.removeAll()
+            immediatePreviewKeys.formUnion(hotPreviewKeys)
+        }
     }
 
     func refreshStalePreviewCacheIfNeeded(
         now: TimeInterval = ProcessInfo.processInfo.systemUptime
     ) {
         guard previewsAreEnabled,
-              now >= nextPreviewFreshnessCheckAt,
+              !previewCaptureIsSuspended,
               activePreviewByteBudget > 0,
               let previewProvider = latestPreviewProvider else { return }
+        schedulePriorityPreviewCaptures(
+            now: now,
+            previewProvider: previewProvider
+        )
+        guard now >= nextPreviewFreshnessCheckAt else { return }
         nextPreviewFreshnessCheckAt = now
             + MissionControlPreviewFreshnessPolicy.refreshInterval
-        for key in activePreviewKeys where
+        let staleKeys = hotPreviewKeys.filter { key in
             MissionControlPreviewFreshnessPolicy.needsRefresh(
                 capturedAt: cachedPreviews[key]?.capturedAt,
                 now: now
-            ) {
+            )
+        }.sorted(by: Self.previewKeyIsOrderedBefore)
+        let requestCount = MissionControlPreviewWorkPolicy
+            .periodicRequestCount(
+                staleCount: staleKeys.count,
+                outstandingCount: previewRequestsByKey.count
+            )
+        let requestIndices = MissionControlPreviewWorkPolicy
+            .periodicRequestIndices(
+                staleCount: staleKeys.count,
+                cursor: periodicPreviewRefreshCursor,
+                requestCount: requestCount
+            )
+        if let lastIndex = requestIndices.last, !staleKeys.isEmpty {
+            periodicPreviewRefreshCursor = (lastIndex + 1) % staleKeys.count
+        }
+        for index in requestIndices {
+            let key = staleKeys[index]
             schedulePreviewCapture(
                 key: key,
                 byteBudget: activePreviewByteBudget,
@@ -699,20 +876,26 @@ final class MissionControlGroupProxyController {
             windowID: windowID
         )
         previewAccessEpoch &+= 1
-        if var cached = cachedPreviews[key],
-           cached.byteCost <= byteBudget {
+        if var cached = cachedPreviews[key] {
             cached.accessEpoch = previewAccessEpoch
             cachedPreviews[key] = cached
-            if MissionControlPreviewFreshnessPolicy.needsRefresh(
-                capturedAt: cached.capturedAt,
-                now: ProcessInfo.processInfo.systemUptime
-            ) {
+            if cached.byteCost > byteBudget,
+               (hotPreviewKeys.contains(key)
+                    || immediatePreviewKeys.contains(key)
+                    || coolingPreviewDeadlines[key] != nil) {
+                // Keep the old image visible until the smaller encoding is
+                // ready. A budget change must not create an icon-only gap.
                 schedulePreviewCapture(
                     key: key,
                     byteBudget: byteBudget,
-                    previewProvider: previewProvider
+                    previewProvider: previewProvider,
+                    retryRemaining: true
                 )
             }
+            // Stale-while-revalidate remains visible, but periodic capture is
+            // admitted only by refreshStalePreviewCacheIfNeeded(). Calling
+            // update for one completed image must not cascade into captures
+            // for every other stale group.
             return cached.image
         }
 
@@ -720,7 +903,12 @@ final class MissionControlGroupProxyController {
         // Screen sharing can make Window Server capture slow enough to stall
         // snapping, foregrounding and unrelated groups. Return the icon-backed
         // placeholder immediately and populate this bounded cache off-main.
-        cachedPreviews.removeValue(forKey: key)
+        guard hotPreviewKeys.contains(key)
+                || immediatePreviewKeys.contains(key)
+                || coolingPreviewDeadlines[key] != nil
+                || previewRequestsByKey[key] != nil else {
+            return nil
+        }
         schedulePreviewCapture(
             key: key,
             byteBudget: byteBudget,
@@ -729,15 +917,31 @@ final class MissionControlGroupProxyController {
         return nil
     }
 
+    @discardableResult
     private func schedulePreviewCapture(
         key: MissionControlPreviewCacheKey,
         byteBudget: Int,
-        previewProvider: @escaping (CGWindowID?) -> CGImage?
-    ) {
+        previewProvider: @escaping (CGWindowID?) -> CGImage?,
+        retryRemaining: Bool = false
+    ) -> Bool {
+        if var existing = previewRequestsByKey[key] {
+            if retryRemaining && !existing.retryRemaining {
+                existing.retryRemaining = true
+                previewRequestsByKey[key] = existing
+            }
+            return true
+        }
         guard byteBudget > 0,
-              previewRequestGenerationByKey[key] == nil else { return }
+              !previewCaptureIsSuspended,
+              previewRequestsByKey.count
+                < MissionControlPreviewWorkPolicy
+                    .maximumOutstandingCaptureCount,
+              activePreviewKeys.contains(key) else { return false }
         let captureGeneration = previewCaptureGeneration
-        previewRequestGenerationByKey[key] = captureGeneration
+        previewRequestsByKey[key] = MissionControlPreviewRequest(
+            generation: captureGeneration,
+            retryRemaining: retryRemaining
+        )
         previewQueue.addOperation { [weak self] in
             guard let self else { return }
             let rendered: (CGImage, Int)? = previewProvider(key.windowID).flatMap { source in
@@ -753,11 +957,9 @@ final class MissionControlGroupProxyController {
             }
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                if self.previewRequestGenerationByKey[key]
-                    == captureGeneration {
-                    self.previewRequestGenerationByKey.removeValue(
-                        forKey: key
-                    )
+                let completedRequest = self.previewRequestsByKey[key]
+                if completedRequest?.generation == captureGeneration {
+                    self.previewRequestsByKey.removeValue(forKey: key)
                 }
                 guard self.previewCaptureGeneration == captureGeneration,
                       self.previewsAreEnabled,
@@ -772,12 +974,34 @@ final class MissionControlGroupProxyController {
                         self.schedulePreviewCapture(
                             key: key,
                             byteBudget: self.activePreviewByteBudget,
+                            previewProvider: currentProvider,
+                            retryRemaining:
+                                completedRequest?.retryRemaining ?? false
+                        )
+                    }
+                    return
+                }
+                guard let (image, cost) = rendered else {
+                    if completedRequest?.retryRemaining == true,
+                       let currentProvider = self.latestPreviewProvider {
+                        _ = self.schedulePreviewCapture(
+                            key: key,
+                            byteBudget: self.activePreviewByteBudget,
+                            previewProvider: currentProvider,
+                            retryRemaining: false
+                        )
+                    }
+                    // Fill any remaining initial/cooling slots even when this
+                    // provider returned nil. A failed member must not stall all
+                    // later candidate images behind it.
+                    if let currentProvider = self.latestPreviewProvider {
+                        self.schedulePriorityPreviewCaptures(
+                            now: ProcessInfo.processInfo.systemUptime,
                             previewProvider: currentProvider
                         )
                     }
                     return
                 }
-                guard let (image, cost) = rendered else { return }
                 self.previewAccessEpoch &+= 1
                 let preview = NSImage(
                     cgImage: image,
@@ -796,6 +1020,101 @@ final class MissionControlGroupProxyController {
                 // instead. That update revalidates identity/geometry and already
                 // refuses to rebuild presentation during a Window Server transform.
                 self.schedulePreviewCacheRefreshNotification()
+            }
+        }
+        return true
+    }
+
+    private func updatePreviewActivity(
+        currentPreviewKeys: Set<MissionControlPreviewCacheKey>,
+        previewKeysByGroupID:
+            [SnapGroupID: Set<MissionControlPreviewCacheKey>],
+        exposedMemberIDsByGroupID: [SnapGroupID: Set<String>],
+        now: TimeInterval
+    ) {
+        let previousKnownMemberIDs = knownPreviewMemberIDs
+        let memberIDsByGroupID = previewKeysByGroupID.mapValues { keys in
+            Set(keys.map(\.stableIdentity))
+        }
+        let desiredHotMemberIDs = MissionControlPreviewActivityPolicy
+            .desiredHotMemberIDs(
+                previousHotMemberIDs: Set(
+                    hotPreviewKeys.map(\.stableIdentity)
+                ),
+                currentMemberIDsByGroupID: memberIDsByGroupID,
+                observedExposedMemberIDsByGroupID:
+                    exposedMemberIDsByGroupID
+            )
+        let desiredHotKeys = Set(currentPreviewKeys.filter {
+            desiredHotMemberIDs.contains($0.stableIdentity)
+        })
+
+        let newKeys = currentPreviewKeys.filter {
+            !previousKnownMemberIDs.contains($0.stableIdentity)
+        }
+        // Every new member gets one initial image even when it is already
+        // covered. This is finite, presentation-only work.
+        immediatePreviewKeys.formUnion(newKeys)
+
+        let newlyHot = desiredHotKeys.subtracting(hotPreviewKeys)
+        immediatePreviewKeys.formUnion(newlyHot)
+        for key in newlyHot {
+            coolingPreviewDeadlines.removeValue(forKey: key)
+        }
+
+        let newlyCold = hotPreviewKeys.subtracting(desiredHotKeys)
+        for key in newlyCold where currentPreviewKeys.contains(key) {
+            coolingPreviewDeadlines[key] = now
+                + MissionControlPreviewWorkPolicy.coolingFinalCaptureDelay
+        }
+
+        knownPreviewMemberIDs = Set(
+            currentPreviewKeys.map(\.stableIdentity)
+        )
+        hotPreviewKeys = desiredHotKeys
+        immediatePreviewKeys.formIntersection(currentPreviewKeys)
+        interruptedPreviewKeys.formIntersection(currentPreviewKeys)
+        coolingPreviewDeadlines = coolingPreviewDeadlines.filter {
+            currentPreviewKeys.contains($0.key)
+                && !desiredHotKeys.contains($0.key)
+        }
+    }
+
+    private func schedulePriorityPreviewCaptures(
+        now: TimeInterval,
+        previewProvider: @escaping (CGWindowID?) -> CGImage?
+    ) {
+        let immediate = immediatePreviewKeys.sorted(
+            by: Self.previewKeyIsOrderedBefore
+        )
+        for key in immediate {
+            guard previewRequestsByKey.count
+                    < MissionControlPreviewWorkPolicy
+                        .maximumOutstandingCaptureCount else { break }
+            if schedulePreviewCapture(
+                key: key,
+                byteBudget: activePreviewByteBudget,
+                previewProvider: previewProvider,
+                retryRemaining: true
+            ) {
+                immediatePreviewKeys.remove(key)
+            }
+        }
+
+        let cooling = coolingPreviewDeadlines.filter {
+            $0.value <= now
+        }.map(\.key).sorted(by: Self.previewKeyIsOrderedBefore)
+        for key in cooling {
+            guard previewRequestsByKey.count
+                    < MissionControlPreviewWorkPolicy
+                        .maximumOutstandingCaptureCount else { break }
+            if schedulePreviewCapture(
+                key: key,
+                byteBudget: activePreviewByteBudget,
+                previewProvider: previewProvider,
+                retryRemaining: true
+            ) {
+                coolingPreviewDeadlines.removeValue(forKey: key)
             }
         }
     }
@@ -822,7 +1141,12 @@ final class MissionControlGroupProxyController {
             $0 + $1.byteCost
         }
         guard totalCost > maximumCachedPreviewBytes else { return }
-        for key in cachedPreviews.sorted(by: {
+        // Current members are already encoded against total/count. Evicting
+        // one of them would violate Preview=ON by turning a valid candidate
+        // into an icon. Only stale geometry/member variants are disposable.
+        for key in cachedPreviews.filter({
+            !activePreviewKeys.contains($0.key)
+        }).sorted(by: {
             $0.value.accessEpoch < $1.value.accessEpoch
         }).map(\.key) {
             guard totalCost > maximumCachedPreviewBytes,
@@ -831,6 +1155,21 @@ final class MissionControlGroupProxyController {
             }
             totalCost -= removed.byteCost
         }
+    }
+
+    private static func previewKeyIsOrderedBefore(
+        _ lhs: MissionControlPreviewCacheKey,
+        _ rhs: MissionControlPreviewCacheKey
+    ) -> Bool {
+        if lhs.pid != rhs.pid { return lhs.pid < rhs.pid }
+        if lhs.windowID != rhs.windowID { return lhs.windowID < rhs.windowID }
+        if lhs.stableIdentity != rhs.stableIdentity {
+            return lhs.stableIdentity < rhs.stableIdentity
+        }
+        if lhs.frameMinX != rhs.frameMinX { return lhs.frameMinX < rhs.frameMinX }
+        if lhs.frameMinY != rhs.frameMinY { return lhs.frameMinY < rhs.frameMinY }
+        if lhs.frameWidth != rhs.frameWidth { return lhs.frameWidth < rhs.frameWidth }
+        return lhs.frameHeight < rhs.frameHeight
     }
 
     private static func makePreviewImage(

@@ -838,11 +838,50 @@ extension SnapController {
             if case .suspendedForSpaceTransition = $0.state { return false }
             return true
         }
+        var exposedPreviewMemberIDsByGroupID: [SnapGroupID: Set<String>] = [:]
+        for group in presentableGroups {
+            let selectionsByMemberID = Dictionary(
+                uniqueKeysWithValues: group.memberIDs.compactMap { memberID in
+                    windowsByIdentity[memberID].flatMap { window
+                        -> (String, WindowServerSelectionSnapshot)? in
+                        guard let windowID = window.cgWindowID else {
+                            return nil
+                        }
+                        return (
+                            memberID,
+                            WindowServerSelectionSnapshot(
+                                pid: window.pid,
+                                windowID: windowID
+                            )
+                        )
+                    }
+                }
+            )
+            guard selectionsByMemberID.count == group.memberIDs.count else {
+                continue
+            }
+            switch GroupPreviewActivityPolicy.evaluate(
+                memberSelections: Set(selectionsByMemberID.values),
+                snapshot: windowServerSnapshot
+            ) {
+            case .indeterminate:
+                // Absence means "preserve prior preview activity", not COLD.
+                break
+            case .observed(let exposedSelections):
+                exposedPreviewMemberIDsByGroupID[group.id] = Set(
+                    selectionsByMemberID.compactMap { memberID, selection in
+                        exposedSelections.contains(selection) ? memberID : nil
+                    }
+                )
+            }
+        }
         let previewsEnabled = settings.windowPreviewsEnabled
         missionControlGroupProxyController.update(
             groups: presentableGroups,
             visibleWindowsByIdentity: windowsByIdentity,
             preservedGroupIDs: preservedPresentationGroupIDs,
+            exposedPreviewMemberIDsByGroupID:
+                exposedPreviewMemberIDsByGroupID,
             previewsEnabled: previewsEnabled,
             previewCacheByteLimit: AppSettings
                 .missionControlPreviewMemoryByteLimit(
@@ -850,7 +889,12 @@ extension SnapController {
                 ),
             previewProvider: { [weak self] windowID in
                 guard previewsEnabled, let self else { return nil }
-                return self.windowService.previewCGImage(for: windowID)
+                return self.windowService.previewCGImage(
+                    for: windowID,
+                    capacityWait:
+                        PreviewCaptureAdmissionPolicy
+                            .missionControlCapacityWait
+                )
             }
         )
     }

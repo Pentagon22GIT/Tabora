@@ -1,6 +1,17 @@
 # Security / Correctness不変条件
 
-これらの不変条件はSnapFlow最終安定化から継承され、v1.1.0のApp Constraint / shared-resize boundary ownership / atomic group departureを含め、2 / 3 / 4 split layoutへ同等に適用されます。
+これらの不変条件はSnapFlow最終安定化から継承され、v1.1.0のApp Constraint / shared-resize boundary ownership / atomic group departureとv1.1.1の派生処理budget / cancel ownershipを含め、2 / 3 / 4 split layoutへ同等に適用されます。
+
+## 派生処理とライフサイクル
+
+- Mission Controlのgroup数・member数が増えても、1回の周期更新とoutstanding capture数は固定上限を超えない。
+- memberのHOT/COLDは完全なWindow Server evidenceだけで更新し、判定不能をCOLDとして扱わない。隠れたmemberは有限のcooling final capture後に定期取得を停止する。
+- previewは派生表示であり、取得失敗・上限超過・cancelによってgroup identity、foreground認可、placement、resize ownershipを変更しない。
+- Preview=ONの現在候補を枚数やLRU順で恒久的に画像なしへ落とさない。候補増加時は全候補のper-image byte budgetを縮小し、画像解像度で総量を調整する。
+- global画像取得数の上限はMission ControlとAssistで共有する。両系統の取得枠待機はbackground threadの有限時間に限定し、main thread、構造状態、画像枚数の打ち切りに流用しない。
+- login session非アクティブ中はdesktop由来のcaptureとselection pollingを停止するが、event monitorを復帰させるRecovery coreは維持する。
+- 非同期frame mutationはPIDを含むwindow identityと単調増加tokenに所有され、cancel/完了後のcallbackは後続operationを完了させない。
+- 永続設定から読み出した座標、距離、待機時間は有限値に正規化してからgeometryやtimerへ渡す。
 
 ## Window state semantics
 

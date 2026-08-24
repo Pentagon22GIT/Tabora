@@ -1,9 +1,27 @@
 import AppKit
 import CoreGraphics
 
+enum PickerPreviewWorkPolicy {
+    static let totalPreviewByteBudget = 32 * 1024 * 1024
+    static let bytesPerPixel = 4
+    static let maximumCaptureAttempts = 3
+
+    static func perImageByteBudget(candidateCount: Int) -> Int {
+        guard candidateCount > 0 else { return 0 }
+        return totalPreviewByteBudget / candidateCount
+    }
+
+    static func retryDelay(afterFailedAttempt attempt: Int) -> TimeInterval? {
+        let delays: [TimeInterval] = [0.18, 0.55]
+        guard delays.indices.contains(attempt) else { return nil }
+        return delays[attempt]
+    }
+}
+
 private final class PreviewImageLoader {
     private static let maximumPreviewPixelSize = CGSize(width: 680, height: 420)
     private let provider: (CGWindowID?) -> CGImage?
+    private let perImageByteBudget: Int
     private static let queue: OperationQueue = {
         let queue = OperationQueue()
         queue.name = "dev.pent.Tabora.preview-loader"
@@ -19,9 +37,17 @@ private final class PreviewImageLoader {
     private var completed: Set<String> = []
     private var placeholderDelivered: Set<String> = []
     private var pending: [String: [(NSImage?) -> Void]] = [:]
+    private var operations: [String: Operation] = [:]
+    private var generation: UInt64 = 0
 
-    init(provider: @escaping (CGWindowID?) -> CGImage?) {
+    init(
+        provider: @escaping (CGWindowID?) -> CGImage?,
+        candidateCount: Int
+    ) {
         self.provider = provider
+        perImageByteBudget = PickerPreviewWorkPolicy.perImageByteBudget(
+            candidateCount: candidateCount
+        )
     }
 
     func request(_ window: ManagedWindow, completion: @escaping (NSImage?) -> Void) {
@@ -34,28 +60,66 @@ private final class PreviewImageLoader {
             pending[key]?.append(completion)
             return
         }
-
         pending[key] = [completion]
-        let provider = self.provider
         let windowID = window.cgWindowID
         let timeout = presentationTimeout
+        let requestGeneration = generation
 
         DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
-            self?.deliverTimeoutPlaceholder(key: key)
+            self?.deliverTimeoutPlaceholder(key: key, generation: requestGeneration)
         }
-        Self.queue.addOperation { [weak self] in
-            guard self != nil else { return }
-            let imageRef = provider(windowID).flatMap { source in
-                Self.makePreviewImage(from: source)
-            }
-            DispatchQueue.main.async { [weak self] in
-                self?.finishRequest(key: key, imageRef: imageRef)
-            }
-        }
+        startCapture(
+            key: key,
+            windowID: windowID,
+            generation: requestGeneration,
+            attempt: 0
+        )
     }
 
-    private func deliverTimeoutPlaceholder(key: String) {
-        guard !completed.contains(key),
+    private func startCapture(
+        key: String,
+        windowID: CGWindowID?,
+        generation: UInt64,
+        attempt: Int
+    ) {
+        guard self.generation == generation, pending[key] != nil else { return }
+        let provider = self.provider
+        let byteBudget = perImageByteBudget
+        let operation = BlockOperation { [weak self] in
+            guard self != nil else { return }
+            let imageRef = provider(windowID).flatMap { source in
+                Self.makePreviewImage(
+                    from: source,
+                    byteBudget: byteBudget
+                )
+            }
+            DispatchQueue.main.async { [weak self] in
+                self?.finishRequest(
+                    key: key,
+                    imageRef: imageRef,
+                    windowID: windowID,
+                    generation: generation,
+                    attempt: attempt
+                )
+            }
+        }
+        operations[key] = operation
+        Self.queue.addOperation(operation)
+    }
+
+    func cancel() {
+        generation &+= 1
+        operations.values.forEach { $0.cancel() }
+        operations.removeAll()
+        cache.removeAll()
+        completed.removeAll()
+        placeholderDelivered.removeAll()
+        pending.removeAll()
+    }
+
+    private func deliverTimeoutPlaceholder(key: String, generation: UInt64) {
+        guard self.generation == generation,
+              !completed.contains(key),
               placeholderDelivered.insert(key).inserted else { return }
         // The timeout is presentation-only. Keep subscribers until the actual
         // derived capture finishes so a late image can replace the placeholder
@@ -64,7 +128,32 @@ private final class PreviewImageLoader {
         callbacks.forEach { $0(nil) }
     }
 
-    private func finishRequest(key: String, imageRef: CGImage?) {
+    private func finishRequest(
+        key: String,
+        imageRef: CGImage?,
+        windowID: CGWindowID?,
+        generation: UInt64,
+        attempt: Int
+    ) {
+        guard self.generation == generation else { return }
+        operations.removeValue(forKey: key)
+        if imageRef == nil,
+           attempt + 1 < PickerPreviewWorkPolicy.maximumCaptureAttempts,
+           let retryDelay = PickerPreviewWorkPolicy.retryDelay(
+               afterFailedAttempt: attempt
+           ) {
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + retryDelay
+            ) { [weak self] in
+                self?.startCapture(
+                    key: key,
+                    windowID: windowID,
+                    generation: generation,
+                    attempt: attempt + 1
+                )
+            }
+            return
+        }
         let image = imageRef.map { NSImage(cgImage: $0, size: .zero) }
         if let image { cache[key] = image }
         guard completed.insert(key).inserted else { return }
@@ -73,39 +162,102 @@ private final class PreviewImageLoader {
         callbacks.forEach { $0(image) }
     }
 
-    private static func makePreviewImage(from source: CGImage) -> CGImage? {
+    private static func makePreviewImage(
+        from source: CGImage,
+        byteBudget: Int
+    ) -> CGImage? {
         let sourceSize = CGSize(
             width: CGFloat(source.width),
             height: CGFloat(source.height)
         )
         guard sourceSize.width > 0, sourceSize.height > 0 else { return nil }
 
-        let scale = min(min(
+        let dimensionScale = min(min(
             maximumPreviewPixelSize.width / sourceSize.width,
             maximumPreviewPixelSize.height / sourceSize.height
         ), 1)
-        guard scale < 1 else { return source }
-
-        let width = max(Int((sourceSize.width * scale).rounded()), 1)
-        let height = max(Int((sourceSize.height * scale).rounded()), 1)
+        var width = max(
+            Int((sourceSize.width * dimensionScale).rounded(.down)),
+            1
+        )
+        var height = max(
+            Int((sourceSize.height * dimensionScale).rounded(.down)),
+            1
+        )
+        guard byteBudget >= PickerPreviewWorkPolicy.bytesPerPixel else {
+            return nil
+        }
+        let sourceCost = max(
+            source.bytesPerRow * source.height,
+            source.width * source.height
+                * PickerPreviewWorkPolicy.bytesPerPixel
+        )
+        if dimensionScale == 1, sourceCost <= byteBudget {
+            return source
+        }
+        let estimatedCost = width * height
+            * PickerPreviewWorkPolicy.bytesPerPixel
+        if estimatedCost > byteBudget {
+            let budgetScale = sqrt(
+                Double(byteBudget) / Double(estimatedCost)
+            )
+            width = max(
+                Int((Double(width) * budgetScale).rounded(.down)),
+                1
+            )
+            height = max(
+                Int((Double(height) * budgetScale).rounded(.down)),
+                1
+            )
+        }
         let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)
             ?? CGColorSpaceCreateDeviceRGB()
         let bitmapInfo = CGBitmapInfo.byteOrder32Little.union(
             CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue)
         )
-        guard let context = CGContext(
-            data: nil,
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bytesPerRow: 0,
-            space: colorSpace,
-            bitmapInfo: bitmapInfo.rawValue
-        ) else { return nil }
-
-        context.interpolationQuality = .high
-        context.draw(source, in: CGRect(x: 0, y: 0, width: width, height: height))
-        return context.makeImage()
+        for _ in 0..<8 {
+            guard let context = CGContext(
+                data: nil,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: 0,
+                space: colorSpace,
+                bitmapInfo: bitmapInfo.rawValue
+            ) else { return nil }
+            let actualCost = max(
+                context.bytesPerRow * height,
+                width * height * PickerPreviewWorkPolicy.bytesPerPixel
+            )
+            if actualCost > byteBudget {
+                let scale = min(
+                    sqrt(Double(byteBudget) / Double(actualCost)) * 0.98,
+                    0.98
+                )
+                width = max(Int((Double(width) * scale).rounded(.down)), 1)
+                height = max(Int((Double(height) * scale).rounded(.down)), 1)
+                continue
+            }
+            context.interpolationQuality = .high
+            context.draw(
+                source,
+                in: CGRect(x: 0, y: 0, width: width, height: height)
+            )
+            guard let image = context.makeImage() else { return nil }
+            let imageCost = max(
+                image.bytesPerRow * image.height,
+                image.width * image.height
+                    * PickerPreviewWorkPolicy.bytesPerPixel
+            )
+            if imageCost <= byteBudget { return image }
+            let scale = min(
+                sqrt(Double(byteBudget) / Double(imageCost)) * 0.98,
+                0.98
+            )
+            width = max(Int((Double(width) * scale).rounded(.down)), 1)
+            height = max(Int((Double(height) * scale).rounded(.down)), 1)
+        }
+        return nil
     }
 }
 
@@ -136,7 +288,15 @@ final class WindowPickerPanel: NSObject {
         self.onSelect = onSelect
         self.onCancel = onCancel
         selectionPending = false
-        let previewLoader = PreviewImageLoader(provider: previewProvider)
+        let uniqueCandidateCount = Set(
+            windowsByZone.values.flatMap { windows in
+                windows.map(\.stableIdentity)
+            }
+        ).count
+        let previewLoader = PreviewImageLoader(
+            provider: previewProvider,
+            candidateCount: uniqueCandidateCount
+        )
         self.previewLoader = previewLoader
 
         for frame in backdropFrames where frame.width > 1 && frame.height > 1 {
@@ -187,6 +347,7 @@ final class WindowPickerPanel: NSObject {
         let cancel = onCancel
         onSelect = nil
         onCancel = nil
+        previewLoader?.cancel()
         previewLoader = nil
         selectionPending = false
         if notifyCancel { cancel?() }
@@ -273,6 +434,14 @@ private final class PickerZoneView: NSView {
         canvas.viewportSize = bounds.size
         canvas.frame.size.width = bounds.width
         canvas.relayout()
+        // Large displays can expose more than the historical first 12 cards.
+        // Request the actual visible range after geometry settles so an
+        // on-screen candidate never waits for a synthetic scroll event.
+        canvas.loadPreviews(
+            near: scrollView.contentView.bounds,
+            prefetchCount: 6,
+            using: previewLoader
+        )
     }
 
     override func mouseDown(with event: NSEvent) {

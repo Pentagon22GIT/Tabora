@@ -3,6 +3,88 @@ import XCTest
 @testable import Tabora
 
 final class WindowSafetyPolicyTests: XCTestCase {
+    func testFrameOperationOwnershipIncludesProcessIdentity() {
+        let first = FrameOperationOwnershipPolicy.key(pid: 100, elementHash: "7")
+        let same = FrameOperationOwnershipPolicy.key(pid: 100, elementHash: "7")
+        let otherProcess = FrameOperationOwnershipPolicy.key(
+            pid: 101,
+            elementHash: "7"
+        )
+
+        XCTAssertEqual(first, same)
+        XCTAssertNotEqual(first, otherProcess)
+    }
+
+    func testPickerPreviewBudgetScalesResolutionInsteadOfDroppingCandidates() {
+        let total = PickerPreviewWorkPolicy.totalPreviewByteBudget
+        XCTAssertEqual(
+            PickerPreviewWorkPolicy.perImageByteBudget(candidateCount: 1),
+            total
+        )
+        XCTAssertEqual(
+            PickerPreviewWorkPolicy.perImageByteBudget(candidateCount: 64),
+            total / 64
+        )
+        XCTAssertLessThanOrEqual(
+            PickerPreviewWorkPolicy.perImageByteBudget(candidateCount: 64)
+                * 64,
+            total
+        )
+        XCTAssertEqual(
+            PickerPreviewWorkPolicy.perImageByteBudget(candidateCount: 0),
+            0
+        )
+        XCTAssertEqual(
+            PickerPreviewWorkPolicy.maximumCaptureAttempts,
+            3
+        )
+        XCTAssertNotNil(
+            PickerPreviewWorkPolicy.retryDelay(afterFailedAttempt: 0)
+        )
+        XCTAssertNotNil(
+            PickerPreviewWorkPolicy.retryDelay(afterFailedAttempt: 1)
+        )
+        XCTAssertNil(
+            PickerPreviewWorkPolicy.retryDelay(afterFailedAttempt: 2)
+        )
+    }
+
+    func testPreviewCaptureCapacityWaitIsBoundedAndNeverBlocksMainThread() {
+        XCTAssertGreaterThan(
+            PreviewCaptureAdmissionPolicy.assistCapacityWait,
+            0
+        )
+        XCTAssertLessThanOrEqual(
+            PreviewCaptureAdmissionPolicy.assistCapacityWait,
+            0.45
+        )
+        XCTAssertEqual(
+            PreviewCaptureAdmissionPolicy.missionControlCapacityWait,
+            PreviewCaptureAdmissionPolicy.assistCapacityWait
+        )
+        XCTAssertEqual(
+            PreviewCaptureAdmissionPolicy.effectiveWait(
+                requested: PreviewCaptureAdmissionPolicy.assistCapacityWait,
+                isMainThread: true
+            ),
+            0
+        )
+        XCTAssertEqual(
+            PreviewCaptureAdmissionPolicy.effectiveWait(
+                requested: .infinity,
+                isMainThread: false
+            ),
+            0
+        )
+        XCTAssertEqual(
+            PreviewCaptureAdmissionPolicy.effectiveWait(
+                requested: 5,
+                isMainThread: false
+            ),
+            PreviewCaptureAdmissionPolicy.maximumCapacityWait
+        )
+    }
+
     func testRecoveryCannotCancelAssistWhileSnapOwnsPlacementTransaction() {
         XCTAssertFalse(
             PointerInteractionOwnershipPolicy.recoveryMayCancelAssist(

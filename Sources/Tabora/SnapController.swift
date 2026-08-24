@@ -1328,6 +1328,9 @@ final class SnapController {
         ) { [weak self] _ in
             guard let self else { return }
             self.isUserSessionActive = false
+            self.missionControlGroupProxyController
+                .setPreviewCaptureSuspended(true)
+            self.updateSelectionMonitoringState()
             self.cancelAssist()
             self.missionControlGroupProxyController.hideAll()
             self.lastGroupWindowServerEvidenceByIdentity.removeAll()
@@ -1341,6 +1344,9 @@ final class SnapController {
         ) { [weak self] _ in
             guard let self else { return }
             self.isUserSessionActive = true
+            self.missionControlGroupProxyController
+                .setPreviewCaptureSuspended(false)
+            self.updateSelectionMonitoringState()
             self.missionControlGroupProxyController.hideAll()
             self.lastGroupWindowServerEvidenceByIdentity.removeAll()
             self.resetGroupPresentationTransitionRecovery()
@@ -1473,7 +1479,8 @@ final class SnapController {
             taboraIsEnabled: isEnabled,
             linkedResizeIsEnabled: settings.linkedResizeEnabled,
             connectedWindowRaiseIsEnabled: settings.raiseConnectedWindowsOnClick,
-            lockedPlacementCount: connectedLayoutPlacementCount
+            lockedPlacementCount: connectedLayoutPlacementCount,
+            userSessionIsActive: isUserSessionActive
         )
         if shouldRun {
             startFocusedWindowPolling()
@@ -1507,6 +1514,7 @@ final class SnapController {
 
     private func pollFocusedWindowIdentity() {
         guard isEnabled,
+              isUserSessionActive,
               settings.linkedResizeEnabled,
               settings.raiseConnectedWindowsOnClick,
               connectedLayoutPlacementCount >= 2,
@@ -1858,6 +1866,10 @@ final class SnapController {
         // the bounded fast registration burst; the watchdog performs only one
         // rearm attempt per tick after that burst is exhausted.
         _ = installEventMonitors()
+        // Keep only the Recovery core armed while the login session is
+        // inactive. AX census, preview capture and presentation rebuilding are
+        // derived desktop work and resume from fresh evidence on activation.
+        guard isUserSessionActive else { return }
         activeWindowObserver.observeFrontmostApplication()
         // Explicit constraint measurement owns the external window mutation
         // until its restore completion. Recovery may keep its monitors armed,
@@ -4499,7 +4511,11 @@ final class SnapController {
             backdropFrames: backdropFrames,
             previewProvider: { [weak self] windowID in
                 guard let self, self.settings.windowPreviewsEnabled else { return nil }
-                return self.windowService.previewCGImage(for: windowID)
+                return self.windowService.previewCGImage(
+                    for: windowID,
+                    capacityWait:
+                        PreviewCaptureAdmissionPolicy.assistCapacityWait
+                )
             },
             onCancel: { [weak self] in
                 guard let self else { return }

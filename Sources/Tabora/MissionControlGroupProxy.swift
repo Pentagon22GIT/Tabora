@@ -320,42 +320,6 @@ enum MissionControlPreviewGeometryRefreshPolicy {
     }
 }
 
-enum MissionControlPreviewDrawingPolicy {
-    /// Returns a centered source crop that fills the destination without
-    /// changing aspect ratio. A carried pre-resize image may be cropped for a
-    /// short settle window, but is never visibly stretched.
-    static func aspectFillSourceRect(
-        sourceSize: CGSize,
-        destinationSize: CGSize
-    ) -> CGRect? {
-        guard sourceSize.width.isFinite, sourceSize.height.isFinite,
-              destinationSize.width.isFinite,
-              destinationSize.height.isFinite,
-              sourceSize.width > 0, sourceSize.height > 0,
-              destinationSize.width > 0, destinationSize.height > 0 else {
-            return nil
-        }
-        let sourceAspect = sourceSize.width / sourceSize.height
-        let destinationAspect = destinationSize.width / destinationSize.height
-        if sourceAspect > destinationAspect {
-            let width = sourceSize.height * destinationAspect
-            return CGRect(
-                x: (sourceSize.width - width) / 2,
-                y: 0,
-                width: width,
-                height: sourceSize.height
-            )
-        }
-        let height = sourceSize.width / destinationAspect
-        return CGRect(
-            x: 0,
-            y: (sourceSize.height - height) / 2,
-            width: sourceSize.width,
-            height: height
-        )
-    }
-}
-
 enum MissionControlPreviewWorkPolicy {
     /// Two captures may run and two more may wait. A large number of groups
     /// must not create an equally large Window Server backlog.
@@ -2029,15 +1993,10 @@ private final class MissionControlGroupProxyView: NSView {
             guard rect.width > 1, rect.height > 1 else { continue }
             NSGraphicsContext.saveGraphicsState()
             NSBezierPath(rect: rect).addClip()
-            if let preview = member.preview,
-               let sourceRect = MissionControlPreviewDrawingPolicy
-                    .aspectFillSourceRect(
-                        sourceSize: preview.size,
-                        destinationSize: rect.size
-                    ) {
+            if let preview = member.preview {
                 preview.draw(
                     in: rect,
-                    from: sourceRect,
+                    from: .zero,
                     operation: .copy,
                     fraction: 1,
                     respectFlipped: true,

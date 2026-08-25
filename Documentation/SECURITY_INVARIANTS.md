@@ -1,6 +1,6 @@
 # Security / Correctness不変条件
 
-これらの不変条件はSnapFlow最終安定化から継承され、v1.1.0のApp Constraint / shared-resize boundary ownership / atomic group departureとv1.1.1の派生処理budget / cancel ownershipを含め、2 / 3 / 4 split layoutへ同等に適用されます。
+これらの不変条件はSnapFlow最終安定化から継承され、v1.1.0のApp Constraint / shared-resize boundary ownership / atomic group departure、v1.1.1の派生処理budget / cancel ownership、v1.2.0のAssist variant / preview authorization revocationを含め、2 / 3 / 4 split layoutへ同等に適用されます。
 
 ## 派生処理とライフサイクル
 
@@ -12,6 +12,13 @@
 - login session非アクティブ中はdesktop由来のcaptureとselection pollingを停止するが、event monitorを復帰させるRecovery coreは維持する。
 - 非同期frame mutationはPIDを含むwindow identityと単調増加tokenに所有され、cancel/完了後のcallbackは後続operationを完了させない。
 - 永続設定から読み出した座標、距離、待機時間は有限値に正規化してからgeometryやtimerへ渡す。
+- Preview OFFはproxy再構築の可否に依存せず、待機取得・retry・deadline・完了適用を失効する。OFF後のproviderはcurrent settingを再確認し、古いgenerationの結果をcacheへ入れない。
+- resize-settled previewは物理windowごとに最新geometryの1期限だけを保持し、quiet period到達後も既存global admission上限を超えない。
+- resize-settled deadlineが存在するgeometryは他の画像取得laneから取得を開始できず、deadline後の専用laneだけが許可する。専用laneは既存HOT／COLD処理より低優先度とし、Assist／Snap中は開始しない。
+- 3 / 4分割Assist切り替えはPicker表示だけを変更し、選択前にwindow frame、group membership、restore state、Mission Control stateを変更しない。
+- AssistのOption monitorはPicker sessionだけが所有し、通常コマンド用Carbon HotKeyやkeyboard event経路へ流さずeventも消費しない。Picker表示session外ではmodifier-state timerを保持しない。
+- Option monitorはSnap transaction中には開始しない。ただし次のPickerが先に提示された場合はtransaction完了の復帰点で監視可否を必ず再評価し、表示中sessionを監視なしで残さない。
+- 2面から1面への切り替えは同じpreview loader/cacheを保持し、表示形式の変更だけを理由にWindow Server captureを再予約しない。4分割完成可否はzoneごとの候補数合計ではなく異なるwindowのmatchingで判定する。
 
 ## Window state semantics
 

@@ -174,6 +174,124 @@ final class SnapZoneTests: XCTestCase {
         XCTAssertEqual(session.remainingZones, [.bottomLeft])
     }
 
+    func testAssistCompletionLayoutSwitchesOnlyForAdjacentQuarterPairs() {
+        let cases: [(Set<SnapZone>, [SnapZone])] = [
+            ([.topLeft, .topRight], [.topLeft, .topRight, .bottomHalf]),
+            ([.bottomLeft, .bottomRight], [.topHalf, .bottomLeft, .bottomRight]),
+            ([.topLeft, .bottomLeft], [.topLeft, .bottomLeft, .rightHalf]),
+            ([.topRight, .bottomRight], [.leftHalf, .topRight, .bottomRight])
+        ]
+        for (occupied, threeWindow) in cases {
+            XCTAssertEqual(
+                AssistCompletionLayoutPolicy.layoutForModifierState(
+                    occupiedZones: occupied,
+                    currentLayout:
+                        AssistCompletionLayoutPolicy.fourWindowZones,
+                    modifierIsPressed: true
+                ),
+                threeWindow
+            )
+            XCTAssertEqual(
+                AssistCompletionLayoutPolicy.layoutForModifierState(
+                    occupiedZones: occupied,
+                    currentLayout: threeWindow,
+                    modifierIsPressed: false
+                ),
+                AssistCompletionLayoutPolicy.fourWindowZones
+            )
+        }
+        XCTAssertNil(
+            AssistCompletionLayoutPolicy.layoutForModifierState(
+                occupiedZones: [.topLeft, .bottomRight],
+                currentLayout: AssistCompletionLayoutPolicy.fourWindowZones,
+                modifierIsPressed: true
+            )
+        )
+    }
+
+    func testAssistCompletionLayoutUsesTwoWindowOrMergedOneWindowRules() {
+        let occupied: Set<SnapZone> = [.topLeft, .topRight]
+        XCTAssertEqual(
+            AssistCompletionLayoutPolicy.completionLayout(
+                occupiedZones: occupied,
+                modifierIsPressed: false,
+                maximumDistinctFourWindowAssignments: 2,
+                mergedHalfCandidateCount: 1
+            ),
+            AssistCompletionLayoutPolicy.fourWindowZones
+        )
+        XCTAssertEqual(
+            AssistCompletionLayoutPolicy.completionLayout(
+                occupiedZones: occupied,
+                modifierIsPressed: false,
+                maximumDistinctFourWindowAssignments: 1,
+                mergedHalfCandidateCount: 1
+            ),
+            [.topLeft, .topRight, .bottomHalf]
+        )
+        XCTAssertEqual(
+            AssistCompletionLayoutPolicy.completionLayout(
+                occupiedZones: occupied,
+                modifierIsPressed: true,
+                maximumDistinctFourWindowAssignments: 2,
+                mergedHalfCandidateCount: 1
+            ),
+            [.topLeft, .topRight, .bottomHalf]
+        )
+        XCTAssertNil(
+            AssistCompletionLayoutPolicy.completionLayout(
+                occupiedZones: occupied,
+                modifierIsPressed: false,
+                maximumDistinctFourWindowAssignments: 0,
+                mergedHalfCandidateCount: 0
+            )
+        )
+        XCTAssertNil(
+            AssistCompletionLayoutPolicy.completionLayout(
+                occupiedZones: occupied,
+                modifierIsPressed: true,
+                maximumDistinctFourWindowAssignments: 2,
+                mergedHalfCandidateCount: 0
+            )
+        )
+    }
+
+    func testAssistLayoutModifierAcceptsOnlyOption() {
+        XCTAssertTrue(
+            AssistLayoutModifierPolicy.isPressed(in: .maskAlternate)
+        )
+        XCTAssertFalse(
+            AssistLayoutModifierPolicy.isPressed(in: .maskShift)
+        )
+        XCTAssertFalse(
+            AssistLayoutModifierPolicy.isPressed(in: .maskCommand)
+        )
+    }
+
+    func testAssistCandidateCompletionRequiresDistinctWindows() {
+        let zones: [SnapZone] = [.bottomLeft, .bottomRight]
+        XCTAssertEqual(
+            AssistCandidateAssignmentPolicy.maximumDistinctAssignmentCount(
+                zones: zones,
+                candidateIDsByZone: [
+                    .bottomLeft: ["only"],
+                    .bottomRight: ["only"]
+                ]
+            ),
+            1
+        )
+        XCTAssertEqual(
+            AssistCandidateAssignmentPolicy.maximumDistinctAssignmentCount(
+                zones: zones,
+                candidateIDsByZone: [
+                    .bottomLeft: ["first", "second"],
+                    .bottomRight: ["second"]
+                ]
+            ),
+            2
+        )
+    }
+
     func testAssistThreeWayPoliciesAreSymmetricForEveryHalf() {
         XCTAssertEqual(
             AssistLayoutPolicy.layoutZones(

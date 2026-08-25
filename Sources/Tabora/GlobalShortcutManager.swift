@@ -1,19 +1,42 @@
 import AppKit
 import Carbon
 
+enum GlobalShortcutDispatchPolicy {
+    static func handles(
+        eventSignature: OSType,
+        managerSignature: OSType,
+        hasRegisteredAction: Bool
+    ) -> Bool {
+        eventSignature == managerSignature && hasRegisteredAction
+    }
+}
+
 final class GlobalShortcutManager {
+    private let signature: OSType
     private var hotKeys: [EventHotKeyRef] = []
     private var actions: [UInt32: () -> Void] = [:]
     private var eventHandler: EventHandlerRef?
 
-    init() {
+    init(signature: OSType = OSType(0x534E4150)) {
+        self.signature = signature
         var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: OSType(kEventHotKeyPressed))
         InstallEventHandler(GetApplicationEventTarget(), { _, event, userData in
             guard let event, let userData else { return noErr }
             let manager = Unmanaged<GlobalShortcutManager>.fromOpaque(userData).takeUnretainedValue()
             var id = EventHotKeyID()
             GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil, MemoryLayout<EventHotKeyID>.size, nil, &id)
-            manager.actions[id.id]?()
+            guard let action = manager.actions[id.id],
+                  GlobalShortcutDispatchPolicy.handles(
+                    eventSignature: id.signature,
+                    managerSignature: manager.signature,
+                    hasRegisteredAction: true
+                  ) else {
+                // Multiple managers are installed on the application target.
+                // A signature mismatch belongs to a later handler and must not
+                // be reported as consumed by this manager.
+                return OSStatus(eventNotHandledErr)
+            }
+            action()
             return noErr
         }, 1, &eventType, Unmanaged.passUnretained(self).toOpaque(), &eventHandler)
     }
@@ -29,7 +52,7 @@ final class GlobalShortcutManager {
         for action in ShortcutAction.allCases {
             guard let binding = bindings[action] else { continue }
             var hotKey: EventHotKeyRef?
-            let id = EventHotKeyID(signature: OSType(0x534E4150), id: identifier)
+            let id = EventHotKeyID(signature: signature, id: identifier)
             let status = RegisterEventHotKey(binding.keyCode, carbonModifiers(from: binding.modifiers), id, GetApplicationEventTarget(), 0, &hotKey)
             if status == noErr, let hotKey {
                 hotKeys.append(hotKey)
@@ -39,7 +62,32 @@ final class GlobalShortcutManager {
         }
     }
 
-    private func clear() {
+    /// Registers one session-local hot key. A separate signature prevents the
+    /// transient Assist handler from consuming another manager's action ID.
+    @discardableResult
+    func register(
+        binding: ShortcutBinding,
+        handler: @escaping () -> Void
+    ) -> Bool {
+        clear()
+        var hotKey: EventHotKeyRef?
+        let identifier: UInt32 = 1
+        let id = EventHotKeyID(signature: signature, id: identifier)
+        let status = RegisterEventHotKey(
+            binding.keyCode,
+            carbonModifiers(from: binding.modifiers),
+            id,
+            GetApplicationEventTarget(),
+            0,
+            &hotKey
+        )
+        guard status == noErr, let hotKey else { return false }
+        hotKeys.append(hotKey)
+        actions[identifier] = handler
+        return true
+    }
+
+    func clear() {
         hotKeys.forEach { UnregisterEventHotKey($0) }
         hotKeys.removeAll()
         actions.removeAll()

@@ -104,6 +104,8 @@ final class AppSettings {
         "missionControlPreviewMemoryLimitMiB"
     private let constraintRecordingPromptsEnabledKey =
         "constraintRecordingPromptsEnabled"
+    private let assistLayoutSwitchingEnabledKey =
+        "experimentalAssistLayoutSwitchingEnabled"
 
     static let defaultEdgeThreshold: Double = 26
     static let defaultCornerBand: Double = 120
@@ -120,6 +122,7 @@ final class AppSettings {
     static let defaultMissionControlPreviewMemoryLimitMiB = 32
     static let missionControlPreviewMemoryLimitRange = 16...128
     static let missionControlPreviewMemoryLimitStep = 16
+    static let defaultAssistLayoutSwitchingEnabled = false
 
     static func normalizedResizeCursorAdornmentDistance(_ value: Double) -> Double {
         normalizedFiniteValue(
@@ -202,6 +205,21 @@ final class AppSettings {
         }
         set {
             defaults.set(newValue, forKey: windowPreviewsEnabledKey)
+            notify()
+        }
+    }
+
+    var assistLayoutSwitchingEnabled: Bool {
+        get {
+            guard defaults.object(
+                forKey: assistLayoutSwitchingEnabledKey
+            ) != nil else {
+                return Self.defaultAssistLayoutSwitchingEnabled
+            }
+            return defaults.bool(forKey: assistLayoutSwitchingEnabledKey)
+        }
+        set {
+            defaults.set(newValue, forKey: assistLayoutSwitchingEnabledKey)
             notify()
         }
     }

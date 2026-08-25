@@ -3,6 +3,94 @@ import XCTest
 @testable import Tabora
 
 final class MissionControlGroupProxyTests: XCTestCase {
+    func testPreviewAuthorizationIsRecheckedAfterCaptureAdmission() {
+        var authorizationChecks = 0
+        let image = AXWindowService().previewCGImage(
+            for: 1,
+            capacityWait: 0.1,
+            shouldCapture: {
+                authorizationChecks += 1
+                return false
+            }
+        )
+        XCTAssertNil(image)
+        XCTAssertEqual(authorizationChecks, 1)
+    }
+
+    func testSettledGeometryRefreshUsesBoundedWorkAfterAQuietPeriod() {
+        XCTAssertEqual(
+            MissionControlPreviewGeometryRefreshPolicy.deadline(after: 10),
+            12
+        )
+        XCTAssertEqual(
+            MissionControlPreviewGeometryRefreshPolicy.resolvedDeadline(
+                sizeChanged: true,
+                pendingDeadline: 11,
+                now: 20
+            ),
+            22
+        )
+        XCTAssertEqual(
+            MissionControlPreviewGeometryRefreshPolicy.resolvedDeadline(
+                sizeChanged: false,
+                pendingDeadline: 11,
+                now: 20
+            ),
+            11
+        )
+        XCTAssertNil(
+            MissionControlPreviewGeometryRefreshPolicy.resolvedDeadline(
+                sizeChanged: false,
+                pendingDeadline: nil,
+                now: 20
+            )
+        )
+        XCTAssertEqual(
+            MissionControlPreviewGeometryRefreshPolicy.requestCount(
+                dueCount: 100,
+                outstandingCount: 0
+            ),
+            2
+        )
+        XCTAssertEqual(
+            MissionControlPreviewGeometryRefreshPolicy.requestCount(
+                dueCount: 100,
+                outstandingCount: 3
+            ),
+            1
+        )
+        XCTAssertEqual(
+            MissionControlPreviewGeometryRefreshPolicy.requestCount(
+                dueCount: 100,
+                outstandingCount: 4
+            ),
+            0
+        )
+    }
+
+    func testPreviewAspectFillNeverDistortsCarriedResizeImage() {
+        XCTAssertEqual(
+            MissionControlPreviewDrawingPolicy.aspectFillSourceRect(
+                sourceSize: CGSize(width: 1600, height: 900),
+                destinationSize: CGSize(width: 800, height: 800)
+            ),
+            CGRect(x: 350, y: 0, width: 900, height: 900)
+        )
+        XCTAssertEqual(
+            MissionControlPreviewDrawingPolicy.aspectFillSourceRect(
+                sourceSize: CGSize(width: 800, height: 1200),
+                destinationSize: CGSize(width: 800, height: 400)
+            ),
+            CGRect(x: 0, y: 400, width: 800, height: 400)
+        )
+        XCTAssertNil(
+            MissionControlPreviewDrawingPolicy.aspectFillSourceRect(
+                sourceSize: CGSize(width: CGFloat.infinity, height: 900),
+                destinationSize: CGSize(width: 800, height: 400)
+            )
+        )
+    }
+
     func testPeriodicPreviewRefreshHasAConstantWorkBudget() {
         XCTAssertEqual(
             MissionControlPreviewWorkPolicy.periodicRequestCount(

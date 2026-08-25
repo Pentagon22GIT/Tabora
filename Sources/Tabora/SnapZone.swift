@@ -1,4 +1,5 @@
 import AppKit
+import CoreGraphics
 
 struct SnapOuterEdges: OptionSet {
     let rawValue: Int
@@ -264,6 +265,106 @@ enum AssistLayoutPolicy {
         case .maximize:
             return []
         }
+    }
+}
+
+enum AssistCompletionLayoutPolicy {
+    static let fourWindowZones: [SnapZone] = [
+        .topLeft, .topRight, .bottomLeft, .bottomRight
+    ]
+
+    static func threeWindowZones(
+        occupiedZones: Set<SnapZone>
+    ) -> [SnapZone]? {
+        guard occupiedZones.count == 2 else { return nil }
+        if occupiedZones == Set([.topLeft, .topRight]) {
+            return [.topLeft, .topRight, .bottomHalf]
+        }
+        if occupiedZones == Set([.bottomLeft, .bottomRight]) {
+            return [.topHalf, .bottomLeft, .bottomRight]
+        }
+        if occupiedZones == Set([.topLeft, .bottomLeft]) {
+            return [.topLeft, .bottomLeft, .rightHalf]
+        }
+        if occupiedZones == Set([.topRight, .bottomRight]) {
+            return [.leftHalf, .topRight, .bottomRight]
+        }
+        return nil
+    }
+
+    static func layoutForModifierState(
+        occupiedZones: Set<SnapZone>,
+        currentLayout: [SnapZone],
+        modifierIsPressed: Bool
+    ) -> [SnapZone]? {
+        guard let threeWindow = threeWindowZones(
+            occupiedZones: occupiedZones
+        ) else { return nil }
+        let current = Set(currentLayout)
+        guard current == Set(fourWindowZones)
+                || current == Set(threeWindow) else { return nil }
+        return modifierIsPressed ? threeWindow : fourWindowZones
+    }
+
+    /// Resolves the visible completion surface after both structural layouts
+    /// have been evaluated with their own candidate constraints.
+    static func completionLayout(
+        occupiedZones: Set<SnapZone>,
+        modifierIsPressed: Bool,
+        maximumDistinctFourWindowAssignments: Int,
+        mergedHalfCandidateCount: Int
+    ) -> [SnapZone]? {
+        guard let threeWindow = threeWindowZones(
+            occupiedZones: occupiedZones
+        ) else { return nil }
+        if modifierIsPressed {
+            return mergedHalfCandidateCount > 0 ? threeWindow : nil
+        }
+        if maximumDistinctFourWindowAssignments >= 2 {
+            return fourWindowZones
+        }
+        return mergedHalfCandidateCount > 0 ? threeWindow : nil
+    }
+}
+
+enum AssistLayoutModifierPolicy {
+    static func isPressed(in flags: CGEventFlags) -> Bool {
+        flags.contains(.maskAlternate)
+    }
+}
+
+enum AssistCandidateAssignmentPolicy {
+    /// The same window may appear in both quarter candidate lists. Count a
+    /// completable four-way surface only when two distinct windows can be
+    /// assigned to the two remaining zones.
+    static func maximumDistinctAssignmentCount(
+        zones: [SnapZone],
+        candidateIDsByZone: [SnapZone: Set<String>]
+    ) -> Int {
+        func search(
+            zoneIndex: Int,
+            usedCandidateIDs: Set<String>
+        ) -> Int {
+            guard zoneIndex < zones.count else { return 0 }
+            let zone = zones[zoneIndex]
+            var best = search(
+                zoneIndex: zoneIndex + 1,
+                usedCandidateIDs: usedCandidateIDs
+            )
+            for candidateID in candidateIDsByZone[zone] ?? [] where
+                !usedCandidateIDs.contains(candidateID) {
+                best = max(
+                    best,
+                    1 + search(
+                        zoneIndex: zoneIndex + 1,
+                        usedCandidateIDs:
+                            usedCandidateIDs.union([candidateID])
+                    )
+                )
+            }
+            return best
+        }
+        return search(zoneIndex: 0, usedCandidateIDs: [])
     }
 }
 

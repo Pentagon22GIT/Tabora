@@ -278,6 +278,7 @@ final class WindowPickerPanel: NSObject {
         windowsByZone: [SnapZone: [ManagedWindow]],
         zoneFrames: [SnapZone: CGRect],
         backdropFrames: [CGRect] = [],
+        previewCandidateBudgetCount: Int? = nil,
         previewProvider: @escaping (CGWindowID?) -> CGImage?,
         onCancel: @escaping () -> Void,
         onSelect: @escaping (ManagedWindow, SnapZone) -> Void
@@ -288,16 +289,62 @@ final class WindowPickerPanel: NSObject {
         self.onSelect = onSelect
         self.onCancel = onCancel
         selectionPending = false
-        let uniqueCandidateCount = Set(
+        let visibleUniqueCandidateCount = Set(
             windowsByZone.values.flatMap { windows in
                 windows.map(\.stableIdentity)
             }
         ).count
         let previewLoader = PreviewImageLoader(
             provider: previewProvider,
-            candidateCount: uniqueCandidateCount
+            candidateCount: max(
+                previewCandidateBudgetCount ?? visibleUniqueCandidateCount,
+                visibleUniqueCandidateCount
+            )
         )
         self.previewLoader = previewLoader
+
+        buildPanels(
+            windowsByZone: windowsByZone,
+            zoneFrames: zoneFrames,
+            backdropFrames: backdropFrames,
+            previewLoader: previewLoader
+        )
+    }
+
+    /// Rebuilds only picker geometry and selection ownership. The existing
+    /// bounded loader/cache remains alive so a 3 / 4 layout toggle cannot
+    /// recapture every candidate or briefly replace images with placeholders.
+    @discardableResult
+    func updateLayout(
+        windowsByZone: [SnapZone: [ManagedWindow]],
+        zoneFrames: [SnapZone: CGRect],
+        backdropFrames: [CGRect] = [],
+        onCancel: @escaping () -> Void,
+        onSelect: @escaping (ManagedWindow, SnapZone) -> Void
+    ) -> Bool {
+        guard let previewLoader,
+              windowsByZone.values.contains(where: { !$0.isEmpty }),
+              !zoneFrames.isEmpty else { return false }
+        panels.forEach { $0.orderOut(nil) }
+        panels.removeAll()
+        self.onSelect = onSelect
+        self.onCancel = onCancel
+        selectionPending = false
+        buildPanels(
+            windowsByZone: windowsByZone,
+            zoneFrames: zoneFrames,
+            backdropFrames: backdropFrames,
+            previewLoader: previewLoader
+        )
+        return !panels.isEmpty
+    }
+
+    private func buildPanels(
+        windowsByZone: [SnapZone: [ManagedWindow]],
+        zoneFrames: [SnapZone: CGRect],
+        backdropFrames: [CGRect],
+        previewLoader: PreviewImageLoader
+    ) {
 
         for frame in backdropFrames where frame.width > 1 && frame.height > 1 {
             let panel = makePanel(frame: frame)
@@ -364,6 +411,7 @@ final class WindowPickerPanel: NSObject {
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = false
+        panel.animationBehavior = .none
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
         panel.isMovable = false
         return panel

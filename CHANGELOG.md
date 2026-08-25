@@ -1,5 +1,29 @@
 # 更新履歴
 
+## 1.2.0 — 開発中
+
+### Assist 3 / 4分割拡張
+
+- 試験的機能（初期OFF）として、隣接するQuarterが2枚配置されたAssist中にOption（⌥）を押している間だけ、残り2つのQuarterを1つのHalfへ統合する。Optionを離すと4分割候補へ戻り、切り替えはPicker geometryだけを更新してwindow frame、group、restore、replacement、Mission Control stateを変更しない。
+- Option状態は通常コマンドのCarbon HotKey／keyboard event経路へ登録せず、Picker sessionが所有する約60 Hzのcombined-session modifier-state確認で直接検出する。eventは消費せず、session終了・cancel・drag・shared resize・Space/display遷移・設定OFFでtimerを破棄する。
+- 次のPickerはSnap transaction終了直前に表示されるため、transaction完了の復帰点でOption監視可否を再評価する。配置中の安全gateは維持しつつ、表示済みPickerだけが監視未開始になる経路を残さない。
+- 通常時は残り2面へ異なる2windowを割り当てられるかをdistinct matchingで判定し、1windowだけが統合Halfへ成立する場合は自動で3分割、0windowならAssistを終了する。Option中はQuarter側の2window判定を使わず、統合Half側の1window判定へ切り替える。ShiftによるmacOS標準のscroll軸変換を避け、統合表示のまま縦候補一覧を操作できるようにする。
+- 切り替え時はPanel animationを無効にして即時差し替えし、既存Pickerのbounded preview loader/cacheを維持する。表示形式の変更を理由に候補画像を再取得せず、選択時には従来どおり現在のAX / App Constraint / replacement状態を再検証する。
+- キー割り当てUIと保存値参照は撤去した。以前のbuildが保存した割り当て値は削除・移行処理を追加せず未参照のUserDefaults値として残し、公開buildの実行経路へ持ち込まない。
+
+### Mission Control Preview
+
+- group memberのサイズ変更をframe-key世代として追跡し、最後の変更から2秒静止した後、既存1 Hz Recoveryの安全な通常desktop gateから最大2件ずつ再取得する。連続resizeは最新geometryの1期限へdebounceし、outstanding最大4件・同時実行2件を維持する。
+- resize安定待ちはHOT定期更新・COLD最終取得・memory再encodeを含む通常取得から迂回できない共通gateとする。既存の初回／COLD最終／HOT定期取得を従来順で先に処理し、安定後取得は残り容量だけを使用する。Assist／Snap中は新しい安定後laneだけを保留し、候補画像との追加競合を避ける。
+- 新geometryへ一時継承した古い画像は中央aspect-fill cropで描画し、fresh capture完了前も縦横比を変えて引き伸ばさない。
+- Preview設定OFFをproxy再構築から独立した即時失効処理へ変更。OFF時に待機Operation、request、deadline、cache、再適用通知を破棄し、取得直前は現在の設定、完了時は設定とgenerationを再検証する。AssistやSnapがpresentationを所有していても予約取得を残さない。
+
+### Compatibility / Safety
+
+- 通常Snap、既存2 / 3 / 4 group、shared resize、replacement、App Constraint、Mission Control foreground authorization、Recoveryの構造認可は変更しない。
+- Previewは引き続き表示専用の破棄可能データであり、identity、group membership、placement、foreground認可には使用しない。
+- 非有限geometryを拒否するMission Control Preview testで`CGFloat`型を明示し、Swiftの`Double.infinity`との型推論競合を解消する。productionの画像取得・描画経路は変更しない。
+
 ## 1.1.1 — 2026-08-24
 
 ### Security / Resource Safety

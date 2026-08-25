@@ -1,6 +1,6 @@
 # アーキテクチャ
 
-この文書は、SnapFlow Final Baselineから継承したTaboraの構造と、v1.0.1までのplacement安定化、v1.1.0で追加されたApp Constraint / shared-resize boundary ownership / atomic group departure、v1.1.1の派生処理budget / cancel ownership、v1.2.0のAssist layout variant / resize-settled preview refreshを説明するものです。これは実装の説明文書であり、実コードとは別の新しい挙動を定義するものではありません。
+この文書は、SnapFlow Final Baselineから継承したTaboraの構造と、v1.0.1までのplacement安定化、v1.1.0で追加されたApp Constraint / shared-resize boundary ownership / atomic group departure、v1.1.1の派生処理budget / cancel ownership、v1.2.0のAssist layout variant / resize-settled preview refresh、v1.2.1のMission Control Preview表示修正を説明するものです。これは実装の説明文書であり、実コードとは別の新しい挙動を定義するものではありません。
 
 ## アプリケーション起動と設定
 
@@ -35,6 +35,7 @@
 - Assistの候補除外はplacement開始時snapshotを永続的な権威にせず、replacement commit後のcurrent lock / explicit-group stateで再評価します。
 - v1.2.0のAssist variantは4分割で2枠確定・残り2候補面になった時だけ動作します。Option中は2面のunionに対応する通常Half zoneとして1windowを判定し、解放時は異なる2windowを割り当てられる場合に2つのQuarterへ戻します。1windowだけがHalfへ成立する場合は自動3分割、0windowならAssist終了です。Panelはanimationなしで差し替え、同じpreview loader/cacheを保持します。window mutationとgroup reconcileは候補選択後の既存Snap経路へ合流します。
 - Mission Control previewはmember size-key変更を2秒quiet deadlineへdebounceし、既存Recovery gateから1回最大2件ずつ取得します。このlaneは既存の初回／COLD最終／HOT定期取得より低い優先度で残り容量だけを使い、Assist／Snap中は新規開始しません。Preview OFFはpresentation updateと独立してcapture generation、待機Operation、request、deadline、cacheを失効します。
+- v1.2.1では、resize後のfresh captureを待つ間に継承した古いMission Control Previewを、v1.1.1までと同じ全面投影でproxy member領域へ描画します。v1.2.0の中央aspect-fill cropだけを撤回し、resize-settled取得lane、cache key、取得budget、OFF時の失効処理は変更しません。
 
 ## 明示的groupとresize
 

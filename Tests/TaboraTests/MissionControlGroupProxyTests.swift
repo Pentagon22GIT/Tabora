@@ -68,29 +68,6 @@ final class MissionControlGroupProxyTests: XCTestCase {
         )
     }
 
-    func testPreviewAspectFillNeverDistortsCarriedResizeImage() {
-        XCTAssertEqual(
-            MissionControlPreviewDrawingPolicy.aspectFillSourceRect(
-                sourceSize: CGSize(width: 1600, height: 900),
-                destinationSize: CGSize(width: 800, height: 800)
-            ),
-            CGRect(x: 350, y: 0, width: 900, height: 900)
-        )
-        XCTAssertEqual(
-            MissionControlPreviewDrawingPolicy.aspectFillSourceRect(
-                sourceSize: CGSize(width: 800, height: 1200),
-                destinationSize: CGSize(width: 800, height: 400)
-            ),
-            CGRect(x: 0, y: 400, width: 800, height: 400)
-        )
-        XCTAssertNil(
-            MissionControlPreviewDrawingPolicy.aspectFillSourceRect(
-                sourceSize: CGSize(width: CGFloat.infinity, height: 900),
-                destinationSize: CGSize(width: 800, height: 400)
-            )
-        )
-    }
-
     func testPeriodicPreviewRefreshHasAConstantWorkBudget() {
         XCTAssertEqual(
             MissionControlPreviewWorkPolicy.periodicRequestCount(

@@ -1,6 +1,20 @@
 # 更新履歴
 
-## 1.2.0 — 開発中
+## 1.2.1 — 2026-08-25
+
+### Mission Control Preview
+
+- v1.2.0で導入した中央aspect-fill cropを撤回し、古いPreview画像を新geometryへ一時継承する間の描画をv1.1.1までの全面投影へ戻した。fresh capture完了前に画像の中央だけが過度に拡大され、内容が大きく切り取られる表示退行を解消する。
+- resize終了後2秒の安定待ち、既存1 Hz Recoveryからの再取得、連続resizeのdebounce、1回最大2件・outstanding最大4件・同時実行2件の取得上限は維持する。
+- Assist／Snap中のresize後取得保留、Preview OFF時の待機Operation・retry・cache・再適用通知の即時失効、完了時のsetting／generation再検証は維持する。
+
+### Audit / Compatibility
+
+- Mission Control画像の準備、geometry継承、非同期取得、cache反映、proxy再構築、Mission Control復帰までを横断監査し、表示退行以外に同時修正が必要な重大な競合や脆弱性がないことを確認した。
+- 試験的なOptionホールド式3 / 4分割Assist切り替え、通常Snap、2 / 3 / 4 group、shared resize、replacement、App Constraint、Mission Control foreground authorization、Recoveryの構造認可は変更しない。
+- Preview画像をidentity、group membership、placement、foreground認可へ使用しない既存の安全境界を維持する。
+
+## 1.2.0 — 2026-08-25
 
 ### Assist 3 / 4分割拡張
 
@@ -22,7 +36,6 @@
 
 - 通常Snap、既存2 / 3 / 4 group、shared resize、replacement、App Constraint、Mission Control foreground authorization、Recoveryの構造認可は変更しない。
 - Previewは引き続き表示専用の破棄可能データであり、identity、group membership、placement、foreground認可には使用しない。
-- 非有限geometryを拒否するMission Control Preview testで`CGFloat`型を明示し、Swiftの`Double.infinity`との型推論競合を解消する。productionの画像取得・描画経路は変更しない。
 
 ## 1.1.1 — 2026-08-24
 

@@ -1,6 +1,6 @@
 # 第三者コンポーネントに関する通知
 
-Tabora v1.2.0のアプリ本体には、外部Swift Packageや同梱された第三者バイナリ依存はありません。AppleがmacOSの一部として提供するSystem Frameworkへリンクします。
+Tabora v1.2.1のアプリ本体には、外部Swift Packageや同梱された第三者バイナリ依存はありません。AppleがmacOSの一部として提供するSystem Frameworkへリンクします。
 
 - AppKit
 - ApplicationServices

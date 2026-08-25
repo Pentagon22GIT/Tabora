@@ -34,7 +34,8 @@ swift test
 - Mission Control
 - Mission Control group proxyが候補集合から欠落しないこと（2 / 3 / 4、snap直後、rapid enter / exit）
 - cold launch直後の最初のdragでsnap guideを失わないこと
-- previewが低解像度のまま拡大表示されないこと
+- resize直後のMission Control Previewがfresh capture完了前も全面を表示し、中央aspect-fill cropで過度に拡大・切り取りされないこと
+- resizeから約2秒の安定後にMission Control Previewが現在内容へ更新されること
 - Preview ON / OFF
 - Mission Control Previewの16 / 32 / 128 MiB、cache解放、多数windowで15秒を跨ぐstale-while-revalidate
 - Activity Monitorでidle / 複数group / 多数window / Preview ON・OFFのCPUとEnergy Impactを比較し、定常的な異常負荷がないこと

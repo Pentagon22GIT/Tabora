@@ -2559,7 +2559,8 @@ final class AXWindowService {
 
     func previewCGImage(
         for windowID: CGWindowID?,
-        capacityWait requestedCapacityWait: TimeInterval
+        capacityWait requestedCapacityWait: TimeInterval,
+        shouldCapture: (() -> Bool)? = nil
     ) -> CGImage? {
         guard let windowID else { return nil }
         let capacityWait = PreviewCaptureAdmissionPolicy.effectiveWait(
@@ -2570,6 +2571,11 @@ final class AXWindowService {
             return nil
         }
         defer { Self.endPreviewCapture() }
+        // Authorization may change while this request waits for the shared
+        // Mission Control / Assist capture slot. Recheck after admission and
+        // immediately before Window Server capture so an OFF setting cannot
+        // leave an already-reserved request executable.
+        guard shouldCapture?() ?? true else { return nil }
         return CGWindowListCreateImage(
             .null,
             .optionIncludingWindow,

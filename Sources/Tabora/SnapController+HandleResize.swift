@@ -1111,6 +1111,7 @@ extension SnapController {
         invalidatePendingOperations()
         missionControlGroupProxyController.hideAll()
         activeSession = nil
+        stopAssistLayoutModifierMonitoring()
         picker.hide()
         overlay.hide()
         virtualResizeOverlay.hideAll()

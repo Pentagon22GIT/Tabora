@@ -1,6 +1,6 @@
 # アーキテクチャ
 
-この文書は、SnapFlow Final Baselineから継承したTaboraの構造と、v1.0.1までのplacement安定化、v1.1.0で追加されたApp Constraint / shared-resize boundary ownership / atomic group departure、v1.1.1の派生処理budget / cancel ownershipを説明するものです。これは実装の説明文書であり、実コードとは別の新しい挙動を定義するものではありません。
+この文書は、SnapFlow Final Baselineから継承したTaboraの構造と、v1.0.1までのplacement安定化、v1.1.0で追加されたApp Constraint / shared-resize boundary ownership / atomic group departure、v1.1.1の派生処理budget / cancel ownership、v1.2.0のAssist layout variant / resize-settled preview refreshを説明するものです。これは実装の説明文書であり、実コードとは別の新しい挙動を定義するものではありません。
 
 ## アプリケーション起動と設定
 
@@ -8,6 +8,7 @@
 - `AppSettings.swift` は現在のアプリの `UserDefaults.standard` domainへscalarなユーザー設定を保存し、`ServiceManagement` を使ってログイン項目登録を管理します。
 - `ConstraintStore.swift` はアプリ別App Constraint recordをschema version付きJSONとしてApplication SupportのBundle ID別directoryへatomic writeします。Official / Community間でrecordを暗黙共有せず、record単位でvalidationして1 recordの破損を他recordの消失へ波及させません。
 - `SettingsWindowController.swift` は上部固定のカテゴリ切替で一般 / コマンド / サイズ制約 / 試験的機能を表示し、「アプリ別のサイズ制約」でApp Constraintの記録許可・読み取り専用の値表示・明示計測・record削除をローカルstoreへ反映します。手動の数値編集経路は持ちません。
+- 3 / 4分割Assist切り替えは初期OFFで、隣接Quarterが2枚配置されPickerが表示されているsessionだけcombined-sessionのOption状態を約60 Hzで確認します。通常コマンド用Carbon HotKeyやkeyboard event経路には登録せず、Option eventも消費しません。session終了、cancel、drag、shared resize、Space/display遷移、設定OFFではtimerを即時解除します。
 
 ## ウィンドウ観測とidentity
 
@@ -32,6 +33,8 @@
 - login session非アクティブ中はpreview captureとselection pollingを停止します。Recovery coreのevent monitor rearmは維持し、復帰後はgenerationを更新して古い派生結果を拒否します。
 - Assist pickerのpreview loaderは32 MiBの画像budgetをユニーク候補数で分割し、枚数を理由に候補を打ち切りません。hide時はqueued workとcallback ownershipを破棄します。Window Serverが有限retry後も取得元画像を返さない場合のみ、既存のicon/placeholder表示へfallbackします。
 - Assistの候補除外はplacement開始時snapshotを永続的な権威にせず、replacement commit後のcurrent lock / explicit-group stateで再評価します。
+- v1.2.0のAssist variantは4分割で2枠確定・残り2候補面になった時だけ動作します。Option中は2面のunionに対応する通常Half zoneとして1windowを判定し、解放時は異なる2windowを割り当てられる場合に2つのQuarterへ戻します。1windowだけがHalfへ成立する場合は自動3分割、0windowならAssist終了です。Panelはanimationなしで差し替え、同じpreview loader/cacheを保持します。window mutationとgroup reconcileは候補選択後の既存Snap経路へ合流します。
+- Mission Control previewはmember size-key変更を2秒quiet deadlineへdebounceし、既存Recovery gateから1回最大2件ずつ取得します。このlaneは既存の初回／COLD最終／HOT定期取得より低い優先度で残り容量だけを使い、Assist／Snap中は新規開始しません。Preview OFFはpresentation updateと独立してcapture generation、待機Operation、request、deadline、cacheを失効します。
 
 ## 明示的groupとresize
 

@@ -203,17 +203,20 @@ struct HandleResizeSession {
 struct LayoutSession {
     var groupID: SnapGroupID? = nil
     let excludedCandidateIDs: Set<String>
-    let layoutZones: [SnapZone]
+    let displayID: CGDirectDisplayID?
+    var layoutZones: [SnapZone]
     var occupiedZones: [SnapZone: String]
 
     init(
         groupID: SnapGroupID? = nil,
         excludedCandidateIDs: Set<String> = [],
+        displayID: CGDirectDisplayID? = nil,
         layoutZones: [SnapZone],
         occupiedZones: [SnapZone: String]
     ) {
         self.groupID = groupID
         self.excludedCandidateIDs = excludedCandidateIDs
+        self.displayID = displayID
         self.layoutZones = layoutZones
         self.occupiedZones = occupiedZones
     }
@@ -484,6 +487,7 @@ final class SnapController {
                 updateSelectionMonitoringState()
                 invalidatePendingOperations()
                 stopEscapeMonitoring()
+                stopAssistLayoutModifierMonitoring()
                 overlay.hide()
                 picker.hide()
                 virtualResizeOverlay.hideAll()
@@ -522,6 +526,8 @@ final class SnapController {
     let virtualResizeOverlay = VirtualResizeOverlay()
     let resizeHandleOverlay = ResizeHandleOverlay()
     let missionControlGroupProxyController = MissionControlGroupProxyController()
+    private var assistLayoutModifierMonitorTimer: Timer?
+    private var observedAssistLayoutModifierIsPressed: Bool?
     private let activeWindowObserver = ActiveWindowObserver()
     lazy var liveResizeScheduler = LiveResizeScheduler(windowService: windowService)
     let settings = AppSettings.shared
@@ -787,6 +793,7 @@ final class SnapController {
         eventMonitorReadinessGeneration &+= 1
         eventMonitorReadinessChecksAreScheduled = false
         stopEscapeMonitoring()
+        stopAssistLayoutModifierMonitoring()
         let workspaceCenter = NSWorkspace.shared.notificationCenter
         workspaceObservers.forEach { workspaceCenter.removeObserver($0) }
         workspaceObservers.removeAll()
@@ -824,6 +831,7 @@ final class SnapController {
         restoreFrames.removeAll()
         activeSession = nil
         stopEscapeMonitoring()
+        stopAssistLayoutModifierMonitoring()
         resetSideDwellState()
         invalidatePendingOperations()
         resetDragState()
@@ -1036,6 +1044,7 @@ final class SnapController {
         detachedConnections.removeAll()
         activeSession = nil
         stopEscapeMonitoring()
+        stopAssistLayoutModifierMonitoring()
         picker.hide()
         virtualResizeOverlay.hideAll()
         resizeHandleOverlay.hideAll()
@@ -1097,6 +1106,7 @@ final class SnapController {
         isAssistPlacementPending = false
         activeSession = nil
         stopEscapeMonitoring()
+        stopAssistLayoutModifierMonitoring()
         overlay.hide()
         picker.hide()
         virtualResizeOverlay.hideAll()
@@ -1165,6 +1175,7 @@ final class SnapController {
             )
         invalidatePendingOperations()
         activeSession = nil
+        stopAssistLayoutModifierMonitoring()
         snap(
             window,
             to: zone,
@@ -1416,8 +1427,15 @@ final class SnapController {
             queue: .main
         ) { [weak self] _ in
             guard let self else { return }
+            // Preview authorization is independent of presentation ownership.
+            // Assist, Snap or settings UI may suppress the normal proxy update,
+            // but OFF must still revoke every queued capture immediately.
+            self.missionControlGroupProxyController.setPreviewsEnabled(
+                self.settings.windowPreviewsEnabled
+            )
             self.missionControlGroupProxyController.hideAll()
             self.updateSelectionMonitoringState()
+            self.updateAssistLayoutModifierMonitoringState()
             if !self.settings.linkedResizeEnabled,
                self.handleResizeSession != nil {
                 self.cancelHandleResize(restoreOriginalFrames: true)
@@ -1896,7 +1914,17 @@ final class SnapController {
             if !isApplicationInteractionSuppressed,
                !isPreservingGroupPresentationForWindowServerTransform {
                 missionControlGroupProxyController
-                    .refreshStalePreviewCacheIfNeeded()
+                    .refreshStalePreviewCacheIfNeeded(
+                        // The established HOT/COLD lanes retain their normal
+                        // Recovery behavior. Only the new resize-settled lane
+                        // yields while Assist/Snap owns the shared Window
+                        // Server capture capacity.
+                        allowsSettledGeometryRefresh:
+                            activeSession == nil
+                                && !picker.isVisible
+                                && !isAssistPlacementPending
+                                && !isSnapPlacementInProgress
+                    )
             }
             // Liveness is a cheap presentation-only check. It does not perform
             // discovery, so the 1 Hz watchdog can detect an orderOut/cache loss
@@ -2305,6 +2333,7 @@ final class SnapController {
         shouldRestoreHandlesAfterPointerInteraction = activeSession != nil
             || picker.isVisible
         stopEscapeMonitoring()
+        stopAssistLayoutModifierMonitoring()
         overlay.hide()
         picker.hide()
         virtualResizeOverlay.hideAll()
@@ -2873,6 +2902,7 @@ final class SnapController {
     }
 
     private func handleDrag(at point: CGPoint) {
+        stopAssistLayoutModifierMonitoring()
         picker.hide()
         guard dragWindow != nil, isWindowMoveConfirmed else { return }
 
@@ -2960,6 +2990,7 @@ final class SnapController {
             messagingTimeout: AXMessagingTimeoutPolicy.interactiveOperation
         ) ?? window
         activeSession = nil
+        stopAssistLayoutModifierMonitoring()
         snap(
             currentWindow,
             to: target.zone,
@@ -4377,6 +4408,12 @@ final class SnapController {
         isSnapPlacementInProgress = false
         snapPlacementInteractionGeneration = nil
         activeSnapPlacementContext = nil
+        // Assist presents its next picker before the snap transaction retires.
+        // The monitor correctly stays closed while that transaction owns
+        // placement, then must be reconsidered at this exact recovery edge.
+        // Without this handoff a visible, switchable picker can remain alive
+        // with no layout-modifier observer ever started.
+        updateAssistLayoutModifierMonitoringState()
         // refreshResizeHandles() either rebuilds and unsuspends validated
         // geometry, or hides everything when assist is active. Avoid manually
         // unsuspending stale descriptors between those two outcomes. A delayed
@@ -4400,6 +4437,7 @@ final class SnapController {
         guard continueAssist, zone != .maximize else {
             activeSession = nil
             stopEscapeMonitoring()
+            updateAssistLayoutModifierMonitoringState()
             picker.hide()
             return
         }
@@ -4411,10 +4449,19 @@ final class SnapController {
         }
 
         guard let session = activeSession else { return }
-        let remaining = session.remainingZones
+        presentAssist(session: session, on: screen)
+    }
+
+    private func presentAssist(
+        session providedSession: LayoutSession,
+        on screen: NSScreen
+    ) {
+        var session = providedSession
+        var remaining = session.remainingZones
         guard !remaining.isEmpty else {
             activeSession = nil
             stopEscapeMonitoring()
+            updateAssistLayoutModifierMonitoringState()
             picker.hide()
             return
         }
@@ -4437,6 +4484,7 @@ final class SnapController {
         guard !candidates.isEmpty else {
             activeSession = nil
             stopEscapeMonitoring()
+            updateAssistLayoutModifierMonitoringState()
             picker.hide()
             return
         }
@@ -4446,28 +4494,84 @@ final class SnapController {
         let assistMemberScope = session.groupID.flatMap {
             explicitGroupStore.group(id: $0)?.memberIDs
         }?.union(session.occupiedStableIDs) ?? session.occupiedStableIDs
-        var candidatesByZone: [SnapZone: [ManagedWindow]] = [:]
-        for remainingZone in remaining {
-            for candidate in candidates {
-                guard assistPredictedSnapFrame(
-                    for: remainingZone,
-                    on: screen,
-                    window: candidate,
-                    observationScene: observationScene
-                ) != nil else { continue }
-                candidatesByZone[remainingZone, default: []].append(candidate)
+        let candidatesByZone: [SnapZone: [ManagedWindow]]
+        let occupiedZones = Set(session.occupiedZones.keys)
+        if settings.assistLayoutSwitchingEnabled,
+           let threeWindowLayout = AssistCompletionLayoutPolicy
+                .threeWindowZones(occupiedZones: occupiedZones) {
+            let fourWindowRemaining = AssistCompletionLayoutPolicy
+                .fourWindowZones.filter {
+                    session.occupiedZones[$0] == nil
+                }
+            let fourWindowCandidates = assistCandidatesByZone(
+                zones: fourWindowRemaining,
+                candidates: candidates,
+                on: screen,
+                observationScene: observationScene
+            )
+            let fourWindowAssignmentCount = AssistCandidateAssignmentPolicy
+                .maximumDistinctAssignmentCount(
+                    zones: fourWindowRemaining,
+                    candidateIDsByZone: fourWindowCandidates.mapValues {
+                        Set($0.map(\.stableIdentity))
+                    }
+                )
+            let threeWindowRemaining = threeWindowLayout.filter {
+                session.occupiedZones[$0] == nil
             }
+            let threeWindowCandidates = assistCandidatesByZone(
+                zones: threeWindowRemaining,
+                candidates: candidates,
+                on: screen,
+                observationScene: observationScene
+            )
+            let mergedHalfCandidateCount = Set(
+                threeWindowCandidates.values.flatMap {
+                    $0.map(\.stableIdentity)
+                }
+            ).count
+            guard let completionLayout = AssistCompletionLayoutPolicy
+                .completionLayout(
+                    occupiedZones: occupiedZones,
+                    modifierIsPressed:
+                        Self.currentAssistLayoutModifierIsPressed,
+                    maximumDistinctFourWindowAssignments:
+                        fourWindowAssignmentCount,
+                    mergedHalfCandidateCount: mergedHalfCandidateCount
+            ) else {
+                activeSession = nil
+                stopEscapeMonitoring()
+                updateAssistLayoutModifierMonitoringState()
+                picker.hide()
+                return
+            }
+            session.layoutZones = completionLayout
+            remaining = session.remainingZones
+            candidatesByZone = Set(completionLayout)
+                    == Set(AssistCompletionLayoutPolicy.fourWindowZones)
+                ? fourWindowCandidates
+                : threeWindowCandidates
+        } else {
+            candidatesByZone = assistCandidatesByZone(
+                zones: remaining,
+                candidates: candidates,
+                on: screen,
+                observationScene: observationScene
+            )
         }
-        let eligibleCandidateCount = candidatesByZone.values.reduce(0) {
-            $0 + $1.count
-        }
+
+        let eligibleCandidateCount = Set(
+            candidatesByZone.values.flatMap { $0.map(\.stableIdentity) }
+        ).count
         guard eligibleCandidateCount > 0 else {
             activeSession = nil
             stopEscapeMonitoring()
+            updateAssistLayoutModifierMonitoringState()
             picker.hide()
             return
         }
 
+        activeSession = session
         startEscapeMonitoring()
         // Candidate-specific constraint plans answer only whether that candidate
         // may be selected. They must not own the picker panel's bounds: using
@@ -4505,36 +4609,26 @@ final class SnapController {
             }
             return presentationFramesByZone[remainingZone]
         }
-        picker.show(
-            windowsByZone: candidatesByZone,
-            zoneFrames: zoneFrames,
-            backdropFrames: backdropFrames,
-            previewProvider: { [weak self] windowID in
-                guard let self, self.settings.windowPreviewsEnabled else { return nil }
-                return self.windowService.previewCGImage(
-                    for: windowID,
-                    capacityWait:
-                        PreviewCaptureAdmissionPolicy.assistCapacityWait
-                )
-            },
-            onCancel: { [weak self] in
-                guard let self else { return }
-                // The picker owns cancellation while readiness is pending.
-                // Clearing this flag makes the outstanding AX readiness poll
-                // stop without committing a selection after the user already
-                // dismissed the Assist transaction.
-                self.isAssistPlacementPending = false
-                self.activeSession = nil
-                self.stopEscapeMonitoring()
-                self.refreshResizeHandles()
-            }
-        ) { [weak self] selected, targetZone in
+        let cancel: () -> Void = { [weak self] in
+            guard let self else { return }
+            // The picker owns cancellation while readiness is pending.
+            // Clearing this flag makes the outstanding AX readiness poll stop
+            // without committing a selection after the user dismissed Assist.
+            self.isAssistPlacementPending = false
+            self.activeSession = nil
+            self.stopEscapeMonitoring()
+            self.updateAssistLayoutModifierMonitoringState()
+            self.refreshResizeHandles()
+        }
+        let select: (ManagedWindow, SnapZone) -> Void = {
+            [weak self] selected, targetZone in
             guard let self else { return }
 
             // Keep the candidate presentation alive while AX readiness is
             // indeterminate. A transport timeout is not a negative eligibility
             // decision and must not erase the user's explicit selection.
             self.isAssistPlacementPending = true
+            self.updateAssistLayoutModifierMonitoringState()
             let selectionGeneration = self.interactionGeneration
             self.windowService.waitForPlacementReadiness(
                 selected,
@@ -4552,6 +4646,7 @@ final class SnapController {
                     guard readyWindow.stableIdentity == selected.stableIdentity else {
                         self.isAssistPlacementPending = false
                         self.picker.allowAnotherSelection()
+                        self.updateAssistLayoutModifierMonitoringState()
                         return
                     }
                     // Readiness ownership ends here. Hand presentation to the
@@ -4560,6 +4655,7 @@ final class SnapController {
                     self.isAssistPlacementPending = false
                     self.picker.hide()
                     self.stopEscapeMonitoring()
+                    self.updateAssistLayoutModifierMonitoringState()
                     self.activeSession = session
                     self.snap(
                         readyWindow,
@@ -4572,6 +4668,7 @@ final class SnapController {
                         if !succeeded {
                             self.activeSession = nil
                             self.picker.hide()
+                            self.updateAssistLayoutModifierMonitoringState()
                             self.refreshResizeHandles()
                         }
                     }
@@ -4582,14 +4679,8 @@ final class SnapController {
                     // from the still-valid occupied session so another target
                     // can be chosen.
                     self.isAssistPlacementPending = false
-                    self.picker.hide()
                     self.activeSession = session
-                    self.advanceAssist(
-                        with: placedWindow,
-                        justPlacedZone: zone,
-                        on: screen,
-                        continueAssist: true
-                    )
+                    self.presentAssist(session: session, on: screen)
 
                 case .indeterminate:
                     // Preserve the user's session and current picker. A later
@@ -4597,9 +4688,147 @@ final class SnapController {
                     // placement state is destroyed from unknown evidence.
                     self.isAssistPlacementPending = false
                     self.picker.allowAnotherSelection()
+                    self.updateAssistLayoutModifierMonitoringState()
                 }
             }
         }
+
+        let updatedExistingPicker = picker.isVisible && picker.updateLayout(
+            windowsByZone: candidatesByZone,
+            zoneFrames: zoneFrames,
+            backdropFrames: backdropFrames,
+            onCancel: cancel,
+            onSelect: select
+        )
+        if !updatedExistingPicker, activeSession != nil {
+            picker.show(
+                windowsByZone: candidatesByZone,
+                zoneFrames: zoneFrames,
+                backdropFrames: backdropFrames,
+                previewCandidateBudgetCount: candidates.count,
+                previewProvider: { [weak self] windowID in
+                    guard let self,
+                          self.settings.windowPreviewsEnabled else { return nil }
+                    return self.windowService.previewCGImage(
+                        for: windowID,
+                        capacityWait:
+                            PreviewCaptureAdmissionPolicy.assistCapacityWait,
+                        shouldCapture: { [weak self] in
+                            self?.settings.windowPreviewsEnabled == true
+                        }
+                    )
+                },
+                onCancel: cancel,
+                onSelect: select
+            )
+        }
+        updateAssistLayoutModifierMonitoringState()
+    }
+
+    private func assistCandidatesByZone(
+        zones: [SnapZone],
+        candidates: [ManagedWindow],
+        on screen: NSScreen,
+        observationScene: SnapObservationScene
+    ) -> [SnapZone: [ManagedWindow]] {
+        var result: [SnapZone: [ManagedWindow]] = [:]
+        for zone in zones {
+            for candidate in candidates {
+                guard assistPredictedSnapFrame(
+                    for: zone,
+                    on: screen,
+                    window: candidate,
+                    observationScene: observationScene
+                ) != nil else { continue }
+                result[zone, default: []].append(candidate)
+            }
+        }
+        return result
+    }
+
+    private static var currentAssistLayoutModifierIsPressed: Bool {
+        AssistLayoutModifierPolicy.isPressed(
+            in: CGEventSource.flagsState(.combinedSessionState)
+        )
+    }
+
+    private func updateAssistLayoutModifierMonitoringState() {
+        guard isEnabled,
+              isControllerRunning,
+              isUserSessionActive,
+              !isApplicationInteractionSuppressed,
+              settings.assistLayoutSwitchingEnabled,
+              !isAssistPlacementPending,
+              !isSnapPlacementInProgress,
+              picker.isVisible,
+              let session = activeSession,
+              AssistCompletionLayoutPolicy.layoutForModifierState(
+                  occupiedZones: Set(session.occupiedZones.keys),
+                  currentLayout: session.layoutZones,
+                  modifierIsPressed:
+                    Self.currentAssistLayoutModifierIsPressed
+              ) != nil else {
+            stopAssistLayoutModifierMonitoring()
+            return
+        }
+
+        if assistLayoutModifierMonitorTimer == nil {
+            let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) {
+                [weak self] _ in
+                self?.applyAssistLayoutModifierState(
+                    SnapController.currentAssistLayoutModifierIsPressed
+                )
+            }
+            assistLayoutModifierMonitorTimer = timer
+            RunLoop.main.add(timer, forMode: .common)
+        }
+        if observedAssistLayoutModifierIsPressed == nil {
+            // presentAssist already resolved the initial surface from the
+            // current modifier state. Seed observation without rebuilding the
+            // same picker once more; only a later edge triggers a layout swap.
+            observedAssistLayoutModifierIsPressed =
+                Self.currentAssistLayoutModifierIsPressed
+        }
+    }
+
+    private func applyAssistLayoutModifierState(_ isPressed: Bool) {
+        guard observedAssistLayoutModifierIsPressed != isPressed else {
+            return
+        }
+        guard isEnabled,
+              isControllerRunning,
+              isUserSessionActive,
+              !isApplicationInteractionSuppressed,
+              settings.assistLayoutSwitchingEnabled,
+              !isAssistPlacementPending,
+              !isSnapPlacementInProgress,
+              picker.isVisible,
+              var session = activeSession,
+              let layout = AssistCompletionLayoutPolicy.layoutForModifierState(
+                  occupiedZones: Set(session.occupiedZones.keys),
+                  currentLayout: session.layoutZones,
+                  modifierIsPressed: isPressed
+              ),
+              let displayID = session.displayID,
+              let screen = screen(withDisplayID: displayID) else {
+            stopAssistLayoutModifierMonitoring()
+            return
+        }
+        observedAssistLayoutModifierIsPressed = isPressed
+        guard Set(layout) != Set(session.layoutZones) else { return }
+        session.layoutZones = layout
+        activeSession = session
+        presentAssist(session: session, on: screen)
+    }
+
+    /// Modifier monitoring is derived Assist presentation work. It polls the
+    /// combined-session Option state only while the switchable picker is visible
+    /// and is revoked by every path that supersedes or ends that session. No
+    /// keyboard event is consumed and no persistent/global command is created.
+    func stopAssistLayoutModifierMonitoring() {
+        assistLayoutModifierMonitorTimer?.invalidate()
+        assistLayoutModifierMonitorTimer = nil
+        observedAssistLayoutModifierIsPressed = nil
     }
 
     private func currentAssistCandidateExclusions(
@@ -4644,6 +4873,7 @@ final class SnapController {
                     from: activeSnapPlacementContext?
                         .excludedAssistCandidateIDs ?? []
                 ),
+                displayID: nil,
                 layoutZones: [],
                 occupiedZones: [:]
             )
@@ -4661,6 +4891,7 @@ final class SnapController {
                     from: activeSnapPlacementContext?
                         .excludedAssistCandidateIDs ?? []
                 ),
+                displayID: currentDisplayID,
                 layoutZones: [],
                 occupiedZones: [:]
             )
@@ -4678,6 +4909,7 @@ final class SnapController {
                 from: activeSnapPlacementContext?
                     .excludedAssistCandidateIDs ?? []
             ),
+            displayID: currentDisplayID,
             layoutZones: layoutZones,
             occupiedZones: occupied
         )
@@ -5224,6 +5456,7 @@ final class SnapController {
 
         resetSideDwellState()
         stopEscapeMonitoring()
+        stopAssistLayoutModifierMonitoring()
         overlay.hide()
         picker.hide()
         virtualResizeOverlay.hideAll()
@@ -5295,6 +5528,7 @@ final class SnapController {
         }
         resetSideDwellState()
         stopEscapeMonitoring()
+        stopAssistLayoutModifierMonitoring()
         overlay.hide()
         picker.hide()
         virtualResizeOverlay.hideAll()
@@ -5344,6 +5578,7 @@ final class SnapController {
         invalidatePendingSelectionRaise()
         resetIncompleteHandleGeometryRecovery()
         isAssistPlacementPending = false
+        stopAssistLayoutModifierMonitoring()
         if !isSnapRollbackActive {
             isSnapPlacementInProgress = false
             snapPlacementInteractionGeneration = nil
@@ -5421,6 +5656,7 @@ final class SnapController {
             || isConstraintPermissionPromptActive
             || isRestoreTransactionActive {
             stopEscapeMonitoring()
+            stopAssistLayoutModifierMonitoring()
             overlay.hide()
             picker.hide()
             virtualResizeOverlay.hideAll()
@@ -5432,6 +5668,7 @@ final class SnapController {
         }
         invalidatePendingOperations()
         stopEscapeMonitoring()
+        stopAssistLayoutModifierMonitoring()
         overlay.hide()
         picker.hide()
         virtualResizeOverlay.hideAll()

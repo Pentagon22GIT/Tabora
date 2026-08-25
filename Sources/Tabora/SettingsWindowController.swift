@@ -100,6 +100,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     )
     private let sideDwellDurationSlider = NSSlider()
     private let sideDwellDurationValue = NSTextField(labelWithString: "")
+    private let assistLayoutSwitchingCheckbox = NSButton(
+        checkboxWithTitle: "4分割Assistを3分割へ切り替える",
+        target: nil,
+        action: nil
+    )
     private let workspaceEdgeDelayStatus = NSTextField(labelWithString: "確認中…")
     private lazy var delayWorkspaceEdgeButton = NSButton(
         title: "Space移動を60秒まで遅延",
@@ -551,6 +556,25 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private func makeExperimentalSettingsView() -> NSView {
         let stack = makeSettingsStack()
         stack.addArrangedSubview(sectionTitle("試験的機能"))
+
+        let assistLayoutTitle = NSTextField(
+            labelWithString: "3 / 4分割Assist切り替え"
+        )
+        assistLayoutTitle.font = .systemFont(ofSize: 13, weight: .medium)
+        stack.addArrangedSubview(assistLayoutTitle)
+        assistLayoutSwitchingCheckbox.target = self
+        assistLayoutSwitchingCheckbox.action = #selector(
+            toggleAssistLayoutSwitching
+        )
+        stack.addArrangedSubview(assistLayoutSwitchingCheckbox)
+        let assistLayoutNote = NSTextField(
+            wrappingLabelWithString: "隣接する2つの四隅配置後、Option（⌥）を押している間だけ残り2領域を1つへ統合した3分割候補を表示します。Optionを離すと4分割候補へ戻ります。"
+        )
+        assistLayoutNote.textColor = .secondaryLabelColor
+        assistLayoutNote.maximumNumberOfLines = 0
+        stack.addArrangedSubview(assistLayoutNote)
+        stack.addArrangedSubview(separator())
+
         let workspaceEdgeTitle = NSTextField(
             labelWithString: "画面端でのSpace移動を遅延"
         )
@@ -753,6 +777,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         sideDwellDurationValue.textColor = settings.sideDwellExpansionEnabled ? .labelColor : .tertiaryLabelColor
         sideDwellDurationSlider.doubleValue = settings.sideDwellDuration
         sideDwellDurationValue.stringValue = String(format: "%.1f 秒", settings.sideDwellDuration)
+        assistLayoutSwitchingCheckbox.state = settings
+            .assistLayoutSwitchingEnabled ? .on : .off
         edgeThresholdSlider.doubleValue = settings.edgeThreshold
         edgeThresholdValue.stringValue = "\(Int(settings.edgeThreshold.rounded())) pt"
         cornerBandSlider.doubleValue = settings.cornerBand
@@ -1143,6 +1169,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         )
         settings.missionControlPreviewMemoryLimitMiB = value
         onMissionControlPreviewMemoryLimitChange?(value)
+        refresh()
+    }
+
+    @objc private func toggleAssistLayoutSwitching() {
+        settings.assistLayoutSwitchingEnabled =
+            assistLayoutSwitchingCheckbox.state == .on
         refresh()
     }
 

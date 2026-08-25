@@ -272,6 +272,7 @@ extension SnapController {
             self.activeSession = nil
             isAssistPlacementPending = false
             stopEscapeMonitoring()
+            stopAssistLayoutModifierMonitoring()
             picker.hide()
         }
         if let pending = pendingNativeResizeDeparture,
@@ -888,12 +889,16 @@ extension SnapController {
                     settings.missionControlPreviewMemoryLimitMiB
                 ),
             previewProvider: { [weak self] windowID in
-                guard previewsEnabled, let self else { return nil }
+                guard let self,
+                      self.settings.windowPreviewsEnabled else { return nil }
                 return self.windowService.previewCGImage(
                     for: windowID,
                     capacityWait:
                         PreviewCaptureAdmissionPolicy
-                            .missionControlCapacityWait
+                            .missionControlCapacityWait,
+                    shouldCapture: { [weak self] in
+                        self?.settings.windowPreviewsEnabled == true
+                    }
                 )
             }
         )

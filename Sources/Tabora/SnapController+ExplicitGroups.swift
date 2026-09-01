@@ -145,9 +145,13 @@ extension SnapController {
         guard members.count >= 2 else { return false }
         let retiredGroupIDs = dissolution.groupIDs.union([departure.groupID])
         for groupID in retiredGroupIDs {
+            groupSpaceMigrationLine.groupDidRetire(groupID: groupID)
             groupForegroundModes.removeValue(forKey: groupID)
             groupDegradationEvidenceByGroupID.removeValue(forKey: groupID)
             groupSpaceSeparationEvidenceByGroupID.removeValue(forKey: groupID)
+            directGroupSpaceSeparationEvidenceByGroupID.removeValue(
+                forKey: groupID
+            )
             groupPresentationFailureCountsByGroupID.removeValue(forKey: groupID)
             handleLivenessFailureCountsByGroupID.removeValue(forKey: groupID)
             missionControlGroupProxyController.hide(groupID: groupID)
@@ -281,6 +285,7 @@ extension SnapController {
         }
 
         for groupID in retiredGroupIDs {
+            groupSpaceMigrationLine.groupDidRetire(groupID: groupID)
             groupForegroundModes.removeValue(forKey: groupID)
             groupDegradationEvidenceByGroupID.removeValue(forKey: groupID)
             groupSpaceSeparationEvidenceByGroupID.removeValue(forKey: groupID)
@@ -436,6 +441,10 @@ extension SnapController {
             groupSpaceSeparationEvidenceByGroupID.filter {
                 activeGroupIDs.contains($0.key)
             }
+        directGroupSpaceSeparationEvidenceByGroupID =
+            directGroupSpaceSeparationEvidenceByGroupID.filter {
+                activeGroupIDs.contains($0.key)
+            }
         groupSpaceSeparationObservationEpoch &+= 1
         let observationEpoch = groupSpaceSeparationObservationEpoch
         let observationTime = ProcessInfo.processInfo.systemUptime
@@ -444,7 +453,20 @@ extension SnapController {
         var pendingGroupIDs = Set<SnapGroupID>()
 
         for group in explicitGroupStore.groups {
+            if groupSpaceMigrationLine.owns(groupID: group.id) {
+                directGroupSpaceSeparationEvidenceByGroupID.removeValue(
+                    forKey: group.id
+                )
+                groupSpaceSeparationEvidenceByGroupID.removeValue(
+                    forKey: group.id
+                )
+                pendingGroupIDs.insert(group.id)
+                continue
+            }
             guard screen(withDisplayID: group.displayID) != nil else {
+                directGroupSpaceSeparationEvidenceByGroupID.removeValue(
+                    forKey: group.id
+                )
                 groupSpaceSeparationEvidenceByGroupID.removeValue(
                     forKey: group.id
                 )
@@ -468,6 +490,9 @@ extension SnapController {
                 groupSpaceSeparationEvidenceByGroupID.removeValue(
                     forKey: group.id
                 )
+                directGroupSpaceSeparationEvidenceByGroupID.removeValue(
+                    forKey: group.id
+                )
                 explicitGroupStore.markDegraded(
                     groupID: group.id,
                     missingMemberIDs: []
@@ -476,6 +501,84 @@ extension SnapController {
             }
             let isProperDesktopSplit = !normalOnScreenMemberIDs.isEmpty
                 && normalOnScreenMemberIDs != group.memberIDs
+
+            if windowSpaceBackend.capabilities.contains(.readWindowSpaces) {
+                let relationship = groupSpaceMigrationSubjects(
+                    groupID: group.id,
+                    presentedMemberIDs: group.memberIDs
+                ).map { subjects in
+                    GroupSpaceMembershipPolicy.relationship(
+                        memberIDs: group.memberIDs,
+                        observation: windowSpaceBackend.observe(
+                            subjects: subjects
+                        )
+                    )
+                } ?? .unknown
+                switch relationship {
+                case .knownSame:
+                    directGroupSpaceSeparationEvidenceByGroupID.removeValue(
+                        forKey: group.id
+                    )
+                    groupSpaceSeparationEvidenceByGroupID.removeValue(
+                        forKey: group.id
+                    )
+                    if normalOnScreenMemberIDs == group.memberIDs {
+                        explicitGroupStore.markDegraded(
+                            groupID: group.id,
+                            missingMemberIDs: []
+                        )
+                    }
+                    continue
+                case .knownDifferent(let spacesByMemberID):
+                    missionControlGroupProxyController.hide(groupID: group.id)
+                    pendingGroupIDs.insert(group.id)
+                    groupSpaceSeparationEvidenceByGroupID.removeValue(
+                        forKey: group.id
+                    )
+                    let observation = DirectGroupSpaceSeparationPolicy.observe(
+                        previous:
+                            directGroupSpaceSeparationEvidenceByGroupID[group.id],
+                        spacesByMemberID: spacesByMemberID,
+                        now: observationTime
+                    )
+                    directGroupSpaceSeparationEvidenceByGroupID[group.id] =
+                        observation.evidence
+                    guard observation.isConfirmed else { continue }
+                    _ = retireExplicitGroup(
+                        ExplicitGroupDepartureSnapshot(
+                            groupID: group.id,
+                            memberIDs: group.memberIDs
+                        ),
+                        reason: .confirmedSpaceSeparation
+                    )
+                    directGroupSpaceSeparationEvidenceByGroupID.removeValue(
+                        forKey: group.id
+                    )
+                    pendingGroupIDs.remove(group.id)
+                    continue
+                case .unknown:
+                    // Private observation is available but this sample is not
+                    // authoritative. Do not reinterpret visual absence as a
+                    // different Space; unknown is deliberately non-destructive.
+                    directGroupSpaceSeparationEvidenceByGroupID.removeValue(
+                        forKey: group.id
+                    )
+                    groupSpaceSeparationEvidenceByGroupID.removeValue(
+                        forKey: group.id
+                    )
+                    if isProperDesktopSplit {
+                        missionControlGroupProxyController.hide(
+                            groupID: group.id
+                        )
+                        pendingGroupIDs.insert(group.id)
+                    }
+                    continue
+                }
+            }
+
+            directGroupSpaceSeparationEvidenceByGroupID.removeValue(
+                forKey: group.id
+            )
             guard isProperDesktopSplit else {
                 // All-offscreen is a valid suspended state. Transformed
                 // Mission Control surfaces are not normal geometry, so they
@@ -608,6 +711,39 @@ extension SnapController {
             }
 
         for group in explicitGroupStore.groups {
+            if groupSpaceMigrationLine
+                .presentationIsFrozenForQueuedMigration(groupID: group.id) {
+                // Destination capture is complete, but real windows must not
+                // share Mission Control's managed transform. Preserve the exact
+                // moved Proxy and its queued badge without recomputing it from
+                // source-window geometry. The FIFO transport begins only after
+                // stable normal-desktop evidence.
+                presentationSuppressedGroupIDs.insert(group.id)
+                preservedPresentationGroupIDs.insert(group.id)
+                groupDegradationEvidenceByGroupID.removeValue(forKey: group.id)
+                groupSpaceSeparationEvidenceByGroupID.removeValue(
+                    forKey: group.id
+                )
+                continue
+            }
+            if groupSpaceMigrationLine.presentationIsQuarantined(
+                groupID: group.id
+            ) {
+                // A terminal migration consumes this Proxy for the current
+                // Mission Control transform. Do not recreate a managed window
+                // in its destination Space until normal desktop evidence has
+                // rearmed the group; another ordinary window move can otherwise
+                // make WindowServer compose the stale and rebuilt participants.
+                presentationSuppressedGroupIDs.insert(group.id)
+                missionControlGroupProxyController.retireForSpaceMigration(
+                    groupID: group.id
+                )
+                groupDegradationEvidenceByGroupID.removeValue(forKey: group.id)
+                groupSpaceSeparationEvidenceByGroupID.removeValue(
+                    forKey: group.id
+                )
+                continue
+            }
             let axMissing = group.memberIDs.subtracting(windowsByIdentity.keys)
             if screen(withDisplayID: group.displayID) == nil {
                 // Display/Space topology can settle asynchronously. Keep the
@@ -880,6 +1016,8 @@ extension SnapController {
         missionControlGroupProxyController.update(
             groups: presentableGroups,
             visibleWindowsByIdentity: windowsByIdentity,
+            displayOrdinalsByGroupID:
+                explicitGroupStore.displayOrdinalsByGroupID,
             preservedGroupIDs: preservedPresentationGroupIDs,
             exposedPreviewMemberIDsByGroupID:
                 exposedPreviewMemberIDsByGroupID,
@@ -902,12 +1040,23 @@ extension SnapController {
                 )
             }
         )
+        for group in presentableGroups {
+            groupSpaceMigrationLine.noteProxyPresentedNormally(
+                groupID: group.id
+            )
+        }
     }
 
     func activateExplicitGroupFromMissionControlProxy(
         groupID: SnapGroupID,
         presentedMemberIDs: Set<String>
     ) {
+        guard !groupSpaceMigrationLine.owns(groupID: groupID) else {
+            missionControlGroupProxyController.cancelSelectionTransition(
+                for: groupID
+            )
+            return
+        }
         guard missionControlGroupPresentationIsEnabled,
               let group = explicitGroupStore.group(id: groupID),
               MissionControlProxySelectionStructuralPolicy.matchesPresentedMembers(
@@ -988,6 +1137,7 @@ extension SnapController {
             if clearedActivation {
                 discardDeferredForegroundSignals()
                 refreshResizeHandles()
+                scheduleGroupSpaceMigrationForegroundFlushIfReady()
             }
             return
         }
@@ -1063,6 +1213,7 @@ extension SnapController {
             missionControlGroupProxyController.hide(groupID: groupID)
             discardDeferredForegroundSignals()
             refreshResizeHandles()
+            scheduleGroupSpaceMigrationForegroundFlushIfReady()
             return
         }
 
@@ -1173,14 +1324,13 @@ extension SnapController {
                 allowsExactIdentityWithTransformedGeometry: true
             )
         }
+        // validatedGroupWindows was just rebuilt from exact persisted
+        // identity + current layer-zero Window Server evidence. Repeating a
+        // full role/position/size liveness sweep here only adds synchronous AX
+        // waits. The actual raise/focus calls remain on the established 0.45 s
+        // interactive timeout and fail closed on an invalid/stale element.
         guard Set(resolvedWindows.map(\.stableIdentity)) == memberIDs,
-              resolvedWindows.allSatisfy({ $0.cgWindowID != nil }),
-              resolvedWindows.allSatisfy({
-                  windowService.windowLiveness(
-                      element: $0.element,
-                      pid: $0.pid
-                  ) == .alive
-              }) else {
+              resolvedWindows.allSatisfy({ $0.cgWindowID != nil }) else {
             return false
         }
 
@@ -1219,6 +1369,7 @@ extension SnapController {
             for: groupID
         )
         refreshResizeHandles()
+        scheduleGroupSpaceMigrationForegroundFlushIfReady()
         // Failure preserves group membership, placements, and the previous
         // foreground mode. Transition-derived input is consumed rather than
         // falling through to another group below the selected proxy.

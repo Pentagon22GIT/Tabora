@@ -417,6 +417,7 @@ final class AXWindowService {
     private var frameOperationGenerations: [String: Int] = [:]
     private var frameAnimationTimers: [String: Timer] = [:]
     private var nextFrameOperationGeneration = 0
+    private let runtimeWindowIDResolver = RuntimeWindowIDResolver()
 
     var isTrusted: Bool { AXIsProcessTrusted() }
 
@@ -693,8 +694,9 @@ final class AXWindowService {
     /// Resolves only already-persisted members for an explicit Mission Control
     /// group activation. During the Window Server transform, AX keeps desktop
     /// geometry while CG reports scaled geometry, so geometry equality is not an
-    /// existence test here. Exact PID/window ID, AX stable identity, liveness,
-    /// and the current layer-zero Window Server surface all remain mandatory.
+    /// existence test here. Exact PID/window ID, AX stable identity, a usable
+    /// AX window reconstruction, and the current layer-zero Window Server
+    /// surface all remain mandatory.
     func missionControlActivationWindows(
         persistedBindings: [ManagedWindowBinding],
         memberIDs: Set<String>,
@@ -728,9 +730,11 @@ final class AXWindowService {
                       for: binding.element,
                       pid: pid
                   ) == binding.identity.stableIdentity,
-                  !WindowStructuralPolicy.isConfirmedMissing(
-                      windowLiveness(element: binding.element, pid: pid)
-                  ),
+                  // makeManagedWindow performs the AX role/frame reads needed
+                  // to prove that this exact persisted element is still a
+                  // usable window. A separate windowLiveness() pass duplicates
+                  // those synchronous AX messages and can stall the Mission
+                  // Control return path without strengthening identity.
                   let window = makeManagedWindow(
                       binding.element,
                       pid: pid,
@@ -813,6 +817,27 @@ final class AXWindowService {
             break
         }
 
+        // Geometry/title matching is intentionally conservative, but two
+        // windows from the same application can legitimately have identical
+        // frames and titles. Prefer the optional exact AX -> CGWindowID bridge
+        // for this user-initiated pointer transaction. Its absence or a
+        // transient failure falls through to the established public-evidence
+        // matcher; it never becomes disappearance evidence.
+        if runtimeWindowIDResolver.isAvailable,
+           let exactWindow = exactManagedWindow(
+            matching: record,
+            app: app,
+            messagingTimeout: AXMessagingTimeoutPolicy.interactiveOperation
+        ) {
+            guard !exactWindow.isMinimized,
+                  canMoveAndResize(
+                      exactWindow,
+                      messagingTimeout: AXMessagingTimeoutPolicy
+                          .interactiveOperation
+                  ) else { return nil }
+            return exactWindow
+        }
+
         // This is an exact, user-initiated pointer transaction. Resolve only
         // the owning application, but do not require focus to have already
         // settled: first-action quality depends on matching the exact physical
@@ -845,6 +870,31 @@ final class AXWindowService {
                     messagingTimeout: AXMessagingTimeoutPolicy.interactiveOperation
                 )
         }
+    }
+
+    private func exactManagedWindow(
+        matching record: CGWindowRecord,
+        app: NSRunningApplication,
+        messagingTimeout: Float?
+    ) -> ManagedWindow? {
+        let appElement = AXUIElementCreateApplication(record.pid)
+        guard let elements: [AXUIElement] = copyAttribute(
+            appElement,
+            kAXWindowsAttribute as CFString,
+            messagingTimeout: messagingTimeout
+        ) else { return nil }
+        let resolvedIDs = elements.map(runtimeWindowIDResolver.resolve)
+        guard let index = ExactWindowIdentityPolicy.matchingIndex(
+            targetWindowID: record.id,
+            candidateWindowIDs: resolvedIDs
+        ) else { return nil }
+        return makeManagedWindow(
+            elements[index],
+            pid: record.pid,
+            app: app,
+            cgWindowID: record.id,
+            messagingTimeout: messagingTimeout
+        )
     }
 
     private func matchedVisibleWindows(
@@ -1086,6 +1136,66 @@ final class AXWindowService {
 
     func windowOcclusionSnapshot() -> [WindowOcclusionSnapshot] {
         windowOcclusionSnapshotObservation().snapshot
+    }
+
+    /// Return the currently *on-screen* Window Server presentation for only
+    /// the exact physical identities requested by the caller.
+    ///
+    /// Mission Control reservation shadows must observe the compositor's live
+    /// thumbnail geometry. Do not replace this with
+    /// `CGWindowListCreateDescriptionFromArray`: that API describes specified
+    /// window IDs but does not provide the same on-screen-list contract that
+    /// the proven Mission Control presentation path relies on. The Window
+    /// Server census is therefore kept here, while decoding/filtering is
+    /// bounded to the exact reservation identities.
+    func windowOcclusionSnapshotOnScreen(
+        forExactSelections selections: Set<WindowServerSelectionSnapshot>
+    ) -> [WindowOcclusionSnapshot] {
+        guard !selections.isEmpty else { return [] }
+        var expectedPIDByWindowID: [CGWindowID: pid_t] = [:]
+        for selection in selections {
+            if let existingPID = expectedPIDByWindowID[selection.windowID],
+               existingPID != selection.pid {
+                // Conflicting exact identities are stale/ambiguous. Fail
+                // closed instead of assigning a physical surface by geometry.
+                return []
+            }
+            expectedPIDByWindowID[selection.windowID] = selection.pid
+        }
+
+        guard let info = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly, .excludeDesktopElements],
+            kCGNullWindowID
+        ) as? [[String: Any]] else { return [] }
+
+        return info.enumerated().compactMap { index, item
+            -> WindowOcclusionSnapshot? in
+            guard let idNumber = item[kCGWindowNumber as String] as? NSNumber else {
+                return nil
+            }
+            let windowID = CGWindowID(idNumber.uint32Value)
+            guard let expectedPID = expectedPIDByWindowID[windowID],
+                  let pidNumber = item[kCGWindowOwnerPID as String] as? NSNumber,
+                  pidNumber.int32Value == expectedPID,
+                  ((item[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1) > 0,
+                  ((item[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0) == 0,
+                  let boundsDictionary = item[kCGWindowBounds as String]
+                    as? [String: Any],
+                  let bounds = CGRect(
+                    dictionaryRepresentation: boundsDictionary as CFDictionary
+                  ),
+                  bounds.width > 0,
+                  bounds.height > 0 else {
+                return nil
+            }
+            return WindowOcclusionSnapshot(
+                windowID: windowID,
+                pid: expectedPID,
+                frame: cgBoundsToCocoa(bounds).insetBy(dx: -1, dy: -1),
+                zIndex: index,
+                layer: 0
+            )
+        }
     }
 
     func occludingWindows(

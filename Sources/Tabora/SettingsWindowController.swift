@@ -41,6 +41,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     var onConstraintMeasurementDidEnd: (() -> Void)?
     var onMissionControlPreviewMemoryLimitChange: ((Int) -> Void)?
     var onMissionControlPreviewCacheClear: (() -> Void)?
+    var onMissionControlGroupMigrationRuntimeStatusRequest:
+        (() -> GroupSpaceMigrationRuntimeStatus?)?
     private let settings = AppSettings.shared
     private let experimentalWorkspaceSettings = ExperimentalWorkspaceSettings.shared
     private let scrollView = NSScrollView()
@@ -66,6 +68,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         checkboxWithTitle: "配置候補にウィンドウ画像を表示",
         target: nil,
         action: nil
+    )
+    private let missionControlGroupMigrationCheckbox = NSButton(
+        checkboxWithTitle: "Mission Controlでグループを別Desktopへ移動",
+        target: nil,
+        action: nil
+    )
+    private let missionControlGroupMigrationRuntimeStatus = NSTextField(
+        labelWithString: "現在のAPI状態: 確認待ち"
     )
     private let restoreSizeOnMoveCheckbox = NSButton(
         checkboxWithTitle: "移動時にスナップ前のサイズへ戻す",
@@ -557,8 +567,40 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let stack = makeSettingsStack()
         stack.addArrangedSubview(sectionTitle("試験的機能"))
 
+        let groupMigrationTitle = NSTextField(
+            labelWithString: "グループのDesktop間移送"
+        )
+        groupMigrationTitle.font = .systemFont(ofSize: 13, weight: .medium)
+        stack.addArrangedSubview(groupMigrationTitle)
+        missionControlGroupMigrationCheckbox.target = self
+        missionControlGroupMigrationCheckbox.action = #selector(
+            toggleMissionControlGroupMigration
+        )
+        stack.addArrangedSubview(missionControlGroupMigrationCheckbox)
+        let groupMigrationNote = NSTextField(
+            wrappingLabelWithString: "Mission ControlでTaboraのグループ画像を別Desktopへドロップすると移動予約になり、所属する実ウィンドウ画像にも予約済みの影を表示します。Mission Controlを閉じた後に実ウィンドウをまとめて移送し、複数グループは表示された順番で一件ずつ処理します。非公開APIを使用するため、既定ではオフです。"
+        )
+        groupMigrationNote.textColor = .secondaryLabelColor
+        groupMigrationNote.maximumNumberOfLines = 0
+        stack.addArrangedSubview(groupMigrationNote)
+        let verifiedEnvironment = NSTextField(
+            wrappingLabelWithString: GroupSpaceMigrationRuntimeStatus
+                .verifiedEnvironmentDescription
+        )
+        verifiedEnvironment.textColor = .secondaryLabelColor
+        verifiedEnvironment.font = .systemFont(ofSize: 11)
+        verifiedEnvironment.maximumNumberOfLines = 0
+        stack.addArrangedSubview(verifiedEnvironment)
+        missionControlGroupMigrationRuntimeStatus.font = .systemFont(
+            ofSize: 11,
+            weight: .medium
+        )
+        missionControlGroupMigrationRuntimeStatus.maximumNumberOfLines = 0
+        stack.addArrangedSubview(missionControlGroupMigrationRuntimeStatus)
+        stack.addArrangedSubview(separator())
+
         let assistLayoutTitle = NSTextField(
-            labelWithString: "3 / 4分割Assist切り替え"
+            labelWithString: "2 / 3 / 4分割Assist切り替え"
         )
         assistLayoutTitle.font = .systemFont(ofSize: 13, weight: .medium)
         stack.addArrangedSubview(assistLayoutTitle)
@@ -568,7 +610,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         )
         stack.addArrangedSubview(assistLayoutSwitchingCheckbox)
         let assistLayoutNote = NSTextField(
-            wrappingLabelWithString: "隣接する2つの四隅配置後、Option（⌥）を押している間だけ残り2領域を1つへ統合した3分割候補を表示します。Optionを離すと4分割候補へ戻ります。"
+            wrappingLabelWithString: "Option（⌥）を押している間、隣接する四隅2枚の残りを1つへ統合できます。また、左右または上下の半分が1枚だけ配置され、異なる2ウィンドウを残り領域へ配置できる場合は、その領域を2つへ分けた3分割候補を表示します。"
         )
         assistLayoutNote.textColor = .secondaryLabelColor
         assistLayoutNote.maximumNumberOfLines = 0
@@ -779,6 +821,23 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         sideDwellDurationValue.stringValue = String(format: "%.1f 秒", settings.sideDwellDuration)
         assistLayoutSwitchingCheckbox.state = settings
             .assistLayoutSwitchingEnabled ? .on : .off
+        missionControlGroupMigrationCheckbox.state = settings
+            .missionControlGroupMigrationEnabled ? .on : .off
+        if let status = onMissionControlGroupMigrationRuntimeStatusRequest?() {
+            missionControlGroupMigrationRuntimeStatus.stringValue = status
+                .isAvailable
+                ? "現在のAPI状態: 利用可能"
+                : "現在のAPI状態: 利用不可（機能をオフにしてください）"
+            missionControlGroupMigrationRuntimeStatus.textColor = status
+                .isAvailable ? .secondaryLabelColor : .systemRed
+            missionControlGroupMigrationRuntimeStatus.toolTip = status.detail
+        } else {
+            missionControlGroupMigrationRuntimeStatus.stringValue =
+                "現在のAPI状態: 確認待ち"
+            missionControlGroupMigrationRuntimeStatus.textColor =
+                .secondaryLabelColor
+            missionControlGroupMigrationRuntimeStatus.toolTip = nil
+        }
         edgeThresholdSlider.doubleValue = settings.edgeThreshold
         edgeThresholdValue.stringValue = "\(Int(settings.edgeThreshold.rounded())) pt"
         cornerBandSlider.doubleValue = settings.cornerBand
@@ -1175,6 +1234,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     @objc private func toggleAssistLayoutSwitching() {
         settings.assistLayoutSwitchingEnabled =
             assistLayoutSwitchingCheckbox.state == .on
+        refresh()
+    }
+
+    @objc private func toggleMissionControlGroupMigration() {
+        settings.missionControlGroupMigrationEnabled =
+            missionControlGroupMigrationCheckbox.state == .on
         refresh()
     }
 

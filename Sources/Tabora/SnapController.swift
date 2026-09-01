@@ -281,6 +281,7 @@ enum ExplicitGroupDepartureReason: Equatable {
     case confirmedMemberClosure
     case confirmedSpaceSeparation
     case replacementDisplacement
+    case failedSpaceMigration
 }
 
 struct StagedGroupDeparture {
@@ -377,6 +378,12 @@ enum GroupForegroundAuthorizationPolicy {
         }
         return .evaluateExplicitGroupRaise
     }
+
+    static func modeAfterSystemSelectionSupersedesAutomatic(
+        _ mode: GroupForegroundMode
+    ) -> GroupForegroundMode {
+        mode == .automatic ? .disabled : mode
+    }
 }
 
 struct OwnedForegroundMutation {
@@ -391,6 +398,73 @@ struct MissionControlProxyActivationState: Equatable {
     let generation: Int
     let memberIDs: Set<String>
     let preferredMemberID: String
+}
+
+struct MissionControlActiveSpaceCleanupDecision: Equatable {
+    let preservedProxyGroupIDs: Set<SnapGroupID>
+    let preservesProxyActivation: Bool
+}
+
+enum MissionControlActiveSpaceCleanupPolicy {
+    static func decision(
+        confirmationOwnerGroupID: SnapGroupID?,
+        activationOwnerGroupID: SnapGroupID?,
+        migrationPresentationIsOwned: Bool
+    ) -> MissionControlActiveSpaceCleanupDecision {
+        // Migration ownership is deliberately observed but does not enter the
+        // preserved set. Its capture/observer/transport line survives through
+        // separate ownership, while normal Active Space cleanup still retires
+        // unselected Proxy presentation.
+        _ = migrationPresentationIsOwned
+        return MissionControlActiveSpaceCleanupDecision(
+            preservedProxyGroupIDs: Set(
+                [confirmationOwnerGroupID, activationOwnerGroupID]
+                    .compactMap { $0 }
+            ),
+            preservesProxyActivation: activationOwnerGroupID != nil
+        )
+    }
+}
+
+struct GroupSpaceMigrationForegroundIntent: Equatable {
+    let groupID: SnapGroupID
+    let memberIDs: Set<String>
+    let preferredMemberID: String
+    let sequence: UInt64
+    var migrationCompleted: Bool
+}
+
+enum GroupSpaceMigrationForegroundIntentPolicy {
+    static func survivesTerminalState(
+        _ state: GroupSpaceMigrationTerminalState
+    ) -> Bool {
+        state == .completed
+    }
+
+    static func orderedCompletedIntents(
+        _ intents: [GroupSpaceMigrationForegroundIntent]
+    ) -> [GroupSpaceMigrationForegroundIntent] {
+        intents
+            .filter(\.migrationCompleted)
+            .sorted { lhs, rhs in
+                if lhs.sequence == rhs.sequence {
+                    return lhs.groupID.rawValue.uuidString
+                        < rhs.groupID.rawValue.uuidString
+                }
+                return lhs.sequence < rhs.sequence
+            }
+    }
+
+    static func followerRaiseOrder(
+        frontToBackMemberIDs: [String],
+        preferredMemberID: String
+    ) -> [String] {
+        Array(
+            frontToBackMemberIDs
+                .filter { $0 != preferredMemberID }
+                .reversed()
+        )
+    }
 }
 
 enum MissionControlProxyActivationRetryPolicy {
@@ -493,15 +567,18 @@ final class SnapController {
                 virtualResizeOverlay.hideAll()
                 resizeHandleOverlay.hideAll()
                 missionControlGroupProxyController.hideAll()
+                groupSpaceMigrationReservationShadowObserver.resetAll()
+                resetGroupSpaceMigrationForegroundIntents()
+                groupSpaceMigrationLine.controllerStateDidChange()
                 cancelHandleResize(restoreOriginalFrames: true)
                 resetDragState()
                 activeSession = nil
                 activeWindowObserver.stop()
-                windowServerSelectionPollState.reset()
+                foregroundSelectionMonitor.invalidateBaseline()
             } else if oldValue != isEnabled {
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.isEnabled else { return }
-                    self.windowServerSelectionPollState.reset()
+                    self.foregroundSelectionMonitor.invalidateBaseline()
                     if !self.installEventMonitors() {
                         self.scheduleEventMonitorReadinessChecksIfNeeded()
                     }
@@ -526,9 +603,51 @@ final class SnapController {
     let virtualResizeOverlay = VirtualResizeOverlay()
     let resizeHandleOverlay = ResizeHandleOverlay()
     let missionControlGroupProxyController = MissionControlGroupProxyController()
+    let groupSpaceMigrationReservationShadowPresenter =
+        GroupSpaceMigrationReservationShadowPresenter()
+    lazy var groupSpaceMigrationReservationShadowObserver =
+        GroupSpaceMigrationReservationShadowObserver(
+            presenter: groupSpaceMigrationReservationShadowPresenter,
+            isObservationAllowed: { [weak self] in
+                self?.groupSpaceMigrationReservationShadowObservationIsAllowed
+                    == true
+            },
+            pointerButtonIsDown: {
+                CGEventSource.buttonState(
+                    .combinedSessionState,
+                    button: .left
+                )
+            },
+            geometrySampleProvider: { [weak self] baselines in
+                self?.groupSpaceMigrationReservationShadowObservationSample(
+                    baselines: baselines
+                )
+                    ?? GroupSpaceMigrationReservationShadowObservationSample(
+                        state: .unresolved,
+                        windowServerSnapshot: []
+                    )
+            },
+            exitProbeProvider: { [weak self] baselines in
+                self?.groupSpaceMigrationReservationShadowExitProbe(
+                    baselines: baselines
+                )
+                    ?? GroupSpaceMigrationReservationShadowExitProbeSample(
+                        state: .unresolved,
+                        sentinelFrames: [:]
+                    )
+            }
+        )
+    let windowSpaceBackend = SkyLightWindowSpaceBackend()
+    var onGroupSpaceMigrationAPIUnavailable:
+        ((GroupSpaceMigrationAPIUnavailableNotice) -> Void)?
+    lazy var groupSpaceMigrationLine = GroupSpaceMigrationLine(
+        host: self,
+        observationPort: windowSpaceBackend,
+        transportPort: windowSpaceBackend
+    )
     private var assistLayoutModifierMonitorTimer: Timer?
     private var observedAssistLayoutModifierIsPressed: Bool?
-    private let activeWindowObserver = ActiveWindowObserver()
+    let activeWindowObserver = ActiveWindowObserver()
     lazy var liveResizeScheduler = LiveResizeScheduler(windowService: windowService)
     let settings = AppSettings.shared
     private var globalMonitor: Any?
@@ -539,10 +658,15 @@ final class SnapController {
     private var workspaceObservers: [NSObjectProtocol] = []
     private var defaultObservers: [NSObjectProtocol] = []
     private var recoveryTimer: Timer?
-    private var focusedWindowPollTimer: Timer?
-    private var isControllerRunning = false
-    var windowServerSelectionPollState = WindowServerSelectionPollState()
-    private let focusedWindowPollInterval: TimeInterval = 0.10
+    var isControllerRunning = false
+    lazy var foregroundSelectionMonitor = ForegroundSelectionMonitor(
+        snapshotProvider: { [weak self] in
+            self?.windowService.windowServerSelectionSnapshot()
+        },
+        changeHandler: { [weak self] selection in
+            self?.handleForegroundSelectionFallbackChange(selection)
+        }
+    )
     private var lastInteractionAt = Date()
     private let assistTimeout: TimeInterval = 30
     var activeTarget: SnapTarget?
@@ -656,10 +780,16 @@ final class SnapController {
     var deferredSelectionExpectedPID: pid_t?
     var hasDeferredSelectionSignal = false
     var activeMissionControlProxyActivation: MissionControlProxyActivationState?
+    var groupSpaceMigrationForegroundIntents:
+        [SnapGroupID: GroupSpaceMigrationForegroundIntent] = [:]
+    var groupSpaceMigrationForegroundIntentSequence: UInt64 = 0
+    var groupSpaceMigrationForegroundFlushGeneration = 0
+    var pendingGroupSpaceMigrationForegroundWorkItem: DispatchWorkItem?
     var missionControlSelectionTransactionIsActive: Bool {
         activeMissionControlProxyActivation != nil
             || missionControlGroupProxyController
                 .hasPendingSelectionConfirmation
+            || groupSpaceMigrationLine.ownsPresentationTransaction
     }
     let groupRaiseSettleDelay: TimeInterval = 0.05
     let groupRaiseVerificationDelay: TimeInterval = 0.06
@@ -680,6 +810,8 @@ final class SnapController {
         [SnapGroupID: GroupDegradationEvidence] = [:]
     var groupSpaceSeparationEvidenceByGroupID:
         [SnapGroupID: GroupDegradationEvidence] = [:]
+    var directGroupSpaceSeparationEvidenceByGroupID:
+        [SnapGroupID: DirectGroupSpaceSeparationEvidence] = [:]
     var groupSpaceSeparationObservationEpoch: UInt64 = 0
     var groupDegradationObservationEpoch: UInt64 = 0
     var groupDegradationRetryGeneration = 0
@@ -706,6 +838,38 @@ final class SnapController {
 
     var canRefreshPresentationAfterAsyncTransaction: Bool {
         isEnabled && isControllerRunning && !isApplicationInteractionSuppressed
+    }
+
+    var groupSpaceMigrationFeatureIsEnabled: Bool {
+        settings.missionControlGroupMigrationEnabled
+    }
+
+    var groupSpaceMigrationRuntimeStatus: GroupSpaceMigrationRuntimeStatus {
+        groupSpaceMigrationLine.runtimeStatus
+    }
+
+    var groupSpaceMigrationCanMonitor: Bool {
+        isEnabled
+            && isControllerRunning
+            && isUserSessionActive
+            && settings.linkedResizeEnabled
+            && !isApplicationInteractionSuppressed
+            && !isSnapPlacementInProgress
+            && !isAssistPlacementPending
+            && activeSession == nil
+            && handleResizeSession == nil
+            && !isHandleResizeFinalizing
+            && manualResizeWindow == nil
+            && pendingDragWindow == nil
+            && dragWindow == nil
+            && stagedGroupDeparture == nil
+    }
+
+    var groupSpaceMigrationCanBegin: Bool {
+        groupSpaceMigrationCanMonitor
+            && activeMissionControlProxyActivation == nil
+            && !missionControlGroupProxyController
+                .hasPendingSelectionConfirmation
     }
     private var pointerDownLocation: CGPoint?
     private var maximumPointerTravelSinceMouseDown: CGFloat = 0
@@ -742,14 +906,41 @@ final class SnapController {
         }
         missionControlGroupProxyController.onSelectGroup = {
             [weak self] groupID, presentedMemberIDs in
+            self?.groupSpaceMigrationLine.cancelMonitoring(groupID: groupID)
             self?.activateExplicitGroupFromMissionControlProxy(
                 groupID: groupID,
                 presentedMemberIDs: presentedMemberIDs
             )
         }
+        missionControlGroupProxyController.onSelectQueuedMigrationGroup = {
+            [weak self] groupID, presentedMemberIDs in
+            self?.recordGroupSpaceMigrationForegroundIntent(
+                groupID: groupID,
+                presentedMemberIDs: presentedMemberIDs
+            )
+        }
+        missionControlGroupProxyController.onSelectionConfirmationTerminated = {
+            [weak self] in
+            guard let self else { return }
+            self.discardDeferredForegroundSignals()
+            self.refreshResizeHandles()
+            self.scheduleGroupSpaceMigrationForegroundFlushIfReady()
+        }
         missionControlGroupProxyController.currentTransitionAuthorization = {
             [weak self] groupID in
             self?.missionControlTransitionIsCurrentlyObserved(groupID: groupID)
+                ?? false
+        }
+        missionControlGroupProxyController.selectionConfirmationIsAllowed = {
+            [weak self] groupID in
+            guard let self else { return false }
+            return !self.groupSpaceMigrationLine
+                .shouldPreferMigrationOverProxySelection(groupID: groupID)
+        }
+        missionControlGroupProxyController.queuedMigrationSelectionIsAllowed = {
+            [weak self] groupID in
+            self?.groupSpaceMigrationLine
+                .presentationIsFrozenForQueuedMigration(groupID: groupID)
                 ?? false
         }
         missionControlGroupProxyController.onPreviewCacheReady = { [weak self] in
@@ -780,6 +971,7 @@ final class SnapController {
     }
 
     func stop() {
+        groupSpaceMigrationLine.shutdown()
         isControllerRunning = false
         permissionConstraintMeasurementProgressPanel.dismiss()
         if permissionConstraintMeasurementIsActive {
@@ -801,7 +993,8 @@ final class SnapController {
         defaultObservers.removeAll()
         recoveryTimer?.invalidate()
         recoveryTimer = nil
-        stopFocusedWindowPolling()
+        foregroundSelectionMonitor.stop()
+        closeAutomaticForegroundModes()
         activeWindowObserver.stop()
         invalidatePendingSelectionRaise()
         invalidatePendingOperations()
@@ -810,6 +1003,8 @@ final class SnapController {
         virtualResizeOverlay.hideAll()
         resizeHandleOverlay.hideAll()
         missionControlGroupProxyController.hideAll(clearPreviewCache: true)
+        groupSpaceMigrationReservationShadowObserver.resetAll()
+        resetGroupSpaceMigrationForegroundIntents()
         lastGroupWindowServerEvidenceByIdentity.removeAll()
         resetGroupPresentationTransitionRecovery()
         liveResizeScheduler.cancelAll()
@@ -822,10 +1017,12 @@ final class SnapController {
               !isConstraintPermissionPromptActive,
               !isRestoreTransactionActive else { return }
         isEnabled = true
+        groupSpaceMigrationLine.resetState()
         snapshotTransactions.removeAll()
         lockedPlacements.removeAll()
         explicitGroupStore.clear()
         groupForegroundModes.removeAll()
+        directGroupSpaceSeparationEvidenceByGroupID.removeAll()
         detachedConnections.removeAll()
         inFlightPlacementIDs.removeAll()
         restoreFrames.removeAll()
@@ -840,6 +1037,8 @@ final class SnapController {
         virtualResizeOverlay.hideAll()
         resizeHandleOverlay.hideAll()
         missionControlGroupProxyController.hideAll()
+        groupSpaceMigrationReservationShadowObserver.resetAll()
+        resetGroupSpaceMigrationForegroundIntents()
         lastGroupWindowServerEvidenceByIdentity.removeAll()
         resetGroupPresentationTransitionRecovery()
         cancelHandleResize(restoreOriginalFrames: true)
@@ -1195,6 +1394,21 @@ final class SnapController {
         return CGWindowID(rawValue)
     }
 
+    private func observeReservationShadowPointerEvent(
+        _ eventType: NSEvent.EventType
+    ) {
+        switch eventType {
+        case .leftMouseDown, .leftMouseDragged:
+            groupSpaceMigrationReservationShadowObserver
+                .pointerInteractionDidBegin()
+        case .leftMouseUp:
+            groupSpaceMigrationReservationShadowObserver
+                .pointerInteractionDidEnd()
+        default:
+            break
+        }
+    }
+
     @discardableResult
     private func installEventMonitors() -> Bool {
         let mouseMask: NSEvent.EventTypeMask = [
@@ -1213,6 +1427,7 @@ final class SnapController {
                     from: event
                 )
                 if Thread.isMainThread {
+                    self?.observeReservationShadowPointerEvent(event.type)
                     self?.handle(
                         event,
                         observedMouseLocation: observedMouseLocation,
@@ -1220,6 +1435,7 @@ final class SnapController {
                     )
                 } else {
                     DispatchQueue.main.async { [weak self] in
+                        self?.observeReservationShadowPointerEvent(event.type)
                         self?.handle(
                             event,
                             observedMouseLocation: observedMouseLocation,
@@ -1235,6 +1451,7 @@ final class SnapController {
             localMonitor = NSEvent.addLocalMonitorForEvents(
                 matching: localMask
             ) { [weak self] event in
+                self?.observeReservationShadowPointerEvent(event.type)
                 if self?.resizeHandleOverlay.owns(window: event.window) == true
                     || self?.missionControlGroupProxyController.owns(
                         window: event.window
@@ -1326,8 +1543,11 @@ final class SnapController {
             queue: .main
         ) { [weak self] _ in
             guard let self else { return }
+            self.groupSpaceMigrationLine.cancelForEnvironmentInvalidation()
             self.cancelAssist()
             self.missionControlGroupProxyController.hideAll()
+            self.groupSpaceMigrationReservationShadowObserver.resetAll()
+            self.resetGroupSpaceMigrationForegroundIntents()
             self.lastGroupWindowServerEvidenceByIdentity.removeAll()
             self.resetGroupPresentationTransitionRecovery()
         })
@@ -1339,11 +1559,14 @@ final class SnapController {
         ) { [weak self] _ in
             guard let self else { return }
             self.isUserSessionActive = false
+            self.groupSpaceMigrationLine.cancelForEnvironmentInvalidation()
             self.missionControlGroupProxyController
                 .setPreviewCaptureSuspended(true)
             self.updateSelectionMonitoringState()
             self.cancelAssist()
             self.missionControlGroupProxyController.hideAll()
+            self.groupSpaceMigrationReservationShadowObserver.resetAll()
+            self.resetGroupSpaceMigrationForegroundIntents()
             self.lastGroupWindowServerEvidenceByIdentity.removeAll()
             self.resetGroupPresentationTransitionRecovery()
         })
@@ -1359,6 +1582,8 @@ final class SnapController {
                 .setPreviewCaptureSuspended(false)
             self.updateSelectionMonitoringState()
             self.missionControlGroupProxyController.hideAll()
+            self.groupSpaceMigrationReservationShadowObserver.resetAll()
+            self.resetGroupSpaceMigrationForegroundIntents()
             self.lastGroupWindowServerEvidenceByIdentity.removeAll()
             self.resetGroupPresentationTransitionRecovery()
             self.refreshMissionControlGroupProxies()
@@ -1401,6 +1626,12 @@ final class SnapController {
             let application = notification.userInfo?[
                 NSWorkspace.applicationUserInfoKey
             ] as? NSRunningApplication
+            // Activation is an early Mission Control-exit hint in many paths,
+            // but it is not authoritative Mission Control state. Hide the
+            // passive reservation shadow immediately and let the dedicated
+            // observer re-arm it only after fresh transform evidence.
+            self.groupSpaceMigrationReservationShadowObserver
+                .suppressPresentationImmediately()
             self.handleResizeHandlePresentationSignal(.applicationActivated)
             self.activeWindowObserver.observe(application)
             // Keep controls suspended until the settled selection has been
@@ -1433,7 +1664,14 @@ final class SnapController {
             self.missionControlGroupProxyController.setPreviewsEnabled(
                 self.settings.windowPreviewsEnabled
             )
+            self.groupSpaceMigrationLine.settingsDidChange()
             self.missionControlGroupProxyController.hideAll()
+            if !self.settings.missionControlGroupMigrationEnabled {
+                self.groupSpaceMigrationReservationShadowObserver.resetAll()
+                self.resetGroupSpaceMigrationForegroundIntents()
+            } else {
+                self.groupSpaceMigrationReservationShadowObserver.gateDidChange()
+            }
             self.updateSelectionMonitoringState()
             self.updateAssistLayoutModifierMonitoringState()
             if !self.settings.linkedResizeEnabled,
@@ -1482,94 +1720,6 @@ final class SnapController {
         }
     }
 
-    func updateSelectionMonitoringState() {
-        guard Thread.isMainThread else {
-            DispatchQueue.main.async { [weak self] in
-                self?.updateSelectionMonitoringState()
-            }
-            return
-        }
-
-        pruneForegroundStateForActiveGroups()
-
-        let shouldRun = MonitoringLifecyclePolicy.shouldRunSelectionPolling(
-            controllerIsRunning: isControllerRunning,
-            taboraIsEnabled: isEnabled,
-            linkedResizeIsEnabled: settings.linkedResizeEnabled,
-            connectedWindowRaiseIsEnabled: settings.raiseConnectedWindowsOnClick,
-            lockedPlacementCount: connectedLayoutPlacementCount,
-            userSessionIsActive: isUserSessionActive
-        )
-        if shouldRun {
-            startFocusedWindowPolling()
-        } else {
-            stopFocusedWindowPolling()
-        }
-    }
-
-    private func startFocusedWindowPolling() {
-        guard focusedWindowPollTimer == nil else { return }
-        windowServerSelectionPollState.reset()
-        pollFocusedWindowIdentity()
-        let timer = Timer(timeInterval: focusedWindowPollInterval, repeats: true) {
-            [weak self] _ in
-            self?.pollFocusedWindowIdentity()
-        }
-        focusedWindowPollTimer = timer
-        RunLoop.main.add(timer, forMode: .common)
-    }
-
-    private func stopFocusedWindowPolling() {
-        guard focusedWindowPollTimer != nil
-                || windowServerSelectionPollState.hasBaseline
-                || windowServerSelectionPollState.lastSnapshot != nil
-                || pendingSelectionRaiseWorkItem != nil else { return }
-        focusedWindowPollTimer?.invalidate()
-        focusedWindowPollTimer = nil
-        windowServerSelectionPollState.reset()
-        invalidatePendingSelectionRaise()
-    }
-
-    private func pollFocusedWindowIdentity() {
-        guard isEnabled,
-              isUserSessionActive,
-              settings.linkedResizeEnabled,
-              settings.raiseConnectedWindowsOnClick,
-              connectedLayoutPlacementCount >= 2,
-              !isApplicationInteractionSuppressed,
-              handleResizeSession == nil,
-              !isHandleResizeFinalizing,
-              dragWindow == nil,
-              manualResizeWindow == nil,
-              !isWindowMoveConfirmed,
-              activeSession == nil,
-              !isAssistPlacementPending,
-              !missionControlSelectionTransactionIsActive else {
-            windowServerSelectionPollState.reset()
-            return
-        }
-
-        let currentSelection = windowService.windowServerSelectionSnapshot()
-        guard let changedSelection = windowServerSelectionPollState.observe(
-            currentSelection
-        ) else { return }
-        if ForegroundMutationSelectionPolicy.isOwnedSelection(
-            changedSelection,
-            mutation: ownedForegroundMutation
-        ) {
-            return
-        }
-        handleResizeHandlePresentationSignal(.windowServerSelectionChanged)
-        activeWindowObserver.observeFrontmostApplication()
-        // Rebuild safe handles now; foreground settlement may intentionally
-        // take longer and must not own handle creation timing.
-        refreshResizeHandles()
-        scheduleSelectionDrivenGroupRaise(
-            expectedPID: changedSelection.pid,
-            initialSelection: changedSelection
-        )
-    }
-
     func scheduleSelectionDrivenGroupRaise(
         expectedPID: pid_t?,
         initialSelection: WindowServerSelectionSnapshot? = nil
@@ -1581,13 +1731,17 @@ final class SnapController {
             observedSelection,
             mutation: ownedForegroundMutation
         ) {
+            // Exact Window Server identity proves this notification came from
+            // our own raise. Consume it so Recovery does not replay it.
+            foregroundSelectionMonitor.synchronize(to: observedSelection)
             return
         }
         if initialSelection == nil, ownedForegroundMutation != nil {
             // AX focus callbacks contain only a PID and can arrive before the
             // Window Server publishes the window ID changed by our AXRaise.
             // AX identity can reject a same-process external window; when AX
-            // has not settled either, let the exact-ID poller arbitrate.
+            // has not settled either, let the exact-ID transaction evidence
+            // or low-frequency fallback arbitrate.
             switch ForegroundMutationSelectionPolicy
                 .processNotificationDisposition(
                     expectedPID: expectedPID,
@@ -1596,11 +1750,20 @@ final class SnapController {
                     mutation: ownedForegroundMutation
                 ) {
             case .ownedMutation, .awaitExactWindowIdentity:
+                // Window Server may already show a same-PID external window
+                // while AX focus/main still reports our old member. Do not
+                // advance the fallback baseline here: if AX emits no second
+                // notification, Recovery must still observe and classify the
+                // exact external Window ID.
                 return
             case .externalSelection:
                 break
             }
         }
+        // This event is now accepted as an external/system selection. Align
+        // the fallback only after ownership arbitration so it cannot replay
+        // the same event or erase unresolved exact-ID evidence.
+        foregroundSelectionMonitor.synchronize(to: observedSelection)
         if missionControlSelectionTransactionIsActive
             || pendingGroupRaiseWorkItem != nil {
             // Application activation and focus can transiently select a
@@ -1650,10 +1813,15 @@ final class SnapController {
     }
 
     var selectionDrivenRaiseIsAllowed: Bool {
-        isEnabled
-            && settings.linkedResizeEnabled
-            && settings.raiseConnectedWindowsOnClick
-            && connectedLayoutPlacementCount >= 2
+        MonitoringLifecyclePolicy.foregroundSelectionLifecycleIsActive(
+            controllerIsRunning: isControllerRunning,
+            taboraIsEnabled: isEnabled,
+            linkedResizeIsEnabled: settings.linkedResizeEnabled,
+            connectedWindowRaiseIsEnabled:
+                settings.raiseConnectedWindowsOnClick,
+            lockedPlacementCount: connectedLayoutPlacementCount,
+            userSessionIsActive: isUserSessionActive
+        )
             && !isApplicationInteractionSuppressed
             && !isSnapPlacementInProgress
             && handleResizeSession == nil
@@ -1664,6 +1832,7 @@ final class SnapController {
             && activeSession == nil
             && !isAssistPlacementPending
             && !missionControlSelectionTransactionIsActive
+            && !groupSpaceMigrationLine.hasPendingOrActiveTransactions
             && !PointerInteractionPolicy.isDrag(
                 maximumDistance: maximumPointerTravelSinceMouseDown
             )
@@ -1746,6 +1915,14 @@ final class SnapController {
                 case .available(let exactWindow):
                     selectedWindow = exactWindow
                 case .missing, .unknown:
+                    // Exact persisted identity proves which group the system
+                    // selected even when AX cannot currently return a usable
+                    // element. Close that group's automatic behavior now;
+                    // a later successful retry may rearm it only after the
+                    // complete-frontmost postcondition is established.
+                    setSoloForegroundMode(
+                        memberID: binding.identity.stableIdentity
+                    )
                     break
                 }
             }
@@ -1765,6 +1942,12 @@ final class SnapController {
                 )
                 return
             }
+            // The exact system selection is stable but is not a managed group
+            // member. It therefore supersedes every previous automatic grant.
+            // Keep trying bounded AX resolution in case a persisted member is
+            // temporarily unavailable, but never carry old authorization
+            // across the newly proven foreground context.
+            closeAutomaticForegroundModes()
         }
 
         guard completedAttempts < maximumSelectionSettleAttempts else {
@@ -1800,6 +1983,12 @@ final class SnapController {
             replayDeferredForegroundSignalIfNeeded()
             return
         }
+        // This exact, stable Window Server selection is a new system-level
+        // foreground context. Retire every earlier automatic grant before
+        // resolving it. The selected group is rearmed below only when this
+        // same observation proves that all of its members are frontmost.
+        // Solo locks are group-local and must survive unrelated selections.
+        closeAutomaticForegroundModes()
         let groupWindows: [ManagedWindow]
         switch connectedSnapGroupResolution(
             for: selectedWindow,
@@ -1809,6 +1998,12 @@ final class SnapController {
             groupWindows = windows
         case .indeterminate:
             guard completedAttempts < maximumSelectionSettleAttempts else {
+                // Bounded observation exhausted. The exact selected member is
+                // known, but complete group geometry is not; retain membership
+                // and fail closed into per-member isolation.
+                setSoloForegroundMode(
+                    memberID: selectedWindow.stableIdentity
+                )
                 refreshResizeHandles(using: visibleWindows)
                 replayDeferredForegroundSignalIfNeeded()
                 return
@@ -1826,17 +2021,42 @@ final class SnapController {
             )
             return
         case .confirmedDisconnected:
+            // If the selected surface still belongs to a structurally known
+            // group, keep that group isolated even though a complete connected
+            // geometry cannot currently be resolved. For a non-member this is
+            // a no-op; the stale automatic grants were still closed above.
+            setSoloForegroundMode(memberID: selectedWindow.stableIdentity)
             refreshResizeHandles(using: visibleWindows)
             replayDeferredForegroundSignalIfNeeded()
             return
         }
 
         let frontmostEvaluation = connectedGroupFrontmostEvaluation(groupWindows)
+        // AX member resolution and Window Server occlusion capture are
+        // synchronous but not atomic with the compositor. Revalidate the exact
+        // selected surface immediately before changing authorization so a
+        // superseded selection cannot open this group's gate.
+        guard let verifiedSelection = windowService
+            .windowServerSelectionSnapshot(),
+              verifiedSelection.pid == selectedWindow.pid,
+              verifiedSelection.windowID == selectedWindowID else {
+            refreshResizeHandles(using: visibleWindows)
+            replayDeferredForegroundSignalIfNeeded()
+            return
+        }
         let systemSelectionDisposition = GroupForegroundSelectionPolicy
             .disposition(
-                groupIsAlreadyFrontmost: frontmostEvaluation == .verifiedFrontmost
+                frontmostEvaluation: frontmostEvaluation
             )
-        if systemSelectionDisposition == .preserveCurrentAuthorization {
+        if systemSelectionDisposition == .authorizeAutomaticForeground {
+            // Mission Control one-by-one selection and Command-Tab can place
+            // every member at the front without expressing Tabora group intent.
+            // Once Window Server proves that physical result, opening the gate
+            // is safe: no companion is raised by this path, and handle display
+            // and future automatic foregrounding share the same postcondition.
+            setAutomaticForegroundMode(
+                forMemberID: selectedWindow.stableIdentity
+            )
             explicitGroupStore.setPreferredMember(
                 selectedWindow.stableIdentity
             )
@@ -1848,8 +2068,9 @@ final class SnapController {
         // activation paths select a window/application, not a Tabora group.
         // Never expand that ambiguous selection into AXRaise calls. Preserve
         // structural membership and suppress automatic foregrounding until a
-        // an explicit group proxy selection or a later successful group
-        // mutation rearms the group. Geometry alone never grants permission.
+        // later observation proves the whole group frontmost, or an explicit
+        // successful group transaction rearms it. Geometry alone never grants
+        // permission.
         setSoloForegroundMode(
             memberID: selectedWindow.stableIdentity
         )
@@ -1865,6 +2086,10 @@ final class SnapController {
         selectionRaiseGeneration &+= 1
         pendingSelectionRaiseWorkItem?.cancel()
         pendingSelectionRaiseWorkItem = nil
+        // Drag, resize, Assist, Space changes, rollback and shutdown all pass
+        // through this boundary. Discard their pre-transaction selection so a
+        // later 1 Hz fallback cannot reinterpret it as fresh user intent.
+        foregroundSelectionMonitor.invalidateBaseline()
     }
 
     private func startRecoveryTimer() {
@@ -1896,6 +2121,11 @@ final class SnapController {
         guard !isConstraintMeasurementActive,
               !isConstraintPermissionPromptActive,
               !isRestoreTransactionActive else { return }
+
+        // Normal focus/click/Mission Control changes arrive through event
+        // paths. Reuse this already-existing 1 Hz watchdog only for events the
+        // OS did not deliver; no independent high-frequency timer exists.
+        pollForegroundSelectionFallback()
 
         if stagedGroupDeparture != nil,
            pendingDragWindow == nil,
@@ -2396,6 +2626,15 @@ final class SnapController {
             persistedBindings: persistedManagedWindowBindings,
             memberIDs: memberIDs,
             snapshot: snapshot
+        )
+    }
+
+    func persistedVisibleWindowsForExactGroupMembers(
+        stableIDs: Set<String>
+    ) -> [ManagedWindow] {
+        windowService.persistedVisibleWindows(
+            persistedBindings: persistedManagedWindowBindings,
+            stableIDs: stableIDs
         )
     }
 
@@ -3172,6 +3411,9 @@ final class SnapController {
             missionControlGroupProxyController.hide(groupID: groupID)
             groupDegradationEvidenceByGroupID.removeValue(forKey: groupID)
             groupSpaceSeparationEvidenceByGroupID.removeValue(forKey: groupID)
+            directGroupSpaceSeparationEvidenceByGroupID.removeValue(
+                forKey: groupID
+            )
             groupPresentationFailureCountsByGroupID.removeValue(forKey: groupID)
         }
         for memberID in context.memberIDs {
@@ -3817,7 +4059,12 @@ final class SnapController {
         guard let currentDisplayID = displayID(for: screen) else {
             return nil
         }
-        let initiallyLockedIDs = Set(lockedPlacements.keys)
+        let initiallyLockedIDs = Set(lockedPlacements.compactMap {
+            identity, placement in
+            AssistCandidateReservationPolicy.isReserved(
+                placementZone: placement.zone
+            ) ? identity : nil
+        })
 
         if let session = activeSession {
             let groupMembers = session.groupID.flatMap {
@@ -4473,7 +4720,13 @@ final class SnapController {
             // Selecting a member of another split would silently destroy or
             // merge that group. A user can still transfer it explicitly by
             // dragging it out first, which runs the normal departure path.
-            lockedPlacements[candidate.stableIdentity] == nil
+            // Maximize remains recorded for restore and occlusion, but it is
+            // not split membership. Selecting it hands the window to the same
+            // Snap transaction that clears the maximized layer on commit.
+            !AssistCandidateReservationPolicy.isReserved(
+                placementZone:
+                    lockedPlacements[candidate.stableIdentity]?.zone
+            )
                 && !session.excludedCandidateIDs.contains(
                     candidate.stableIdentity
                 )
@@ -4551,6 +4804,62 @@ final class SnapController {
                     == Set(AssistCompletionLayoutPolicy.fourWindowZones)
                 ? fourWindowCandidates
                 : threeWindowCandidates
+        } else if settings.assistLayoutSwitchingEnabled,
+                  let twoWindowLayout = AssistCompletionLayoutPolicy
+                    .twoWindowZones(occupiedZones: occupiedZones),
+                  let threeWindowLayout = AssistCompletionLayoutPolicy
+                    .threeWindowZonesStartingFromHalf(
+                        occupiedZones: occupiedZones
+                    ) {
+            let twoWindowRemaining = twoWindowLayout.filter {
+                session.occupiedZones[$0] == nil
+            }
+            let twoWindowCandidates = assistCandidatesByZone(
+                zones: twoWindowRemaining,
+                candidates: candidates,
+                on: screen,
+                observationScene: observationScene
+            )
+            let oppositeHalfCandidateCount = Set(
+                twoWindowCandidates.values.flatMap {
+                    $0.map(\.stableIdentity)
+                }
+            ).count
+            let splitRemaining = threeWindowLayout.filter {
+                session.occupiedZones[$0] == nil
+            }
+            let splitCandidates = assistCandidatesByZone(
+                zones: splitRemaining,
+                candidates: candidates,
+                on: screen,
+                observationScene: observationScene
+            )
+            let splitAssignmentCount = AssistCandidateAssignmentPolicy
+                .maximumDistinctAssignmentCount(
+                    zones: splitRemaining,
+                    candidateIDsByZone: splitCandidates.mapValues {
+                        Set($0.map(\.stableIdentity))
+                    }
+                )
+            guard let completionLayout = AssistCompletionLayoutPolicy
+                .completionLayoutStartingFromHalf(
+                    occupiedZones: occupiedZones,
+                    modifierIsPressed:
+                        Self.currentAssistLayoutModifierIsPressed,
+                    oppositeHalfCandidateCount: oppositeHalfCandidateCount,
+                    maximumDistinctSplitAssignments: splitAssignmentCount
+                ) else {
+                activeSession = nil
+                stopEscapeMonitoring()
+                updateAssistLayoutModifierMonitoringState()
+                picker.hide()
+                return
+            }
+            session.layoutZones = completionLayout
+            remaining = session.remainingZones
+            candidatesByZone = Set(completionLayout) == Set(twoWindowLayout)
+                ? twoWindowCandidates
+                : splitCandidates
         } else {
             candidatesByZone = assistCandidatesByZone(
                 zones: remaining,
@@ -4844,7 +5153,12 @@ final class SnapController {
         }
         return AssistCandidateExclusionPolicy.currentExclusions(
             capturedIDs: capturedIDs,
-            lockedIDs: Set(lockedPlacements.keys),
+            lockedIDs: Set(lockedPlacements.compactMap {
+                identity, placement in
+                AssistCandidateReservationPolicy.isReserved(
+                    placementZone: placement.zone
+                ) ? identity : nil
+            }),
             groupedIDs: groupedIDs
         )
     }
@@ -5452,6 +5766,15 @@ final class SnapController {
         // census from the notification callback and do not finalize a staged
         // drag departure merely because NSScreen changed.
         displayTopologyGeneration &+= 1
+        groupSpaceMigrationLine.cancelForEnvironmentInvalidation()
+        groupSpaceMigrationReservationShadowObserver
+            .displayTopologyDidChange()
+        // A queued post-migration foreground request is presentation-only and
+        // is valid only for the display topology under which the migration
+        // completed. Cancel both stored intents and any main-queue flush
+        // before rebuilding display-derived geometry. Never let an old
+        // explicit Proxy click raise windows after a display reconfiguration.
+        resetGroupSpaceMigrationForegroundIntents()
         let topologyGeneration = displayTopologyGeneration
 
         resetSideDwellState()
@@ -5510,11 +5833,34 @@ final class SnapController {
     }
 
     private func handleActiveSpaceChange() {
+        // Active Space changes occur both on true Mission Control exit and
+        // while the accepted destination is changing. Hide immediately, but
+        // do not terminate the reservation-owned observer scene. Its frozen
+        // capture baseline can independently prove either continued Mission
+        // Control geometry or the normal desktop on subsequent 10 Hz probes.
+        // Snapshot the narrow Proxy-selection owner before any environment
+        // cleanup mutates presentation. Migration presentation ownership is
+        // intentionally excluded: it owns its own observer/transport line but
+        // must not preserve unrelated Proxy surfaces or ordinary raises.
+        let selectedActivation = activeMissionControlProxyActivation
+        let cleanupDecision = MissionControlActiveSpaceCleanupPolicy.decision(
+            confirmationOwnerGroupID: missionControlGroupProxyController
+                .selectionConfirmationOwnerGroupID,
+            activationOwnerGroupID: selectedActivation?.groupID,
+            migrationPresentationIsOwned:
+                groupSpaceMigrationLine.ownsPresentationTransaction
+        )
+
+        groupSpaceMigrationReservationShadowObserver
+            .suppressPresentationImmediately()
+        groupSpaceMigrationLine.noteActiveSpaceChanged()
         if handleResizeSession != nil {
             cancelHandleResize(restoreOriginalFrames: true)
         }
         resizeHandleOverlay.hideAll()
-        missionControlGroupProxyController.hideAll()
+        missionControlGroupProxyController.retireUnownedProxies(
+            preservingGroupIDs: cleanupDecision.preservedProxyGroupIDs
+        )
         lastGroupWindowServerEvidenceByIdentity.removeAll()
         resetGroupPresentationTransitionRecovery()
         explicitGroupStore.suspendForSpaceTransition()
@@ -5524,7 +5870,11 @@ final class SnapController {
         // transaction is already exclusive and owns its own success/rollback;
         // do not invalidate its generation from an environment notification.
         if !isRestoreTransactionActive {
-            invalidatePendingOperations(finalizeStagedDeparture: false)
+            invalidatePendingOperations(
+                finalizeStagedDeparture: false,
+                preserveMissionControlProxyActivation:
+                    cleanupDecision.preservesProxyActivation
+            )
         }
         resetSideDwellState()
         stopEscapeMonitoring()
@@ -5563,7 +5913,8 @@ final class SnapController {
 
     func invalidatePendingOperations(
         rollbackPendingPlacements: Bool = true,
-        finalizeStagedDeparture: Bool = true
+        finalizeStagedDeparture: Bool = true,
+        preserveMissionControlProxyActivation: Bool = false
     ) {
         if finalizeStagedDeparture {
             finalizeStagedGroupDepartureIfNeeded()
@@ -5574,7 +5925,10 @@ final class SnapController {
         hasDeferredSelectionSignal = false
         handlePresentationRevalidationGeneration &+= 1
         resetMissionControlPresentationRetryDebt()
-        invalidatePendingGroupRaise()
+        invalidatePendingGroupRaise(
+            preservingMissionControlProxyActivation:
+                preserveMissionControlProxyActivation
+        )
         invalidatePendingSelectionRaise()
         resetIncompleteHandleGeometryRecovery()
         isAssistPlacementPending = false
@@ -5587,13 +5941,16 @@ final class SnapController {
         if !isConstraintMeasurementActive
             && !isRestoreTransactionActive
             && !isSnapRollbackActive
-            && !isHandleResizeRollbackActive {
+            && !isHandleResizeRollbackActive
+            && !groupSpaceMigrationLine.ownsWindowMutationTransaction {
             // Constraint measurement, explicit Restore, snap rollback, and a
-            // shared-resize rollback each own an atomic external-window
-            // transaction while their flags are set. Let bounded
+            // shared-resize rollback or dispatched Space migration each owns an
+            // atomic external-window transaction while its flag/phase is set.
+            // Let bounded
             // settlement/rollback complete; canceling the shared AX frame
             // operation here could strand a partial layout with no remaining
-            // authoritative restore owner.
+            // authoritative restore owner. Active Space changes are expected
+            // during migration and must not cancel its destination frame batch.
             windowService.cancelAllFrameOperations()
         }
         let invalidatedHandleSession = handleResizeSession

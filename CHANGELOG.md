@@ -1,5 +1,57 @@
 # 更新履歴
 
+## 2.0.0 — 2026-08-29
+
+### Space group migration
+
+- Mission Control上のTaboraグループProxyを別Desktopへドロップし、所属する実ウィンドウを同じdestination Spaceへ移送する試験的機能を追加した。初期値はOFF。
+- private SkyLight / underscored AX APIを独立Objective-C bridgeと交換可能なObservation / Transport portへ隔離した。
+- source / destination visible frame間の比率投影、既知App Constraintによるcanonical調整、実geometryの接続・非重複確認を行う移送用layout plannerを追加した。
+- 通常のSpace分離判定は、利用可能な環境では実Window→Space membershipを`knownSame / knownDifferent / unknown`で直接観測する。`unknown`は非破壊で、確定した外部分離だけをatomic group departureへ渡す。
+- move operationのdispatchと物理成功を区別し、全memberのdestination membership確認を不可逆なphysical commit境界とした。commit前の失敗はdispatch直前のexact origin復元を検証し、commit後の失敗はSpaceを戻さずdestinationでgroupだけを解散する。
+- Proxyドロップはfocus / AXRaiseを認可しない。通常Proxy選択は従来のforeground transactionを維持し、capture済みの「移動準備中／移動待機」Proxyを明示選択した場合だけpost-migration foreground intentを記録する。intentは成功済みgroupに限定し、全FIFO terminal後に選択順で一度だけ処理して最後に選択されたgroupを最前面にする。通常移送と失敗terminalではraiseしない。実行直前には通常selection-driven raiseをcancelし、controller/session停止、機能OFF、reset、wake、display topology変更では保存intentとschedule済みflushを破棄して旧environmentのクリックを再生しない。
+- 非公開APIの実行時capabilityが不足またはdispatchを拒否した場合、通常Desktopへ安全に復帰してから一度だけ警告し、設定から機能をOFFにできるようにした。設定には現在のAPI状態とmacOS 26.5.2 / 26.6.2での動作確認情報を表示する。
+- 実機調査用の一時HUDと永続migration logを撤去し、変化しやすいmove symbol / class / selector / ABIを`TaboraSkyLightMoveRuntime`へ分離した。
+- Proxy destination確定直後のmember Space / AX publicationが一時的に`unknown`となる競合を、既存0.10秒migration monitor上の有限10回再観測へ変更した。confirmed missing、member分離、identity重複、構造変更は再試行せず従来どおり拒否し、move dispatch後の再dispatchは行わない。
+- migrationで消費したProxyの退役と再生成をgroup単位で管理する。dispatch前失敗に加え`completed`直後も、同じMission Control compositor tailへ消費済みProxyが一瞬再生成されないようgroup-localなnormal Desktop rearmを要求する。これはpresentationだけの短いquarantineで、physical/group commitやforeground intentを待たせない。rollbackは不要な旧scene quarantineを持ち越さない。
+- 新規groupのProxy publication直後にsource Spaceが未確定となる初期化競合へ、同一Proxyに限定した有限baseline再取得を追加した。Mission Control変形後は未確定値をsourceへ採用せず、destination所属を観測したProxyでは通常group選択より移送を優先する。move未dispatchの通常選択cancelはterminal failure隔離から分離し、次回だけProxyが欠落する経路を閉じた。
+- 移送後layoutのAX frame書き込みをPID単位のlaneへ整理した。同一アプリの複数windowは位置・サイズ・位置の有限補正を直列化し、異なるアプリのlaneは並列性を維持する。完了期限は最長laneのmember数に応じて従来の1window当たり1.8秒を保持し、後続windowの補正途中でbatchを失効させない。
+- Proxy dropのdestination確定と実window moveを別sceneへ分離した。Mission Control内ではpreflight/captureまでに留め、通常Desktopが2回・0.15秒以上安定してからProxyを退役しprivate moveを一度だけ発行する。同一PIDの通常windowを続けてMission Control移送した時の残留縮小transformを、AX再試行やProxy保持ではなくWindowServer operationの非重複境界で遮断する。
+- move未dispatchの待機中cancelではsource向けの偽rollbackを発行しない。completed/rolledBackは既にMission Control scene外で終端するため旧quarantineを継承せず、次回Mission ControlでProxy画像が一度欠落する回帰を閉じた。
+- destination capture済みProxyはMission Control内でgeometryとmanaged-window identityを固定し、暗転表示と「移動予約済み／Mission Controlを閉じると移動」で受付完了を示す。実window、Proxy ordering、collection behaviorは変更せず、同じgroupの重複captureを拒否する。
+- 同一Mission Control sessionで複数groupをcaptureできるFIFO待機列を追加した。各groupのcapture・通常Desktop evidenceは独立して保持し、stable member IDと物理Window IDのキュー横断重複も拒否する。Mission Control終了後のprivate move、membership検証、layout、rollbackは一件ずつ直列実行してWindowServer operationを重ねない。
+- Active Space変更の共通cleanupが移送中のAX frame batchまで`cancelAllFrameOperations()`で中断し、後続layout failureからdestination group解散へ入る競合を修正した。dispatch後からlayout/rollback終了まではmigrationがframe-operation所有者となり、Snap/Assist/resizeの既存cancel境界は変更しない。
+- FIFO dispatch直前にcaptured member全体のstable identity、Window ID、単一user Space membershipを再検証する。source以外へ個別移動済みのexact memberも現在地からdestinationへ集約し、既にdestinationにいるmemberはmove対象から除外する。失敗時はTaboraが動かしたmemberだけを実行時originごとの直列batchで復元し、元から分離していたgroupは復元後に解散する。identity変更/non-user Spaceは拒否し、unknownだけは有限10回再観測する。
+- capture後にmemberが別Spaceへ移されても、対象groupの少なくとも1 memberが通常Desktop geometryへ復帰した実測をMission Control終了証拠として利用し、Active Space通知が発生しない終了方法でFIFOが永久待機する境界を閉じた。全memberが非active Spaceの場合は従来どおり通知なしに推測しない。
+- migration captureから全FIFOのterminalまで通常foreground fallbackによるconnected raiseを停止し、入口で失効させたfocus/clickを移動先で再生しない。Proxyの明示選択は既存の独立transactionを維持する。
+- Mission Control選択とpost-migration foreground復元で、exact Window Server identityとManagedWindow再構成の直後に同じAX role/position/sizeを再取得していた重複liveness sweepを撤去した。AXRaise/focusの`interactiveOperation` 0.45秒budgetは短縮せず、遅いAX clientへの実操作余裕とfail-closed semanticsを維持したままmain run loopの重複待ちだけを削減する。
+- Mission Control縮小後にも読めるよう、移動予約済みProxyのtitle/subtitleを段階的に拡大した。Proxy全体の暗転率とanimationなしの表示更新は維持し、主statusの最大サイズを48 ptへ調整する。
+- 予約済みProxyの中央へ「移動準備中／移動待機」を表示し、複数予約時のFIFO位置は副表示へまとめる。member別番号は撤去し、titleを最大48 pt、subtitleを最大18 ptとして縦長・横長を含むProxy boundsへ自動的に収める。dispatch境界でProxyを同期再描画・再撮影する「移動中」切替は撤去し、待機表示のまま既存順序で退役する。同じProxyをMission Control内で再ドロップした場合は安定観測された最新destinationへcaptureを更新する。sourceへ戻した場合は失敗用のProxy退役・再armへ入れず、同じmanaged Proxyのqueued pixelと選択保留だけを解除して通常画像へ戻す。
+- 受理済みcaptureの実member thumbnailへ、PID + CGWindowID完全一致の入力透過な予約shadowを追加した。「移動予約中」は最大26 ptとし、実frameに合わせて縮小する。Shadow更新を広い`refreshResizeHandles()`経路から分離し、受理済み予約scene中だけ動く表示専用10 Hz observerへ移した。pointer down/drag中はShadowを即時退避し、timerは保持したままWindow Server geometry readを0にする。mouse-up後はexact frame集合が1.5 pt以内で3 sample・0.18秒以上静止してから復帰し、WindowManagerの最後のretiling frameへ追従しない。初回表示は2 sample・0.08秒へ短縮する。settle後は全member位置取得を止め、各group 1枚のexact sentinelだけを10 Hzでprobeして、変化時だけfull geometry取得へ戻す。application activationなどの早期exit hintはpending one-shotをcancelし、後からcapture refreshが来てもlifecycle rearm debtを維持してclosing中の一瞬の再点灯を防ぐ。unresolved/normalは即時消去し、normal 2回でtimerを停止する。監視強化時にShadow geometry取得を`CGWindowListCreateDescriptionFromArray`へ置き換えたことでMission Controlのlive thumbnail frame経路を失う回帰があったため、取得元を既知の`CGWindowListCopyWindowInfo(.optionOnScreenOnly)`へ戻し、exact PID + CGWindowIDは取得後filterに限定した。fade・Shadow専用burst監視・新規pointer monitor/event tapは持たず、Observer/Presenterの状態をtransport判断、FIFO、cancel、rollback、AX mutation、focus/raise、Space writeへ返さない。
+- Reservation Shadow専用Observerが既存`lastGroupWindowServerEvidenceByIdentity`へ残存依存していたため、Active Space cleanupでcacheが消えると`.unresolved`のまま描画不能になる回帰を修正した。Shadow transform baselineはaccepted captureのexact PID + CGWindowID + `sourceFrame`としてObserver自身へ凍結し、Active Space変更はscene終了ではなく即時hide＋再証明のlifecycle hintへ戻した。これにより表示監視の独立性をtransport/presentation cacheの両方向で成立させた。
+- physical commit後のAX layoutを覆っていた`GroupSpaceMigrationHandoffOverlay`を撤去した。実windowの更新が一時的に見えることは許容し、Tabora自身がdestination Desktopへfloating画像を重ねる経路をなくした。transport、membership verify、layout、group commit、Proxy rearmの順序は変更しない。
+- Mission Control Proxy選択のconfirmation待機またはforeground activation中にActive Space通知が入ると、共通cleanupが選択transaction自体を破棄する競合を修正した。Active Space cleanupはexact selection ownerのProxyとactivation generationだけを維持し、unrelated Proxy、通常raise、Snap / Assist / drag pending workは従来どおり破棄する。migration presentation ownershipはこの例外へ含めない。
+- Proxy確認の最初の0.14秒判定を維持しつつ、Mission Control終了後のAppKit/workspace frontmost publicationだけが遅れる場合に、同じcandidate / member / presentation generation / transition tokenへ限定した0.06秒、0.10秒の有限再観測を追加した。identity変化または上限到達は明示cancelし、通常foreground fallbackへ選択を再生しない。
+- group表示番号を`SnapGroupStore`に現在存在する全groupのstable sort indexへ統一した。通常Proxyのpresentable subset indexとmigration側の累積`creationOrder`の二重化を廃止し、削除済みgroupがあっても通常Proxyとreservation shadowで同じ番号を表示する。
+- 全migration terminal後のforeground-intent flushが別groupの通常Proxy activationをglobal invalidationで中断できた競合を閉じた。通常Proxy confirmation / activation中はflushを保留し、そのtransactionの成功または明示失敗から再評価する。
+
+### Assist 2 / 3 / 4分割拡張
+
+- 既存の試験的Option Assistを双方向へ拡張した。単一Halfが配置済みで、反対側の2 Quarterへ異なる2windowをApp Constraint込みで割り当て可能な場合だけ、Option中に残りHalfを2候補面へ分割する。
+- 分割側を1枚選択した後は既存の3分割Assistへ合流し、通常のSnap transaction、再resize、group reconcile、残り1枠探索を使用する。候補がなければ既存終了経路で閉じ、専用の分割geometryやgroup形式は追加しない。
+- 上端maximizeはrestoreと下層groupのocclusionを管理する可逆な表示layerとして維持しつつ、split membershipとしてAssist候補から除外しない。選択後は通常Snap transactionがmaximize layerを解除し、既存の2 / 3 / 4分割経路へ合流する。
+
+### Foreground observation / pointer identity
+
+- connected groupの最前面観測を`ForegroundSelectionMonitor`と専用controller extensionへ分離した。独立した10 Hz timerを廃止し、通常のmouse / AX / workspace / Mission Control eventを即時経路、既存1 Hz Recoveryを取りこぼし専用fallbackとした。
+- fallbackは選択の観測だけを担当し、group raise認可、solo解除、Mission Control認可、handle表示を所有しない。drag、resize、Assist、Snap、Space移送、rollback、停止・無効化ではbaselineを破棄し、transaction前の選択を後から再生しない。
+- 同一アプリの複数windowをドラッグする際、mouse-downで取得したPID + CGWindowIDと各AX windowのruntime WindowIDを一意照合する経路を追加した。private resolverが利用不能・一時失敗の場合は従来のfail-closed geometry/title照合へ戻り、別windowを代用しない。Space移送captureも全memberのWindowIDが存在し一意であることを要求し、同一surfaceの重複dispatchを拒否する。
+- Snapから上端maximize、shared/native resize、Assist、Mission Control foreground、Space移送、session停止/復帰との排他境界を交差監査し、既存の有限settlement、atomic rollback、group-local authorizationを維持した。
+- selection-driven認可自身にcontroller running / login session active条件を追加し、stopまたはsession lock直前にqueueされたAX/workspace callbackが後からforeground settlementを開始する経路を閉じた。
+- owned AXRaise中のsame-PID外部選択でWindow ServerとAX focus/mainのpublication順がずれた場合、未確定通知がfallback baselineを先に消費しないようにした。AXの二回目通知がなくても1 Hz exact fallbackが外部Window IDを分類できる。
+- Mission Controlでmemberを一枚ずつ選択した場合やCommand-Tabの結果としてgroup全体が物理的に前面へ揃った場合、追加AXRaiseを行わず、その全member前面証明を使って対象groupのautomatic foreground gateを再開放する。
+- exactな新規system selectionが確定した時点で以前のautomatic認可を閉じ、同じ観測で全member前面を証明できたgroupだけを再開放するfail-closed遷移へ統一した。group-localなsolo isolation、明示Proxy選択、Snap/resize transactionの認可は維持する。
+
 ## 1.2.1 — 2026-08-25
 
 ### Mission Control Preview

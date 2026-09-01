@@ -324,19 +324,25 @@ final class SnapGroupTests: XCTestCase {
         frame: CGRect(x: 720, y: 0, width: 720, height: 900)
     )
 
-    func testSystemWindowSelectionNeverAuthorizesCompanionRaise() {
+    func testSystemWindowSelectionAuthorizesOnlyAnAlreadyFrontmostGroup() {
         XCTAssertEqual(GroupForegroundMode.defaultMode, .disabled)
         XCTAssertEqual(
             GroupForegroundSelectionPolicy.disposition(
-                groupIsAlreadyFrontmost: false
+                frontmostEvaluation: .occluded
             ),
             .presentSelectedMemberOnly
         )
         XCTAssertEqual(
             GroupForegroundSelectionPolicy.disposition(
-                groupIsAlreadyFrontmost: true
+                frontmostEvaluation: .indeterminate
             ),
-            .preserveCurrentAuthorization
+            .presentSelectedMemberOnly
+        )
+        XCTAssertEqual(
+            GroupForegroundSelectionPolicy.disposition(
+                frontmostEvaluation: .verifiedFrontmost
+            ),
+            .authorizeAutomaticForeground
         )
     }
 
@@ -358,6 +364,26 @@ final class SnapGroupTests: XCTestCase {
                 for: .automatic
             ),
             .evaluateExplicitGroupRaise
+        )
+    }
+
+    func testNewSystemSelectionClosesOnlyAutomaticAuthorization() {
+        XCTAssertEqual(
+            GroupForegroundAuthorizationPolicy
+                .modeAfterSystemSelectionSupersedesAutomatic(.automatic),
+            .disabled
+        )
+        XCTAssertEqual(
+            GroupForegroundAuthorizationPolicy
+                .modeAfterSystemSelectionSupersedesAutomatic(.disabled),
+            .disabled
+        )
+        XCTAssertEqual(
+            GroupForegroundAuthorizationPolicy
+                .modeAfterSystemSelectionSupersedesAutomatic(
+                    .soloPresented(memberID: "isolated")
+                ),
+            .soloPresented(memberID: "isolated")
         )
     }
 
@@ -491,6 +517,29 @@ final class SnapGroupTests: XCTestCase {
                 groupedIDs: ["retained", "foreign"]
             ),
             Set(["retained", "foreign"])
+        )
+    }
+
+    func testAssistReservationDoesNotTreatMaximizeAsSplitMembership() {
+        XCTAssertFalse(
+            AssistCandidateReservationPolicy.isReserved(
+                placementZone: nil
+            )
+        )
+        XCTAssertFalse(
+            AssistCandidateReservationPolicy.isReserved(
+                placementZone: .maximize
+            )
+        )
+        XCTAssertTrue(
+            AssistCandidateReservationPolicy.isReserved(
+                placementZone: .leftHalf
+            )
+        )
+        XCTAssertTrue(
+            AssistCandidateReservationPolicy.isReserved(
+                placementZone: .topRight
+            )
         )
     }
 
@@ -777,6 +826,44 @@ final class SnapGroupTests: XCTestCase {
         XCTAssertNil(result)
         XCTAssertTrue(store.groups.isEmpty)
         XCTAssertEqual(store.connectedMemberCount, 0)
+    }
+
+    func testDisplayOrdinalUsesOnlyCurrentStableGroupOrder() {
+        var store = SnapGroupStore()
+        func createGroup(_ prefix: String) -> SnapGroup {
+            let group = store.reconcileAfterLayoutMutation(
+                preferredMemberID: "\(prefix)-right",
+                displayID: displayID,
+                placements: [
+                    SplitPlacementGeometry(
+                        stableIdentity: "\(prefix)-left",
+                        zone: .leftHalf,
+                        frame: left.frame
+                    ),
+                    SplitPlacementGeometry(
+                        stableIdentity: "\(prefix)-right",
+                        zone: .rightHalf,
+                        frame: right.frame
+                    )
+                ],
+                detachedConnections: []
+            )
+            return try! XCTUnwrap(group)
+        }
+
+        let first = createGroup("first")
+        let second = createGroup("second")
+        let third = createGroup("third")
+        XCTAssertEqual(store.displayOrdinal(for: first.id), 1)
+        XCTAssertEqual(store.displayOrdinal(for: second.id), 2)
+        XCTAssertEqual(store.displayOrdinal(for: third.id), 3)
+
+        _ = store.dissolveGroup(id: first.id)
+        _ = store.dissolveGroup(id: second.id)
+
+        XCTAssertEqual(third.creationOrder, 3)
+        XCTAssertEqual(store.displayOrdinal(for: third.id), 1)
+        XCTAssertEqual(store.displayOrdinalsByGroupID, [third.id: 1])
     }
 
     func testAdjacentPlacementsCreateOneExplicitGroup() {

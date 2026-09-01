@@ -1,6 +1,6 @@
 # アーキテクチャ
 
-この文書は、SnapFlow Final Baselineから継承したTaboraの構造と、v1系の安定化、およびv2.0.0のSpace membership観測・Mission Controlグループ移送を説明するものです。これは実装の説明文書であり、実コードとは別の新しい挙動を定義するものではありません。
+この文書は、SnapFlow Final Baselineから継承したTaboraの構造と、v1系の安定化、およびv2.0.0以降のSpace membership観測・Mission Controlグループ移送を説明するものです。これは実装の説明文書であり、実コードとは別の新しい挙動を定義するものではありません。
 
 ## アプリケーション起動と設定
 
@@ -101,7 +101,7 @@
 
 ## Recovery
 
-Taboraは独立した低頻度Recovery watchdogを維持します。Recoveryはlost mouse-up、Assist cleanup、handle presentation / occlusion recovery、observer re-arm、一時的なAX / Window Server failureに対する安全網です。mouse event monitorはstartup / re-enable時にbounded readiness burstを受け、その後のRecoveryでは1 Hz tickごとに単一のre-arm attemptだけを行います。tickは画像ファイルやディスクを走査しませんが、presentation liveness判定のためWindow Serverのon-screen snapshotを取得します。これは常駐時の主要な定常観測コストであるため、正常時のRecoveryをこれ以上高頻度化したり、制限のない第二global discovery loopを追加してはいけません。
+Taboraは独立した低頻度Recovery watchdogを維持します。Recoveryはlost mouse-up、Assist cleanup、handle presentation / occlusion recovery、observer re-arm、一時的なAX / Window Server failureに対する安全網です。最新の平常時常駐コストの実測値とWindowServer委託負荷は[PERFORMANCE_VALIDATION.md](PERFORMANCE_VALIDATION.md)に記録します。mouse event monitorはstartup / re-enable時にbounded readiness burstを受け、その後のRecoveryでは1 Hz tickごとに単一のre-arm attemptだけを行います。tickは画像ファイルやディスクを走査しませんが、presentation liveness判定のためWindow Serverのon-screen snapshotを取得します。これは常駐時の主要な定常観測コストであるため、正常時のRecoveryをこれ以上高頻度化したり、制限のない第二global discovery loopを追加してはいけません。
 
 ## 設定とOS integration
 

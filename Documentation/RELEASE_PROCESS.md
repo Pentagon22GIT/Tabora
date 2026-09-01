@@ -52,6 +52,22 @@ swift test
 
 期待結果: 意図したrelease差分を除き、既存の安全不変条件と確立済み挙動を維持すること。
 
+### 最新の完了記録
+
+**2026-09-01 / 検証対象 v2.0.0 (Build 14) / 次期v2.0.1調整時点**
+
+- [x] 2 / 3 / 4 split、shared resize、replacement、Recoveryを実機確認
+- [x] Mission Control Proxy選択、Foreground、Desktop間group migrationを実機確認
+- [x] Preview / Assist / App Constraint / Space移送の相互境界を監査
+- [x] Private API runtime capabilityと実Window→Space membershipをmacOS 26.6.2で確認
+- [x] 平常時のTabora直接CPUとWindowServer委託CPUを統合し、Full Residentを1コア約3.84% / 10コア全体約0.384%と確認
+- [x] Memory / Wakeup / System CPU / Battery / Thermalを確認し、常駐上の異常増加がないことを確認
+- [x] Architecture / Security Invariants / Foreground / Migration / Privacy / README / CHANGELOGの整合を確認
+- [x] Fast CI / Tabora Safety Invariants / CodeQLのRelease監査状態を確認
+- [x] dependency / secret alertとrelease差分のprivate data混入がないことを確認
+
+性能検証の詳細は[PERFORMANCE_VALIDATION.md](PERFORMANCE_VALIDATION.md)に記録する。将来のReleaseではこの完了記録を根拠に手順自体を省略せず、変更範囲に応じて再確認する。
+
 ## 3. Security確認
 
 - Fast CI成功

@@ -66,3 +66,22 @@
 移行環境はAppKit / Accessibility / Window Server integrationを持つmacOS runtimeではありません。そのため、この文書はTaboraのruntime functional-equivalence test、Community app build、Official app build、Mission Control挙動、TCC挙動がmacOSで成功したとは主張しません。
 
 SnapFlow Final Baseline自体は移行前にユーザーが動作確認済みです。Tabora Official Release前には、同等のmacOS functional suiteを改めて実行する必要があります。
+
+## 後続macOS実機監査の完了
+
+最新完了記録: **2026-09-01 / Tabora v2.0.0 (Build 14) / macOS 26.6.2**
+
+上記の移行時監査でLinux環境のため成功扱いしなかったruntime項目は、その後のmacOS実機開発・Release監査で確認を完了しました。移行時点の記録は履歴として維持し、現在の確認状態を次に固定します。
+
+- [x] `swift test`をmacOS環境で完走し、現行test suiteの成功を確認
+- [x] build / release経路をmacOS上で実行し、Tabora identityでの成果物生成を確認
+- [x] 2 / 3 / 4 split、shared resize、replacement、Recoveryを実操作で確認
+- [x] Mission Control Proxy選択とconnected foregroundを実操作で確認
+- [x] Desktop間group migrationをmacOS 26.5.2 / 26.6.2で往復確認
+- [x] same-app multi-windowを含むWindow ID / membership境界を確認
+- [x] Preview / Assist / Foreground monitoringの回帰監査を完了
+- [x] 平常時常駐コストをTabora直接負荷、WindowServer委託負荷、System / Battery / Memoryまで実測
+- [x] Privacy / Security / Architecture / Release文書と現行挙動の整合を再監査
+
+性能面の最新値は[PERFORMANCE_VALIDATION.md](PERFORMANCE_VALIDATION.md)、Space移送の現行Release確認は[PRIVATE_API_GROUP_SPACE_MIGRATION.md](PRIVATE_API_GROUP_SPACE_MIGRATION.md)を参照してください。
+

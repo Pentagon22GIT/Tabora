@@ -292,18 +292,64 @@ enum AssistCompletionLayoutPolicy {
         return nil
     }
 
+    /// Returns the ordinary three-window partition obtained by keeping one
+    /// occupied Half and splitting only the opposite Half into two Quarters.
+    /// This is deliberately limited to an exact, single-Half starting state;
+    /// mixed or already-completed layouts continue through the normal Assist
+    /// policy instead of being reinterpreted by the Option surface.
+    static func threeWindowZonesStartingFromHalf(
+        occupiedZones: Set<SnapZone>
+    ) -> [SnapZone]? {
+        guard occupiedZones.count == 1,
+              let occupied = occupiedZones.first else { return nil }
+        switch occupied {
+        case .leftHalf:
+            return [.leftHalf, .topRight, .bottomRight]
+        case .rightHalf:
+            return [.topLeft, .bottomLeft, .rightHalf]
+        case .topHalf:
+            return [.topHalf, .bottomLeft, .bottomRight]
+        case .bottomHalf:
+            return [.topLeft, .topRight, .bottomHalf]
+        case .topLeft, .topRight, .bottomLeft, .bottomRight, .maximize:
+            return nil
+        }
+    }
+
+    static func twoWindowZones(
+        occupiedZones: Set<SnapZone>
+    ) -> [SnapZone]? {
+        guard occupiedZones.count == 1,
+              let occupied = occupiedZones.first else { return nil }
+        switch occupied {
+        case .leftHalf, .rightHalf:
+            return [.leftHalf, .rightHalf]
+        case .topHalf, .bottomHalf:
+            return [.topHalf, .bottomHalf]
+        case .topLeft, .topRight, .bottomLeft, .bottomRight, .maximize:
+            return nil
+        }
+    }
+
     static func layoutForModifierState(
         occupiedZones: Set<SnapZone>,
         currentLayout: [SnapZone],
         modifierIsPressed: Bool
     ) -> [SnapZone]? {
-        guard let threeWindow = threeWindowZones(
-            occupiedZones: occupiedZones
-        ) else { return nil }
         let current = Set(currentLayout)
-        guard current == Set(fourWindowZones)
-                || current == Set(threeWindow) else { return nil }
-        return modifierIsPressed ? threeWindow : fourWindowZones
+        if let threeWindow = threeWindowZones(
+            occupiedZones: occupiedZones
+        ), current == Set(fourWindowZones)
+                || current == Set(threeWindow) {
+            return modifierIsPressed ? threeWindow : fourWindowZones
+        }
+        if let twoWindow = twoWindowZones(occupiedZones: occupiedZones),
+           let threeWindow = threeWindowZonesStartingFromHalf(
+               occupiedZones: occupiedZones
+           ), current == Set(twoWindow) || current == Set(threeWindow) {
+            return modifierIsPressed ? threeWindow : twoWindow
+        }
+        return nil
     }
 
     /// Resolves the visible completion surface after both structural layouts
@@ -324,6 +370,27 @@ enum AssistCompletionLayoutPolicy {
             return fourWindowZones
         }
         return mergedHalfCandidateCount > 0 ? threeWindow : nil
+    }
+
+    /// Resolves the inverse Option surface: the default remains the opposite
+    /// Half, while Option may split it only when two distinct windows can
+    /// actually occupy the two Quarter zones. If that stronger condition is
+    /// unavailable, the ordinary two-window Assist remains usable.
+    static func completionLayoutStartingFromHalf(
+        occupiedZones: Set<SnapZone>,
+        modifierIsPressed: Bool,
+        oppositeHalfCandidateCount: Int,
+        maximumDistinctSplitAssignments: Int
+    ) -> [SnapZone]? {
+        guard let twoWindow = twoWindowZones(
+            occupiedZones: occupiedZones
+        ), let threeWindow = threeWindowZonesStartingFromHalf(
+            occupiedZones: occupiedZones
+        ) else { return nil }
+        if modifierIsPressed, maximumDistinctSplitAssignments >= 2 {
+            return threeWindow
+        }
+        return oppositeHalfCandidateCount > 0 ? twoWindow : nil
     }
 }
 

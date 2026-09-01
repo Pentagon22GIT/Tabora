@@ -136,6 +136,14 @@ extension SnapController {
             guard let screenDisplayID = displayID(for: screen) else { continue }
             for group in explicitGroupStore.groups where
                 group.displayID == screenDisplayID {
+                guard !groupSpaceMigrationLine.presentationIsQuarantined(
+                    groupID: group.id
+                ) else {
+                    // Quarantine is group-scoped. A migrated group may now be
+                    // on an inactive destination Desktop; suppress only its
+                    // stale controls so unrelated groups remain interactive.
+                    continue
+                }
                 guard !spaceSeparationPendingGroupIDs.contains(group.id) else {
                     // A split-across-Space group has no complete active-desktop
                     // boundary. Keep its handles absent while structural
@@ -439,6 +447,8 @@ extension SnapController {
     ) -> Bool {
         guard missionControlGroupPresentationIsEnabled,
               !explicitGroupStore.groups.isEmpty else {
+            groupSpaceMigrationReservationShadowObserver
+                .suppressPresentationImmediately()
             resetGroupPresentationTransitionRecovery()
             return false
         }
@@ -473,6 +483,9 @@ extension SnapController {
         let normalGroupIDs = Set(observations.compactMap { groupID, state in
             state == .normal ? groupID : nil
         })
+        groupSpaceMigrationLine.noteNonNormalDesktopObserved(
+            groupIDs: Set(observations.keys).subtracting(normalGroupIDs)
+        )
         let now = ProcessInfo.processInfo.systemUptime
         let groupsByID = Dictionary(
             uniqueKeysWithValues: explicitGroupStore.groups.map {
@@ -525,6 +538,8 @@ extension SnapController {
                 // controller's transform-preservation evidence.
                 missionControlGroupProxyController
                     .noteMissionControlTransitionObserved(groupID: groupID)
+                groupSpaceMigrationLine
+                    .noteMissionControlTransformObserved(groupID: groupID)
             }
             groupPresentationRecoveryDeadline = max(
                 groupPresentationRecoveryDeadline ?? 0,
@@ -556,6 +571,19 @@ extension SnapController {
         let presentationNeedsOrderingRevalidation =
             groupPresentationRecoveryDeadline != nil
             || isPreservingGroupPresentationForWindowServerTransform
+        // Reaching this point means no proven Mission Control transform owns
+        // the scene. Deliver that global boundary even when migrated members
+        // currently live on a non-active Space and therefore cannot appear in
+        // `normalGroupIDs`.
+        let groupsWithNormalMembers = Set(groupsByID.compactMap {
+            groupID, group in
+            normalGeometryMemberIDs.isDisjoint(with: group.memberIDs)
+                ? nil : groupID
+        })
+        groupSpaceMigrationLine.noteNormalDesktopObserved(
+            groupIDs: normalGroupIDs,
+            groupsWithNormalMembers: groupsWithNormalMembers
+        )
         if presentationNeedsOrderingRevalidation, !normalGroupIDs.isEmpty {
             // Revalidate only groups whose own normal desktop evidence is back.
             // An unrelated unavailable group must not demote a valid proxy.
@@ -564,6 +592,13 @@ extension SnapController {
             )
         }
         resetGroupPresentationTransitionRecovery()
+        if groupSpaceMigrationLine.hasPendingPresentationRearmEvidence
+            || groupSpaceMigrationLine.awaitsNormalDesktopDispatch {
+            // One normal sample is insufficient immediately after a managed
+            // Space mutation. Reuse the existing bounded presentation recovery
+            // schedule for the second stable sample; never create a new timer.
+            scheduleGroupPresentationRecoveryChecksIfNeeded()
+        }
         return false
     }
 

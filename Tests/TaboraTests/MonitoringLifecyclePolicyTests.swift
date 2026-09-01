@@ -11,8 +11,8 @@ final class MonitoringLifecyclePolicyTests: XCTestCase {
         ), 0)
     }
 
-    func testSelectionPollingRequiresEveryLongLivedCondition() {
-        XCTAssertTrue(MonitoringLifecyclePolicy.shouldRunSelectionPolling(
+    func testForegroundSelectionMonitoringRequiresEveryLongLivedCondition() {
+        XCTAssertTrue(MonitoringLifecyclePolicy.shouldMonitorForegroundSelection(
             controllerIsRunning: true,
             taboraIsEnabled: true,
             linkedResizeIsEnabled: true,
@@ -20,35 +20,35 @@ final class MonitoringLifecyclePolicyTests: XCTestCase {
             lockedPlacementCount: 2
         ))
 
-        XCTAssertFalse(MonitoringLifecyclePolicy.shouldRunSelectionPolling(
+        XCTAssertFalse(MonitoringLifecyclePolicy.shouldMonitorForegroundSelection(
             controllerIsRunning: false,
             taboraIsEnabled: true,
             linkedResizeIsEnabled: true,
             connectedWindowRaiseIsEnabled: true,
             lockedPlacementCount: 2
         ))
-        XCTAssertFalse(MonitoringLifecyclePolicy.shouldRunSelectionPolling(
+        XCTAssertFalse(MonitoringLifecyclePolicy.shouldMonitorForegroundSelection(
             controllerIsRunning: true,
             taboraIsEnabled: false,
             linkedResizeIsEnabled: true,
             connectedWindowRaiseIsEnabled: true,
             lockedPlacementCount: 2
         ))
-        XCTAssertFalse(MonitoringLifecyclePolicy.shouldRunSelectionPolling(
+        XCTAssertFalse(MonitoringLifecyclePolicy.shouldMonitorForegroundSelection(
             controllerIsRunning: true,
             taboraIsEnabled: true,
             linkedResizeIsEnabled: false,
             connectedWindowRaiseIsEnabled: true,
             lockedPlacementCount: 2
         ))
-        XCTAssertFalse(MonitoringLifecyclePolicy.shouldRunSelectionPolling(
+        XCTAssertFalse(MonitoringLifecyclePolicy.shouldMonitorForegroundSelection(
             controllerIsRunning: true,
             taboraIsEnabled: true,
             linkedResizeIsEnabled: true,
             connectedWindowRaiseIsEnabled: false,
             lockedPlacementCount: 2
         ))
-        XCTAssertFalse(MonitoringLifecyclePolicy.shouldRunSelectionPolling(
+        XCTAssertFalse(MonitoringLifecyclePolicy.shouldMonitorForegroundSelection(
             controllerIsRunning: true,
             taboraIsEnabled: true,
             linkedResizeIsEnabled: true,
@@ -57,8 +57,8 @@ final class MonitoringLifecyclePolicyTests: XCTestCase {
         ))
     }
 
-    func testSelectionPollingAcceptsMoreThanTwoLockedPlacements() {
-        XCTAssertTrue(MonitoringLifecyclePolicy.shouldRunSelectionPolling(
+    func testForegroundSelectionMonitoringAcceptsMoreThanTwoPlacements() {
+        XCTAssertTrue(MonitoringLifecyclePolicy.shouldMonitorForegroundSelection(
             controllerIsRunning: true,
             taboraIsEnabled: true,
             linkedResizeIsEnabled: true,
@@ -67,8 +67,8 @@ final class MonitoringLifecyclePolicyTests: XCTestCase {
         ))
     }
 
-    func testInactiveUserSessionStopsSelectionPollingOnly() {
-        XCTAssertFalse(MonitoringLifecyclePolicy.shouldRunSelectionPolling(
+    func testInactiveUserSessionStopsForegroundSelectionMonitoring() {
+        XCTAssertFalse(MonitoringLifecyclePolicy.shouldMonitorForegroundSelection(
             controllerIsRunning: true,
             taboraIsEnabled: true,
             linkedResizeIsEnabled: true,
@@ -76,5 +76,35 @@ final class MonitoringLifecyclePolicyTests: XCTestCase {
             lockedPlacementCount: 4,
             userSessionIsActive: false
         ))
+    }
+
+    func testEventAuthorizationUsesTheSameLongLivedLifecycleBoundary() {
+        XCTAssertTrue(MonitoringLifecyclePolicy
+            .foregroundSelectionLifecycleIsActive(
+                controllerIsRunning: true,
+                taboraIsEnabled: true,
+                linkedResizeIsEnabled: true,
+                connectedWindowRaiseIsEnabled: true,
+                lockedPlacementCount: 2,
+                userSessionIsActive: true
+            ))
+        XCTAssertFalse(MonitoringLifecyclePolicy
+            .foregroundSelectionLifecycleIsActive(
+                controllerIsRunning: false,
+                taboraIsEnabled: true,
+                linkedResizeIsEnabled: true,
+                connectedWindowRaiseIsEnabled: true,
+                lockedPlacementCount: 2,
+                userSessionIsActive: true
+            ))
+        XCTAssertFalse(MonitoringLifecyclePolicy
+            .foregroundSelectionLifecycleIsActive(
+                controllerIsRunning: true,
+                taboraIsEnabled: true,
+                linkedResizeIsEnabled: true,
+                connectedWindowRaiseIsEnabled: true,
+                lockedPlacementCount: 2,
+                userSessionIsActive: false
+            ))
     }
 }

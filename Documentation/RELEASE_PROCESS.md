@@ -7,7 +7,7 @@
 - public `Pentagon22GIT/Tabora` repositoryから作業する。
 - working treeがcleanであること。
 - `VERSION` が予定しているsigned tag（`v<version>`）と一致すること。
-- `BUILD_NUMBER` に予定しているbuild numberが入っていること。
+- `BUILD_NUMBER` は最新の公開releaseに含まれるbuild number + 1とすること。未stage / 未releaseの試行ごとに番号を増やさないこと。
 - private key、token、credential、生成済みapp bundleをtrackしないこと。
 - `Config/OfficialSigning.plist` に `dev.pent.Tabora` とTabora専用code-signing certificate fingerprintが設定されていること。
 
@@ -32,6 +32,12 @@ swift test
 - relevant external occluderの出現 / 消失
 - Recovery
 - Mission Control
+- 試験的なDesktop間グループ移送をOFFのままにした時、既存Proxy選択・前面化・通常Space分離が変化しないこと
+- 試験的なDesktop間グループ移送をONにし、2 / 3 / 4 memberでsource→destination→sourceの往復、全member membership、移送後layout、restore frame、group再構成を確認すること
+- 非公開move runtimeを意図的に利用不能とした検証buildで、通常Desktop復帰後に一度だけ警告され、設定からOFFにできること。設定欄のAPI状態と動作確認済み環境も確認すること
+- pre-commit timeout / feature OFF / structure変化ではdispatch済みmemberが実行時originへ復元されることを確認し、post-commit layout失敗ではSpaceを戻さずdestinationでgroupだけが解散すること
+- Mission Controlから通常Desktopへ戻った直後、および移送完了後に再度Proxyを選択した時、2 / 3 / 4 memberで数秒単位のmain-thread停止が発生しないこと。AX応答が遅いappでも実際のAXRaise/focus budgetは0.45秒の既存interactive値を維持し、短いtimeoutによる明示選択の取りこぼしを導入していないこと
+- physical commit後のlayout中にTabora生成のfloating group画像が最前面へ出ないこと。実window自身のframe更新が一時的に見えることは許容し、cover撤去後もmembership verify、layout、group commit、Proxy rearmが従来順序で完了すること
 - Mission Control group proxyが候補集合から欠落しないこと（2 / 3 / 4、snap直後、rapid enter / exit）
 - cold launch直後の最初のdragでsnap guideを失わないこと
 - resize直後のMission Control Previewがfresh capture完了前も全面を表示し、中央aspect-fill cropで過度に拡大・切り取りされないこと
@@ -41,6 +47,8 @@ swift test
 - Activity Monitorでidle / 複数group / 多数window / Preview ON・OFFのCPUとEnergy Impactを比較し、定常的な異常負荷がないこと
 - settings / shortcuts
 - v1.0.1以降では、straight boundaryを持つmulti-member replacement、misaligned boundaryの拒否、blocked後の既存group保持、drag / shortcut / menu parity
+
+非公開APIを変更したReleaseでは、[PRIVATE_API_GROUP_SPACE_MIGRATION.md](PRIVATE_API_GROUP_SPACE_MIGRATION.md)のmacOS更新時の保守手順とRelease確認表も必須とします。compile成功やdispatch戻り値だけを互換性の根拠にせず、実Window→Space membershipで物理到達を確認します。
 
 期待結果: 意図したrelease差分を除き、既存の安全不変条件と確立済み挙動を維持すること。
 

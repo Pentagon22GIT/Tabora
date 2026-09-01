@@ -443,6 +443,24 @@ final class WindowSafetyPolicyTests: XCTestCase {
         )
     }
 
+    func testExactWindowIdentitySelectsRequestedSameApplicationWindow() {
+        XCTAssertEqual(ExactWindowIdentityPolicy.matchingIndex(
+            targetWindowID: 20,
+            candidateWindowIDs: [10, 20]
+        ), 1)
+    }
+
+    func testExactWindowIdentityRejectsDuplicateOrUnavailableClaims() {
+        XCTAssertNil(ExactWindowIdentityPolicy.matchingIndex(
+            targetWindowID: 20,
+            candidateWindowIDs: [20, nil, 20]
+        ))
+        XCTAssertNil(ExactWindowIdentityPolicy.matchingIndex(
+            targetWindowID: 20,
+            candidateWindowIDs: [10, nil, 30]
+        ))
+    }
+
     func testPersistedWindowBindingRejectsConflictingClaims() {
         XCTAssertEqual(
             PersistedWindowBindingPolicy.resolve(

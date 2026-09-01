@@ -286,6 +286,21 @@ enum PersistedWindowBindingPolicy {
     }
 }
 
+enum ExactWindowIdentityPolicy {
+    /// Selects an AX element only when one and only one candidate resolves to
+    /// the pointer-captured Window Server ID. PID scoping is performed before
+    /// this policy is called. Duplicate claims fail closed.
+    static func matchingIndex(
+        targetWindowID: CGWindowID,
+        candidateWindowIDs: [CGWindowID?]
+    ) -> Int? {
+        let matches = candidateWindowIDs.indices.filter {
+            candidateWindowIDs[$0] == targetWindowID
+        }
+        return matches.count == 1 ? matches[0] : nil
+    }
+}
+
 enum WindowSnapEligibilityPolicy {
     private static let excludedBundleIdentifiers: Set<String> = [
         // System Settings still uses the historical System Preferences bundle

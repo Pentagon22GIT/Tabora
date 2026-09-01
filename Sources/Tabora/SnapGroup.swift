@@ -48,7 +48,7 @@ struct SnapGroupPolicy {
 }
 
 enum SystemWindowSelectionDisposition: Equatable {
-    case preserveCurrentAuthorization
+    case authorizeAutomaticForeground
     case presentSelectedMemberOnly
 }
 
@@ -158,13 +158,14 @@ enum GroupFrontmostEvaluationPolicy {
 
 enum GroupForegroundSelectionPolicy {
     /// System application/window switchers do not carry an explicit Tabora
-    /// group identity. They may acknowledge a group that is already entirely
-    /// frontmost, but they never authorize bringing missing companions up.
+    /// group identity. They may authorize automatic foregrounding only after
+    /// Window Server proves that every member is already frontmost; they never
+    /// authorize bringing a missing companion up.
     static func disposition(
-        groupIsAlreadyFrontmost: Bool
+        frontmostEvaluation: GroupFrontmostEvaluation
     ) -> SystemWindowSelectionDisposition {
-        groupIsAlreadyFrontmost
-            ? .preserveCurrentAuthorization
+        frontmostEvaluation == .verifiedFrontmost
+            ? .authorizeAutomaticForeground
             : .presentSelectedMemberOnly
     }
 }
@@ -323,6 +324,15 @@ enum AssistCandidateExclusionPolicy {
         groupedIDs: Set<String>
     ) -> Set<String> {
         capturedIDs.intersection(lockedIDs.union(groupedIDs))
+    }
+}
+
+enum AssistCandidateReservationPolicy {
+    /// Maximize is a reversible visual/restore layer. Only split placements
+    /// reserve a window from Assist candidate selection.
+    static func isReserved(placementZone: SnapZone?) -> Bool {
+        guard let placementZone else { return false }
+        return placementZone != .maximize
     }
 }
 
@@ -673,6 +683,20 @@ struct SnapGroupStore {
 
     var connectedMemberCount: Int {
         groupsByID.values.reduce(0) { $0 + $1.memberIDs.count }
+    }
+
+    /// User-facing numbering is a projection of the groups that currently
+    /// exist, not the lifetime creation counter and not the temporarily
+    /// presentable Proxy subset. The existing stable group order is the only
+    /// source for every normal and migration label.
+    var displayOrdinalsByGroupID: [SnapGroupID: Int] {
+        Dictionary(uniqueKeysWithValues: groups.enumerated().map {
+            ($0.element.id, $0.offset + 1)
+        })
+    }
+
+    func displayOrdinal(for groupID: SnapGroupID) -> Int? {
+        displayOrdinalsByGroupID[groupID]
     }
 
     func group(containing memberID: String) -> SnapGroup? {

@@ -37,6 +37,36 @@ enum MissionControlTransitionTokenPolicy {
     }
 }
 
+struct MissionControlGroupProxyMigrationPresentation: Equatable {
+    let title: String
+    let subtitle: String
+    let windowTitle: String
+}
+
+enum MissionControlGroupProxyMigrationTypographyPolicy {
+    static let titleMaximumPointSize: CGFloat = 48
+    static let titleHeightScale: CGFloat = 0.25
+}
+
+enum MissionControlGroupProxyMigrationPresentationPolicy {
+    static func presentation(
+        queuePosition: Int,
+        queueTotal: Int
+    ) -> MissionControlGroupProxyMigrationPresentation {
+        let position = max(queuePosition, 1)
+        let total = max(queueTotal, position)
+        let title = position == 1 ? "移動準備中" : "移動待機"
+        let queueDescription = total > 1 ? "\(position)/\(total)  •  " : ""
+        return MissionControlGroupProxyMigrationPresentation(
+            title: title,
+            subtitle: queueDescription + "Mission Controlを閉じると移動",
+            windowTitle: position == 1
+                ? "移動準備中 1/\(total)（Mission Controlを閉じると移動）"
+                : "移動待機 \(position)/\(total)"
+        )
+    }
+}
+
 struct MissionControlProxyOrderingSurface: Equatable {
     let windowID: CGWindowID?
     let frame: CGRect
@@ -135,6 +165,25 @@ enum MissionControlProxySelectionDeliveryPolicy {
     ) -> Bool {
         !selectionWasDelivered && !confirmationIsPending
     }
+}
+
+enum MissionControlProxySelectionConfirmationSettlementPolicy {
+    // The first observation retains the established handoff latency. Later
+    // observations are only for the exact captured candidate when Mission
+    // Control has returned the proxy before AppKit/workspace activation has
+    // finished publishing. This is bounded derived work, not polling.
+    static let observationDelays: [TimeInterval] = [0.14, 0.06, 0.10]
+
+    static func delay(forAttempt attempt: Int) -> TimeInterval? {
+        guard observationDelays.indices.contains(attempt) else { return nil }
+        return observationDelays[attempt]
+    }
+}
+
+enum MissionControlProxySelectionConfirmationDisposition: Equatable {
+    case rejected
+    case normalGroupActivation
+    case queuedMigrationForegroundIntent
 }
 
 struct MissionControlProxySelectionCandidate: Equatable {
@@ -441,7 +490,11 @@ private struct MissionControlPreviewRequest {
 
 final class MissionControlGroupProxyController {
     var onSelectGroup: ((SnapGroupID, Set<String>) -> Void)?
+    var onSelectQueuedMigrationGroup: ((SnapGroupID, Set<String>) -> Void)?
+    var onSelectionConfirmationTerminated: (() -> Void)?
     var currentTransitionAuthorization: ((SnapGroupID) -> Bool)?
+    var selectionConfirmationIsAllowed: ((SnapGroupID) -> Bool)?
+    var queuedMigrationSelectionIsAllowed: ((SnapGroupID) -> Bool)?
     var onPreviewCacheReady: (() -> Void)?
 
     private var windowsByGroupID: [SnapGroupID: MissionControlGroupProxyWindow] = [:]
@@ -489,9 +542,14 @@ final class MissionControlGroupProxyController {
             }
     }
 
+    var selectionConfirmationOwnerGroupID: SnapGroupID? {
+        activeSelectionCandidate?.groupID
+    }
+
     func update(
         groups: [SnapGroup],
         visibleWindowsByIdentity: [String: ManagedWindow],
+        displayOrdinalsByGroupID: [SnapGroupID: Int],
         preservedGroupIDs: Set<SnapGroupID> = [],
         exposedPreviewMemberIDsByGroupID: [SnapGroupID: Set<String>] = [:],
         previewsEnabled: Bool,
@@ -633,7 +691,9 @@ final class MissionControlGroupProxyController {
             windowsByGroupID.removeValue(forKey: groupID)?.retire()
         }
 
-        for (index, group) in presentableGroups.enumerated() {
+        for group in presentableGroups {
+            guard let displayOrdinal = displayOrdinalsByGroupID[group.id]
+            else { continue }
             let memberWindows = group.memberIDs.compactMap {
                 visibleWindowsByIdentity[$0]
             }
@@ -668,7 +728,7 @@ final class MissionControlGroupProxyController {
                     generation: generation,
                     groupID: groupID,
                     memberIDs: memberIDs
-                ) ?? false
+                ) ?? .rejected
             }
             proxyWindow.releaseSelectionConfirmation = {
                 [weak self] generation, groupID, memberIDs in
@@ -678,11 +738,18 @@ final class MissionControlGroupProxyController {
                     memberIDs: memberIDs
                 )
             }
+            proxyWindow.onSelectionConfirmationTerminated = { [weak self] in
+                self?.onSelectionConfirmationTerminated?()
+            }
             proxyWindow.currentTransitionAuthorization = { [weak self] groupID in
                 self?.currentTransitionAuthorization?(groupID) ?? false
             }
             proxyWindow.onSelected = { [weak self] groupID, memberIDs in
                 self?.onSelectGroup?(groupID, memberIDs)
+            }
+            proxyWindow.onQueuedMigrationSelected = {
+                [weak self] groupID, memberIDs in
+                self?.onSelectQueuedMigrationGroup?(groupID, memberIDs)
             }
             let members = memberWindows.map { window in
                 MissionControlGroupProxyMember(
@@ -714,7 +781,7 @@ final class MissionControlGroupProxyController {
                     surfaces: orderingSurfaces
                 )
             proxyWindow.update(
-                title: "グループ \(index + 1)",
+                title: "グループ \(displayOrdinal)",
                 frame: bounds,
                 members: members,
                 requiredWindowIDs: requiredWindowIDs
@@ -735,6 +802,58 @@ final class MissionControlGroupProxyController {
         windowsByGroupID[groupID] != nil
     }
 
+    func spaceDescriptor(
+        for groupID: SnapGroupID
+    ) -> GroupSpaceProxyDescriptor? {
+        guard let window = windowsByGroupID[groupID],
+              window.presentedMemberIDs.count >= 2,
+              window.windowNumber > 0 else { return nil }
+        return GroupSpaceProxyDescriptor(
+            groupID: groupID,
+            memberIDs: window.presentedMemberIDs,
+            windowID: CGWindowID(window.windowNumber),
+            frame: window.frame
+        )
+    }
+
+    func retireForSpaceMigration(groupID: SnapGroupID) {
+        windowsByGroupID.removeValue(forKey: groupID)?.retire()
+        if activeSelectionCandidate?.groupID == groupID {
+            activeSelectionCandidate = nil
+        }
+    }
+
+    func markSpaceMigrationQueued(groupID: SnapGroupID) {
+        windowsByGroupID[groupID]?.setSpaceMigrationQueued(
+            position: 1,
+            total: 1
+        )
+        if activeSelectionCandidate?.groupID == groupID {
+            activeSelectionCandidate = nil
+        }
+    }
+
+    func updateSpaceMigrationQueuePresentation(
+        groupID: SnapGroupID,
+        position: Int,
+        total: Int
+    ) {
+        windowsByGroupID[groupID]?.setSpaceMigrationQueued(
+            position: position,
+            total: total
+        )
+    }
+
+    func restoreAfterSpaceMigrationSourceCancellation(
+        groupID: SnapGroupID
+    ) {
+        windowsByGroupID[groupID]?
+            .restoreAfterSpaceMigrationSourceCancellation()
+        if activeSelectionCandidate?.groupID == groupID {
+            activeSelectionCandidate = nil
+        }
+    }
+
     func hideAll(clearPreviewCache: Bool = false) {
         for window in windowsByGroupID.values {
             window.retire()
@@ -743,6 +862,23 @@ final class MissionControlGroupProxyController {
         activeSelectionCandidate = nil
         if clearPreviewCache {
             self.clearPreviewCache()
+        }
+    }
+
+    /// Retires presentation that is unrelated to the exact Mission Control
+    /// selection handoff. Unlike hideAll(), this preserves the selected
+    /// managed surface and its candidate generation across Active Space
+    /// publication while still removing every unowned proxy immediately.
+    func retireUnownedProxies(
+        preservingGroupIDs preservedGroupIDs: Set<SnapGroupID>
+    ) {
+        for groupID in Array(windowsByGroupID.keys) where
+            !preservedGroupIDs.contains(groupID) {
+            windowsByGroupID.removeValue(forKey: groupID)?.retire()
+        }
+        if let candidate = activeSelectionCandidate,
+           !preservedGroupIDs.contains(candidate.groupID) {
+            activeSelectionCandidate = nil
         }
     }
 
@@ -915,19 +1051,29 @@ final class MissionControlGroupProxyController {
         generation: UInt64,
         groupID: SnapGroupID,
         memberIDs: Set<String>
-    ) -> Bool {
+    ) -> MissionControlProxySelectionConfirmationDisposition {
         guard MissionControlProxySelectionCandidatePolicy.matches(
             activeSelectionCandidate,
             generation: generation,
             groupID: groupID,
             memberIDs: memberIDs
-        ) else { return false }
+        ) else {
+            return .rejected
+        }
+        let disposition: MissionControlProxySelectionConfirmationDisposition
+        if queuedMigrationSelectionIsAllowed?(groupID) == true {
+            disposition = .queuedMigrationForegroundIntent
+        } else if selectionConfirmationIsAllowed?(groupID) != false {
+            disposition = .normalGroupActivation
+        } else {
+            return .rejected
+        }
         activeSelectionCandidate = nil
         for (candidateGroupID, window) in windowsByGroupID where
             candidateGroupID != groupID {
             window.cancelSelectionTransition()
         }
-        return true
+        return disposition
     }
 
     private func releaseSelectionConfirmation(
@@ -1459,10 +1605,13 @@ private final class MissionControlGroupProxyWindow: NSWindow, NSWindowDelegate {
     var presentedMemberIDs = Set<String>()
     var beginSelectionConfirmation: ((SnapGroupID, Set<String>) -> UInt64)?
     var consumeSelectionConfirmation:
-        ((UInt64, SnapGroupID, Set<String>) -> Bool)?
+        ((UInt64, SnapGroupID, Set<String>) ->
+            MissionControlProxySelectionConfirmationDisposition)?
     var releaseSelectionConfirmation:
         ((UInt64, SnapGroupID, Set<String>) -> Void)?
     var onSelected: ((SnapGroupID, Set<String>) -> Void)?
+    var onQueuedMigrationSelected: ((SnapGroupID, Set<String>) -> Void)?
+    var onSelectionConfirmationTerminated: (() -> Void)?
     var currentTransitionAuthorization: ((SnapGroupID) -> Bool)?
 
     private let proxyView = MissionControlGroupProxyView()
@@ -1470,6 +1619,7 @@ private final class MissionControlGroupProxyWindow: NSWindow, NSWindowDelegate {
     private var selectionConfirmationIsPending = false
     private var presentationGeneration = 0
     private var selectionConfirmationGeneration = 0
+    private var normalPresentationTitle = ""
     private var lastPresentedFrame: CGRect?
     private var lastPresentedMemberWindowIDs: Set<CGWindowID> = []
     private var isSafelyPresented = false
@@ -1532,8 +1682,13 @@ private final class MissionControlGroupProxyWindow: NSWindow, NSWindowDelegate {
         guard allowsPresentationMutation else { return }
         level = .normal
         self.title = title
+        normalPresentationTitle = title
         setFrame(frame, display: false)
-        proxyView.members = members
+        proxyView.members = members.sorted {
+            $0.stableIdentity < $1.stableIdentity
+        }
+        proxyView.spaceMigrationQueuePosition = nil
+        proxyView.spaceMigrationQueueTotal = 0
         proxyView.needsDisplay = true
 
         let requiresOrderingRestart =
@@ -1597,9 +1752,14 @@ private final class MissionControlGroupProxyWindow: NSWindow, NSWindowDelegate {
         consumeSelectionConfirmation = nil
         releaseSelectionConfirmation = nil
         onSelected = nil
+        onQueuedMigrationSelected = nil
+        onSelectionConfirmationTerminated = nil
         currentTransitionAuthorization = nil
         selectionConfirmationIsPending = false
+        proxyView.spaceMigrationQueuePosition = nil
+        proxyView.spaceMigrationQueueTotal = 0
         proxyView.members = []
+        normalPresentationTitle = ""
         lastPresentedFrame = nil
         lastPresentedMemberWindowIDs = []
         isSafelyPresented = false
@@ -1610,6 +1770,55 @@ private final class MissionControlGroupProxyWindow: NSWindow, NSWindowDelegate {
         alphaValue = 0
         ignoresMouseEvents = true
         orderOut(nil)
+    }
+
+    func setSpaceMigrationQueued(position: Int, total: Int) {
+        let normalizedPosition = max(position, 1)
+        let normalizedTotal = max(total, normalizedPosition)
+        let wasQueued = proxyView.spaceMigrationQueuePosition != nil
+        proxyView.spaceMigrationQueuePosition = normalizedPosition
+        proxyView.spaceMigrationQueueTotal = normalizedTotal
+        if !wasQueued {
+            // Keep the exact managed surface and its settled Mission Control
+            // geometry. Only its pixels change; ordering, frame and collection
+            // behavior remain untouched until the normal desktop dispatch.
+            selectionConfirmationGeneration &+= 1
+            selectionConfirmationIsPending = false
+            selectionWasDelivered = false
+            transitionToken = nil
+            ignoresMouseEvents = true
+        }
+        title = MissionControlGroupProxyMigrationPresentationPolicy
+            .presentation(
+                queuePosition: normalizedPosition,
+                queueTotal: normalizedTotal
+            ).windowTitle
+        proxyView.needsDisplay = true
+        displayIfNeeded()
+    }
+
+    func restoreAfterSpaceMigrationSourceCancellation() {
+        guard proxyView.spaceMigrationQueuePosition != nil else { return }
+        selectionConfirmationGeneration &+= 1
+        selectionConfirmationIsPending = false
+        selectionWasDelivered = false
+        proxyView.spaceMigrationQueuePosition = nil
+        proxyView.spaceMigrationQueueTotal = 0
+        if !normalPresentationTitle.isEmpty {
+            title = normalPresentationTitle
+        }
+        if isSafelyPresented,
+           currentTransitionAuthorization?(groupID) == true {
+            transitionToken = MissionControlTransitionTokenPolicy.make(
+                groupID: groupID,
+                presentationGeneration: presentationGeneration
+            )
+        } else {
+            transitionToken = nil
+        }
+        ignoresMouseEvents = true
+        proxyView.needsDisplay = true
+        displayIfNeeded()
     }
 
     func requireOrderingRevalidation() {
@@ -1753,7 +1962,7 @@ private final class MissionControlGroupProxyWindow: NSWindow, NSWindowDelegate {
         // Entering Mission Control can perturb key-window state without the
         // user choosing this proxy. Confirm the selection only after Tabora
         // is genuinely the active/frontmost application. This is a bounded
-        // one-shot confirmation, not a capture or polling loop.
+        // confirmation settlement, not a capture or polling loop.
         selectionConfirmationGeneration &+= 1
         let generation = selectionConfirmationGeneration
         selectionConfirmationIsPending = true
@@ -1767,77 +1976,164 @@ private final class MissionControlGroupProxyWindow: NSWindow, NSWindowDelegate {
             selectionConfirmationIsPending = false
             return
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.14) { [weak self] in
+        scheduleSelectionConfirmationSettlement(
+            selectionGeneration: generation,
+            candidateGeneration: selectionCandidateGeneration,
+            selectedGroupID: selectedGroupID,
+            selectedMemberIDs: selectedMemberIDs,
+            selectedPresentationGeneration: selectedPresentationGeneration,
+            attempt: 0
+        )
+    }
+
+    private func scheduleSelectionConfirmationSettlement(
+        selectionGeneration: Int,
+        candidateGeneration: UInt64,
+        selectedGroupID: SnapGroupID,
+        selectedMemberIDs: Set<String>,
+        selectedPresentationGeneration: Int,
+        attempt: Int
+    ) {
+        guard let delay = MissionControlProxySelectionConfirmationSettlementPolicy
+            .delay(forAttempt: attempt) else {
+            terminateSelectionConfirmation(
+                candidateGeneration: candidateGeneration,
+                selectedGroupID: selectedGroupID,
+                selectedMemberIDs: selectedMemberIDs
+            )
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self else { return }
-            var selectionWasConsumed = false
-            defer {
-                if !selectionWasConsumed {
-                    self.releaseSelectionConfirmation?(
-                        selectionCandidateGeneration,
-                        selectedGroupID,
-                        selectedMemberIDs
-                    )
-                }
-            }
-            guard self.selectionConfirmationGeneration == generation else {
-                return
-            }
-            self.selectionConfirmationIsPending = false
-            guard
+            guard self.selectionConfirmationGeneration == selectionGeneration,
                   self.groupID == selectedGroupID,
                   self.presentedMemberIDs == selectedMemberIDs,
                   self.presentationGeneration
                     == selectedPresentationGeneration,
-                  NSApp.isActive,
-                  NSWorkspace.shared.frontmostApplication?
-                    .processIdentifier == ProcessInfo.processInfo.processIdentifier,
                   MissionControlTransitionTokenPolicy.isValid(
                     self.transitionToken,
                     groupID: selectedGroupID,
                     presentationGeneration: selectedPresentationGeneration
                   ),
-                  !self.selectionWasDelivered,
-                  self.consumeSelectionConfirmation?(
-                    selectionCandidateGeneration,
-                    selectedGroupID,
-                    selectedMemberIDs
-                  ) == true else { return }
-            selectionWasConsumed = true
+                  !self.selectionWasDelivered else {
+                self.terminateSelectionConfirmation(
+                    candidateGeneration: candidateGeneration,
+                    selectedGroupID: selectedGroupID,
+                    selectedMemberIDs: selectedMemberIDs
+                )
+                return
+            }
+
+            let applicationIsSettled = NSApp.isActive
+                && NSWorkspace.shared.frontmostApplication?
+                    .processIdentifier
+                    == ProcessInfo.processInfo.processIdentifier
+            guard applicationIsSettled else {
+                if MissionControlProxySelectionConfirmationSettlementPolicy
+                    .delay(forAttempt: attempt + 1) != nil {
+                    self.scheduleSelectionConfirmationSettlement(
+                        selectionGeneration: selectionGeneration,
+                        candidateGeneration: candidateGeneration,
+                        selectedGroupID: selectedGroupID,
+                        selectedMemberIDs: selectedMemberIDs,
+                        selectedPresentationGeneration:
+                            selectedPresentationGeneration,
+                        attempt: attempt + 1
+                    )
+                } else {
+                    self.terminateSelectionConfirmation(
+                        candidateGeneration: candidateGeneration,
+                        selectedGroupID: selectedGroupID,
+                        selectedMemberIDs: selectedMemberIDs
+                    )
+                }
+                return
+            }
+
+            guard let confirmationDisposition =
+                    self.consumeSelectionConfirmation?(
+                        candidateGeneration,
+                        selectedGroupID,
+                        selectedMemberIDs
+                    ),
+                  confirmationDisposition != .rejected else {
+                self.terminateSelectionConfirmation(
+                    candidateGeneration: candidateGeneration,
+                    selectedGroupID: selectedGroupID,
+                    selectedMemberIDs: selectedMemberIDs
+                )
+                return
+            }
+            self.selectionConfirmationIsPending = false
             // One-shot authorization: key-window churn cannot replay the same
             // Mission Control transition evidence.
             self.transitionToken = nil
             self.selectionWasDelivered = true
             self.isSafelyPresented = false
             self.orderingValidationIsInFlight = false
-            // The proxy is the Window Server surface that Mission Control is
-            // already returning to the desktop. Keep its frozen composite
-            // above the exact group only while the controller performs the
-            // first per-window AXRaise sequence. Removing that selected
-            // surface in the middle of the compositor transition exposes the
-            // members one by one and looks like a final geometry correction,
-            // even though no frame mutation is being sent here.
-            self.level = .floating
-            self.orderFrontRegardless()
-            self.ignoresMouseEvents = true
-            self.onSelected?(selectedGroupID, selectedMemberIDs)
-            let handoffGeneration = self.selectionConfirmationGeneration
-            DispatchQueue.main.asyncAfter(
-                deadline: .now()
-                    + MissionControlSelectedProxyPresentationPolicy
-                        .maximumVisibleHandoffLifetime
-            ) { [weak self] in
-                guard let self,
-                      self.selectionConfirmationGeneration
-                        == handoffGeneration,
-                      self.selectionWasDelivered else { return }
-                // Never leave a large composite visible if activation cannot
-                // settle. Keep the selected surface registered and inert so
-                // orderOut itself cannot perturb an in-flight Window Server
-                // animation; controller success/cancellation retires it.
+
+            switch confirmationDisposition {
+            case .rejected:
+                return
+            case .queuedMigrationForegroundIntent:
+                // A queued migration selection authorizes only a future,
+                // post-transport z-order pass. Do not reuse the ordinary
+                // selected-Proxy floating handoff because no AXRaise happens
+                // in this Mission Control exit and the composite would flash
+                // above the real windows for no useful purpose. Keep the exact
+                // managed surface inert until migration retires it.
+                self.level = .normal
                 self.alphaValue = 0
                 self.ignoresMouseEvents = true
+                self.onQueuedMigrationSelected?(
+                    selectedGroupID,
+                    selectedMemberIDs
+                )
+            case .normalGroupActivation:
+                // The proxy is the Window Server surface that Mission Control
+                // is already returning to the desktop. Keep its frozen
+                // composite above the exact group only while the controller
+                // performs the first per-window AXRaise sequence.
+                self.level = .floating
+                self.orderFrontRegardless()
+                self.ignoresMouseEvents = true
+                self.onSelected?(selectedGroupID, selectedMemberIDs)
+                let handoffGeneration = self.selectionConfirmationGeneration
+                DispatchQueue.main.asyncAfter(
+                    deadline: .now()
+                        + MissionControlSelectedProxyPresentationPolicy
+                            .maximumVisibleHandoffLifetime
+                ) { [weak self] in
+                    guard let self,
+                          self.selectionConfirmationGeneration
+                            == handoffGeneration,
+                          self.selectionWasDelivered else { return }
+                    // Never leave a large composite visible if activation
+                    // cannot settle. Keep the selected surface registered and
+                    // inert so orderOut itself cannot perturb an in-flight
+                    // Window Server animation; controller success/cancellation
+                    // retires it.
+                    self.alphaValue = 0
+                    self.ignoresMouseEvents = true
+                }
             }
         }
+    }
+
+    private func terminateSelectionConfirmation(
+        candidateGeneration: UInt64,
+        selectedGroupID: SnapGroupID,
+        selectedMemberIDs: Set<String>
+    ) {
+        guard selectionConfirmationIsPending else { return }
+        selectionConfirmationIsPending = false
+        releaseSelectionConfirmation?(
+            candidateGeneration,
+            selectedGroupID,
+            selectedMemberIDs
+        )
+        cancelSelectionTransition()
+        onSelectionConfirmationTerminated?()
     }
 
     func windowDidResignKey(_ notification: Notification) {
@@ -1984,6 +2280,8 @@ private final class MissionControlGroupProxyWindow: NSWindow, NSWindowDelegate {
 
 private final class MissionControlGroupProxyView: NSView {
     var members: [MissionControlGroupProxyMember] = []
+    var spaceMigrationQueuePosition: Int?
+    var spaceMigrationQueueTotal = 0
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
@@ -2019,5 +2317,97 @@ private final class MissionControlGroupProxyView: NSView {
             }
             NSGraphicsContext.restoreGraphicsState()
         }
+        guard let queuePosition = spaceMigrationQueuePosition else { return }
+
+        NSColor.black.withAlphaComponent(0.58).setFill()
+        bounds.fill()
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .center
+        let presentation =
+            MissionControlGroupProxyMigrationPresentationPolicy.presentation(
+                queuePosition: queuePosition,
+                queueTotal: spaceMigrationQueueTotal
+            )
+        let title = presentation.title
+        let subtitle = presentation.subtitle
+        let horizontalInset = max(8, min(48, bounds.width * 0.07))
+        let verticalInset = max(8, min(42, bounds.height * 0.07))
+        let availableWidth = max(bounds.width - horizontalInset * 2, 1)
+        let availableHeight = max(bounds.height - verticalInset * 2, 1)
+        let titleFont = fittedFont(
+            text: title,
+            weight: .bold,
+            maximumPointSize: min(
+                MissionControlGroupProxyMigrationTypographyPolicy
+                    .titleMaximumPointSize,
+                availableHeight
+                    * MissionControlGroupProxyMigrationTypographyPolicy
+                        .titleHeightScale
+            ),
+            maximumWidth: availableWidth,
+            maximumHeight: availableHeight * 0.30
+        )
+        let subtitleFont = fittedFont(
+            text: subtitle,
+            weight: .semibold,
+            maximumPointSize: min(18, availableHeight * 0.09),
+            maximumWidth: availableWidth,
+            maximumHeight: availableHeight * 0.16
+        )
+        let titleAttributes: [NSAttributedString.Key: Any] = [
+            .font: titleFont,
+            .foregroundColor: NSColor.white,
+            .paragraphStyle: paragraph
+        ]
+        let subtitleAttributes: [NSAttributedString.Key: Any] = [
+            .font: subtitleFont,
+            .foregroundColor: NSColor.white.withAlphaComponent(0.88),
+            .paragraphStyle: paragraph
+        ]
+        let titleSize = title.size(withAttributes: titleAttributes)
+        let subtitleSize = subtitle.size(withAttributes: subtitleAttributes)
+        let spacing = max(5, min(22, availableHeight * 0.035))
+        let totalHeight = titleSize.height + spacing + subtitleSize.height
+        title.draw(
+            in: CGRect(
+                x: horizontalInset,
+                y: bounds.midY - totalHeight / 2,
+                width: availableWidth,
+                height: titleSize.height
+            ),
+            withAttributes: titleAttributes
+        )
+        subtitle.draw(
+            in: CGRect(
+                x: horizontalInset,
+                y: bounds.midY - totalHeight / 2
+                    + titleSize.height + spacing,
+                width: availableWidth,
+                height: subtitleSize.height
+            ),
+            withAttributes: subtitleAttributes
+        )
+    }
+
+    private func fittedFont(
+        text: String,
+        weight: NSFont.Weight,
+        maximumPointSize: CGFloat,
+        maximumWidth: CGFloat,
+        maximumHeight: CGFloat
+    ) -> NSFont {
+        var pointSize = max(1, maximumPointSize)
+        for _ in 0..<2 {
+            let font = NSFont.systemFont(ofSize: pointSize, weight: weight)
+            let size = text.size(withAttributes: [.font: font])
+            guard size.width > 0, size.height > 0 else { return font }
+            let scale = min(
+                1,
+                maximumWidth / size.width,
+                maximumHeight / size.height
+            )
+            pointSize = max(1, pointSize * scale)
+        }
+        return NSFont.systemFont(ofSize: pointSize, weight: weight)
     }
 }

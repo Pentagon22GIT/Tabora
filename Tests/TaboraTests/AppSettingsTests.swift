@@ -59,6 +59,10 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertFalse(AppSettings.defaultAssistLayoutSwitchingEnabled)
     }
 
+    func testMissionControlGroupMigrationIsExperimentalByDefault() {
+        XCTAssertFalse(AppSettings.defaultMissionControlGroupMigrationEnabled)
+    }
+
     func testResizeCursorAdornmentDistanceHasSafeDefaultAndClamps() {
         XCTAssertEqual(AppSettings.defaultResizeCursorAdornmentDistance, 8)
         XCTAssertEqual(AppSettings.normalizedResizeCursorAdornmentDistance(1), 4)

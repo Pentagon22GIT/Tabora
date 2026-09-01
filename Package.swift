@@ -8,6 +8,7 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "Tabora",
+            dependencies: ["TaboraSkyLightBridge"],
             linkerSettings: [
                 .linkedFramework("AppKit"),
                 .linkedFramework("ApplicationServices"),
@@ -15,6 +16,14 @@ let package = Package(
                 .linkedFramework("QuartzCore"),
                 .linkedFramework("Carbon"),
                 .linkedFramework("ServiceManagement")
+            ]
+        ),
+        .target(
+            name: "TaboraSkyLightBridge",
+            publicHeadersPath: "include",
+            linkerSettings: [
+                .linkedFramework("ApplicationServices"),
+                .linkedFramework("Foundation")
             ]
         ),
         .testTarget(

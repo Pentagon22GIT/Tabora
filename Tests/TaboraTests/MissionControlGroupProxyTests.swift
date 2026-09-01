@@ -3,6 +3,27 @@ import XCTest
 @testable import Tabora
 
 final class MissionControlGroupProxyTests: XCTestCase {
+    func testMigrationPresentationRemainsQueuedUntilProxyRetirement() {
+        let queued = MissionControlGroupProxyMigrationPresentationPolicy
+            .presentation(
+                queuePosition: 1,
+                queueTotal: 2
+            )
+        XCTAssertEqual(queued.title, "移動準備中")
+        XCTAssertEqual(
+            queued.subtitle,
+            "1/2  •  Mission Controlを閉じると移動"
+        )
+
+        let waiting = MissionControlGroupProxyMigrationPresentationPolicy
+            .presentation(queuePosition: 2, queueTotal: 2)
+        XCTAssertEqual(waiting.title, "移動待機")
+        XCTAssertEqual(
+            waiting.subtitle,
+            "2/2  •  Mission Controlを閉じると移動"
+        )
+    }
+
     func testPreviewAuthorizationIsRecheckedAfterCaptureAdmission() {
         var authorizationChecks = 0
         let image = AXWindowService().previewCGImage(
@@ -219,6 +240,57 @@ final class MissionControlGroupProxyTests: XCTestCase {
                     confirmationIsPending: false
                 )
         )
+    }
+
+    func testProxyConfirmationSettlementIsBoundedAndKeepsInitialLatency() {
+        XCTAssertEqual(
+            MissionControlProxySelectionConfirmationSettlementPolicy
+                .delay(forAttempt: 0),
+            0.14
+        )
+        let delays = MissionControlProxySelectionConfirmationSettlementPolicy
+            .observationDelays
+        XCTAssertFalse(delays.isEmpty)
+        XCTAssertNil(
+            MissionControlProxySelectionConfirmationSettlementPolicy
+                .delay(forAttempt: delays.count)
+        )
+        XCTAssertLessThan(
+            delays.reduce(0, +),
+            MissionControlTransitionTokenPolicy.lifetime
+        )
+    }
+
+    func testActiveSpaceCleanupPreservesOnlyNarrowSelectionOwnership() {
+        let confirmationGroup = SnapGroupID()
+        let activationGroup = SnapGroupID()
+
+        let migrationOnly = MissionControlActiveSpaceCleanupPolicy.decision(
+            confirmationOwnerGroupID: nil,
+            activationOwnerGroupID: nil,
+            migrationPresentationIsOwned: true
+        )
+        XCTAssertTrue(migrationOnly.preservedProxyGroupIDs.isEmpty)
+        XCTAssertFalse(migrationOnly.preservesProxyActivation)
+
+        let confirmation = MissionControlActiveSpaceCleanupPolicy.decision(
+            confirmationOwnerGroupID: confirmationGroup,
+            activationOwnerGroupID: nil,
+            migrationPresentationIsOwned: true
+        )
+        XCTAssertEqual(
+            confirmation.preservedProxyGroupIDs,
+            [confirmationGroup]
+        )
+        XCTAssertFalse(confirmation.preservesProxyActivation)
+
+        let activation = MissionControlActiveSpaceCleanupPolicy.decision(
+            confirmationOwnerGroupID: nil,
+            activationOwnerGroupID: activationGroup,
+            migrationPresentationIsOwned: false
+        )
+        XCTAssertEqual(activation.preservedProxyGroupIDs, [activationGroup])
+        XCTAssertTrue(activation.preservesProxyActivation)
     }
 
     func testMissionControlWholeGroupRetryIsBounded() {
@@ -843,6 +915,19 @@ final class MissionControlGroupProxyTests: XCTestCase {
                 .unresolved
             )
         }
+    }
+
+    func testMigrationProxyPreparationTitleUsesStrongerHierarchy() {
+        XCTAssertEqual(
+            MissionControlGroupProxyMigrationTypographyPolicy
+                .titleMaximumPointSize,
+            48
+        )
+        XCTAssertEqual(
+            MissionControlGroupProxyMigrationTypographyPolicy
+                .titleHeightScale,
+            0.25
+        )
     }
 
 }

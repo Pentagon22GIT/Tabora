@@ -391,6 +391,18 @@ extension SnapController {
         groupForegroundModes[groupID] = .automatic
     }
 
+    /// A settled system selection supersedes every earlier automatic grant.
+    /// Persistent solo isolation belongs to its own group and is intentionally
+    /// retained. The selected group can be rearmed in the same observation,
+    /// but only after its complete-frontmost postcondition is proven.
+    func closeAutomaticForegroundModes() {
+        guard groupForegroundModes.values.contains(.automatic) else { return }
+        groupForegroundModes = groupForegroundModes.mapValues { mode in
+            GroupForegroundAuthorizationPolicy
+                .modeAfterSystemSelectionSupersedesAutomatic(mode)
+        }
+    }
+
     func pruneForegroundStateForActiveGroups() {
         let activeGroupIDs = Set(explicitGroupStore.groups.map(\.id))
         groupForegroundModes = groupForegroundModes.filter {
@@ -531,7 +543,18 @@ extension SnapController {
         )
     }
 
-    func invalidatePendingGroupRaise() {
+    func invalidatePendingGroupRaise(
+        preservingMissionControlProxyActivation preserveActivation: Bool = false
+    ) {
+        // Once the exact selected Proxy has delivered its callback, every
+        // queued group-raise item belongs to that immutable activation
+        // generation: activation setup first invalidates all older desktop
+        // raises, then creates its own retry. Active Space publication may
+        // clear unrelated operations without cancelling this owner.
+        if preserveActivation,
+           activeMissionControlProxyActivation != nil {
+            return
+        }
         let invalidatedMissionControlSelection =
             activeMissionControlProxyActivation != nil
         if let activation = activeMissionControlProxyActivation {
@@ -620,8 +643,8 @@ extension SnapController {
         }
         ownedForegroundMutation = nil
         // Establish a fresh baseline after our AXRaise sequence. Otherwise
-        // the poller reports the final member as a new external selection.
-        windowServerSelectionPollState.reset()
+        // the fallback reports the final member as a new external selection.
+        foregroundSelectionMonitor.invalidateBaseline()
     }
 
     func automaticGroupRaiseIsSafe(

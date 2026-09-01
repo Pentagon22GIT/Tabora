@@ -209,6 +209,81 @@ final class SnapZoneTests: XCTestCase {
         )
     }
 
+    func testAssistCompletionLayoutSplitsOppositeHalfForEveryAxis() {
+        let cases: [(Set<SnapZone>, [SnapZone], [SnapZone])] = [
+            ([.leftHalf], [.leftHalf, .rightHalf],
+             [.leftHalf, .topRight, .bottomRight]),
+            ([.rightHalf], [.leftHalf, .rightHalf],
+             [.topLeft, .bottomLeft, .rightHalf]),
+            ([.topHalf], [.topHalf, .bottomHalf],
+             [.topHalf, .bottomLeft, .bottomRight]),
+            ([.bottomHalf], [.topHalf, .bottomHalf],
+             [.topLeft, .topRight, .bottomHalf])
+        ]
+        for (occupied, twoWindow, threeWindow) in cases {
+            XCTAssertEqual(
+                AssistCompletionLayoutPolicy.layoutForModifierState(
+                    occupiedZones: occupied,
+                    currentLayout: twoWindow,
+                    modifierIsPressed: true
+                ),
+                threeWindow
+            )
+            XCTAssertEqual(
+                AssistCompletionLayoutPolicy.layoutForModifierState(
+                    occupiedZones: occupied,
+                    currentLayout: threeWindow,
+                    modifierIsPressed: false
+                ),
+                twoWindow
+            )
+        }
+        XCTAssertNil(
+            AssistCompletionLayoutPolicy.threeWindowZonesStartingFromHalf(
+                occupiedZones: [.leftHalf, .topRight]
+            )
+        )
+    }
+
+    func testAssistHalfSplitRequiresTwoDistinctQuarterCandidates() {
+        let occupied: Set<SnapZone> = [.leftHalf]
+        XCTAssertEqual(
+            AssistCompletionLayoutPolicy.completionLayoutStartingFromHalf(
+                occupiedZones: occupied,
+                modifierIsPressed: true,
+                oppositeHalfCandidateCount: 2,
+                maximumDistinctSplitAssignments: 2
+            ),
+            [.leftHalf, .topRight, .bottomRight]
+        )
+        XCTAssertEqual(
+            AssistCompletionLayoutPolicy.completionLayoutStartingFromHalf(
+                occupiedZones: occupied,
+                modifierIsPressed: true,
+                oppositeHalfCandidateCount: 1,
+                maximumDistinctSplitAssignments: 1
+            ),
+            [.leftHalf, .rightHalf]
+        )
+        XCTAssertEqual(
+            AssistCompletionLayoutPolicy.completionLayoutStartingFromHalf(
+                occupiedZones: occupied,
+                modifierIsPressed: false,
+                oppositeHalfCandidateCount: 1,
+                maximumDistinctSplitAssignments: 2
+            ),
+            [.leftHalf, .rightHalf]
+        )
+        XCTAssertNil(
+            AssistCompletionLayoutPolicy.completionLayoutStartingFromHalf(
+                occupiedZones: occupied,
+                modifierIsPressed: false,
+                oppositeHalfCandidateCount: 0,
+                maximumDistinctSplitAssignments: 2
+            )
+        )
+    }
+
     func testAssistCompletionLayoutUsesTwoWindowOrMergedOneWindowRules() {
         let occupied: Set<SnapZone> = [.topLeft, .topRight]
         XCTAssertEqual(

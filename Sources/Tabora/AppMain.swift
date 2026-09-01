@@ -6,9 +6,11 @@ final class TaboraApp: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private let controller = SnapController()
     private let shortcutManager = GlobalShortcutManager()
+    private var settingsWindowIsVisible = false
     private lazy var settingsWindow: SettingsWindowController = {
         let controller = SettingsWindowController()
         controller.onVisibilityChange = { [weak self] isVisible in
+            self?.settingsWindowIsVisible = isVisible
             self?.controller.setApplicationUIVisible(isVisible)
         }
         controller.onConstraintMeasurementWillBegin = { [weak self] in
@@ -23,9 +25,14 @@ final class TaboraApp: NSObject, NSApplicationDelegate {
         controller.onMissionControlPreviewCacheClear = { [weak self] in
             self?.controller.clearMissionControlPreviewCache()
         }
+        controller.onMissionControlGroupMigrationRuntimeStatusRequest = {
+            [weak self] in
+            self?.controller.groupSpaceMigrationRuntimeStatus
+        }
         return controller
     }()
     private var settingsObserver: NSObjectProtocol?
+    private var groupSpaceMigrationAPIAlertIsPresented = false
 
     static func main() {
         let app = NSApplication.shared
@@ -48,6 +55,9 @@ final class TaboraApp: NSObject, NSApplicationDelegate {
 
         configureStatusItem()
         configureShortcuts()
+        controller.onGroupSpaceMigrationAPIUnavailable = { [weak self] notice in
+            self?.presentGroupSpaceMigrationAPIUnavailableAlert(notice)
+        }
         settingsObserver = NotificationCenter.default.addObserver(
             forName: AppSettings.didChangeNotification,
             object: nil,
@@ -106,6 +116,39 @@ final class TaboraApp: NSObject, NSApplicationDelegate {
             } else if let zone = action.zone {
                 self.controller.snapFocusedWindow(to: zone)
             }
+        }
+    }
+
+    private func presentGroupSpaceMigrationAPIUnavailableAlert(
+        _ notice: GroupSpaceMigrationAPIUnavailableNotice
+    ) {
+        guard !groupSpaceMigrationAPIAlertIsPresented else { return }
+        groupSpaceMigrationAPIAlertIsPresented = true
+        controller.setApplicationUIVisible(true)
+        defer {
+            groupSpaceMigrationAPIAlertIsPresented = false
+            controller.setApplicationUIVisible(
+                settingsWindowIsVisible
+            )
+        }
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Desktop間移送を利用できません"
+        let currentSystem = ProcessInfo.processInfo.operatingSystemVersionString
+        alert.informativeText =
+            "Taboraがグループ移送に必要な非公開APIを呼び出せませんでした。"
+            + "macOSの更新でAPIが変更された可能性があります。\n\n"
+            + "安全のため、設定の試験的機能からこの機能をオフにすることを推奨します。\n\n"
+            + "現在の環境: \(currentSystem)\n"
+            + "\(GroupSpaceMigrationRuntimeStatus.verifiedEnvironmentDescription)\n"
+            + "詳細: \(notice.detail)"
+        alert.addButton(withTitle: "機能をオフにする")
+        let closeButton = alert.addButton(withTitle: "このまま閉じる")
+        closeButton.keyEquivalent = "\u{1b}"
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn {
+            AppSettings.shared.missionControlGroupMigrationEnabled = false
         }
     }
 

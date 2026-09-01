@@ -29,6 +29,9 @@ final class TaboraApp: NSObject, NSApplicationDelegate {
             [weak self] in
             self?.controller.groupSpaceMigrationRuntimeStatus
         }
+        controller.onLanguageApply = { [weak self] language in
+            self?.relaunch(using: language) ?? false
+        }
         return controller
     }()
     private var settingsObserver: NSObjectProtocol?
@@ -76,34 +79,34 @@ final class TaboraApp: NSObject, NSApplicationDelegate {
         statusItem.button?.image = NSImage(systemSymbolName: "rectangle.split.2x1", accessibilityDescription: "Tabora")
 
         let menu = NSMenu()
-        menu.addItem(withTitle: "機能を一時停止", action: #selector(toggleEnabled(_:)), keyEquivalent: "")
+        menu.addItem(withTitle: L10n.text("menu.pause"), action: #selector(toggleEnabled(_:)), keyEquivalent: "")
         menu.addItem(.separator())
-        menu.addItem(withTitle: "左半分", action: #selector(snapLeft), keyEquivalent: "")
-        menu.addItem(withTitle: "右半分", action: #selector(snapRight), keyEquivalent: "")
-        menu.addItem(withTitle: "上半分", action: #selector(snapTop), keyEquivalent: "")
-        menu.addItem(withTitle: "下半分", action: #selector(snapBottom), keyEquivalent: "")
+        menu.addItem(withTitle: L10n.text("zone.left_half"), action: #selector(snapLeft), keyEquivalent: "")
+        menu.addItem(withTitle: L10n.text("zone.right_half"), action: #selector(snapRight), keyEquivalent: "")
+        menu.addItem(withTitle: L10n.text("zone.top_half"), action: #selector(snapTop), keyEquivalent: "")
+        menu.addItem(withTitle: L10n.text("zone.bottom_half"), action: #selector(snapBottom), keyEquivalent: "")
         menu.addItem(.separator())
-        menu.addItem(withTitle: "左上", action: #selector(snapTopLeft), keyEquivalent: "")
-        menu.addItem(withTitle: "右上", action: #selector(snapTopRight), keyEquivalent: "")
-        menu.addItem(withTitle: "左下", action: #selector(snapBottomLeft), keyEquivalent: "")
-        menu.addItem(withTitle: "右下", action: #selector(snapBottomRight), keyEquivalent: "")
-        menu.addItem(withTitle: "最大化", action: #selector(maximize), keyEquivalent: "")
+        menu.addItem(withTitle: L10n.text("zone.top_left"), action: #selector(snapTopLeft), keyEquivalent: "")
+        menu.addItem(withTitle: L10n.text("zone.top_right"), action: #selector(snapTopRight), keyEquivalent: "")
+        menu.addItem(withTitle: L10n.text("zone.bottom_left"), action: #selector(snapBottomLeft), keyEquivalent: "")
+        menu.addItem(withTitle: L10n.text("zone.bottom_right"), action: #selector(snapBottomRight), keyEquivalent: "")
+        menu.addItem(withTitle: L10n.text("zone.maximize"), action: #selector(maximize), keyEquivalent: "")
         menu.addItem(.separator())
-        menu.addItem(withTitle: "直前の配置を戻す", action: #selector(restoreLast), keyEquivalent: "")
-        menu.addItem(withTitle: "固定状態を解除", action: #selector(clearLocks), keyEquivalent: "")
+        menu.addItem(withTitle: L10n.text("command.restore_last"), action: #selector(restoreLast), keyEquivalent: "")
+        menu.addItem(withTitle: L10n.text("menu.clear_locks"), action: #selector(clearLocks), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(
-            withTitle: "選択中のウィンドウをグループから外す",
+            withTitle: L10n.text("menu.detach_window"),
             action: #selector(detachFocusedWindowFromGroup),
             keyEquivalent: ""
         )
         menu.addItem(.separator())
-        menu.addItem(withTitle: "更新を確認…", action: #selector(checkForUpdates), keyEquivalent: "")
-        menu.addItem(withTitle: "設定…", action: #selector(openSettings), keyEquivalent: ",")
-        menu.addItem(withTitle: "アクセシビリティ設定を開く", action: #selector(openAccessibilitySettings), keyEquivalent: "")
-        menu.addItem(withTitle: "状態をリセット", action: #selector(resetState), keyEquivalent: "")
+        menu.addItem(withTitle: L10n.text("menu.check_updates"), action: #selector(checkForUpdates), keyEquivalent: "")
+        menu.addItem(withTitle: L10n.text("menu.settings"), action: #selector(openSettings), keyEquivalent: ",")
+        menu.addItem(withTitle: L10n.text("menu.open_accessibility"), action: #selector(openAccessibilitySettings), keyEquivalent: "")
+        menu.addItem(withTitle: L10n.text("menu.reset_state"), action: #selector(resetState), keyEquivalent: "")
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Taboraを終了", action: #selector(quit), keyEquivalent: "q")
+        menu.addItem(withTitle: L10n.text("menu.quit"), action: #selector(quit), keyEquivalent: "q")
         menu.items.forEach { $0.target = self }
         statusItem.menu = menu
     }
@@ -134,17 +137,16 @@ final class TaboraApp: NSObject, NSApplicationDelegate {
 
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = "Desktop間移送を利用できません"
+        alert.messageText = L10n.text("migration.api_unavailable.title")
         let currentSystem = ProcessInfo.processInfo.operatingSystemVersionString
-        alert.informativeText =
-            "Taboraがグループ移送に必要な非公開APIを呼び出せませんでした。"
-            + "macOSの更新でAPIが変更された可能性があります。\n\n"
-            + "安全のため、設定の試験的機能からこの機能をオフにすることを推奨します。\n\n"
-            + "現在の環境: \(currentSystem)\n"
-            + "\(GroupSpaceMigrationRuntimeStatus.verifiedEnvironmentDescription)\n"
-            + "詳細: \(notice.detail)"
-        alert.addButton(withTitle: "機能をオフにする")
-        let closeButton = alert.addButton(withTitle: "このまま閉じる")
+        alert.informativeText = L10n.format(
+            "migration.api_unavailable.detail",
+            currentSystem,
+            GroupSpaceMigrationRuntimeStatus.verifiedEnvironmentDescription,
+            notice.kind.localizedDescription
+        )
+        alert.addButton(withTitle: L10n.text("migration.api_unavailable.disable"))
+        let closeButton = alert.addButton(withTitle: L10n.text("common.close_without_changes"))
         closeButton.keyEquivalent = "\u{1b}"
         NSApplication.shared.activate(ignoringOtherApps: true)
         if alert.runModal() == .alertFirstButtonReturn {
@@ -154,7 +156,9 @@ final class TaboraApp: NSObject, NSApplicationDelegate {
 
     @objc private func toggleEnabled(_ sender: NSMenuItem) {
         controller.isEnabled.toggle()
-        sender.title = controller.isEnabled ? "機能を一時停止" : "機能を再開"
+        sender.title = controller.isEnabled
+            ? L10n.text("menu.pause")
+            : L10n.text("menu.resume")
     }
 
     @objc private func snapLeft() { controller.snapFocusedWindow(to: .leftHalf) }
@@ -189,5 +193,41 @@ final class TaboraApp: NSObject, NSApplicationDelegate {
 
     @objc private func quit() {
         NSApplication.shared.terminate(nil)
+    }
+
+    private func relaunch(using language: AppLanguage) -> Bool {
+        let appURL = Bundle.main.bundleURL
+        guard appURL.pathExtension == "app" else { return false }
+
+        let script = """
+        readonly tabora_relaunch_parent_pid="$1"
+        readonly tabora_relaunch_app_path="$2"
+        tabora_relaunch_attempt=0
+        while /bin/kill -0 "$tabora_relaunch_parent_pid" 2>/dev/null && [ "$tabora_relaunch_attempt" -lt 150 ]; do
+          /bin/sleep 0.1
+          tabora_relaunch_attempt=$((tabora_relaunch_attempt + 1))
+        done
+        /bin/kill -0 "$tabora_relaunch_parent_pid" 2>/dev/null && exit 1
+        exec /usr/bin/open -g "$tabora_relaunch_app_path"
+        """
+        let helper = Process()
+        helper.executableURL = URL(fileURLWithPath: "/bin/sh")
+        helper.arguments = [
+            "-c",
+            script,
+            "tabora-relauncher",
+            String(ProcessInfo.processInfo.processIdentifier),
+            appURL.path
+        ]
+        do {
+            try helper.run()
+        } catch {
+            return false
+        }
+
+        AppLanguage.persist(language)
+        UserDefaults.standard.synchronize()
+        NSApplication.shared.terminate(nil)
+        return true
     }
 }

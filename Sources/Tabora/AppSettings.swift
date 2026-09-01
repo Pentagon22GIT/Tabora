@@ -18,7 +18,7 @@ struct ShortcutBinding: Codable, Equatable {
 
     private func keyName(for code: UInt16) -> String {
         let names: [UInt16: String] = [
-            36: "↩", 48: "⇥", 49: "Space", 51: "⌫", 53: "⎋",
+            36: "↩", 48: "⇥", 49: L10n.text("key.space"), 51: "⌫", 53: "⎋",
             123: "←", 124: "→", 125: "↓", 126: "↑"
         ]
         if let name = names[code] { return name }
@@ -33,9 +33,9 @@ struct ShortcutBinding: Codable, Equatable {
             charactersIgnoringModifiers: "",
             isARepeat: false,
             keyCode: code
-        ) else { return "Key \(code)" }
+        ) else { return L10n.format("key.unknown", Int(code)) }
         let value = event.charactersIgnoringModifiers?.uppercased() ?? ""
-        return value.isEmpty ? "Key \(code)" : value
+        return value.isEmpty ? L10n.format("key.unknown", Int(code)) : value
     }
 }
 
@@ -45,7 +45,7 @@ enum ShortcutAction: String, CaseIterable, Codable {
     case maximize, restoreLast
 
     var title: String {
-        if self == .restoreLast { return "直前の配置を戻す" }
+        if self == .restoreLast { return L10n.text("command.restore_last") }
         return SnapZone(rawValue: rawValue)?.displayName ?? rawValue
     }
 

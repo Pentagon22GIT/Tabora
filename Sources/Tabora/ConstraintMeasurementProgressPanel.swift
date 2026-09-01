@@ -9,7 +9,7 @@ final class ConstraintMeasurementProgressPanel: NSObject {
     private let detailLabel = NSTextField(wrappingLabelWithString: "")
     private let progressIndicator = NSProgressIndicator()
     private lazy var doneButton = NSButton(
-        title: "完了",
+        title: L10n.text("common.done"),
         target: self,
         action: #selector(completeAcknowledgement)
     )
@@ -24,7 +24,7 @@ final class ConstraintMeasurementProgressPanel: NSObject {
         )
         super.init()
 
-        panel.title = "サイズ取得"
+        panel.title = L10n.text("settings.constraints.measure")
         panel.level = .floating
         panel.isReleasedWhenClosed = false
         panel.hidesOnDeactivate = false
@@ -78,8 +78,8 @@ final class ConstraintMeasurementProgressPanel: NSObject {
         acknowledgement: (() -> Void)? = nil
     ) {
         self.acknowledgement = acknowledgement
-        titleLabel.stringValue = "\(displayName) のサイズを取得中"
-        detailLabel.stringValue = "対象ウィンドウを確認しています…"
+        titleLabel.stringValue = L10n.format("constraint.progress.title", displayName)
+        detailLabel.stringValue = L10n.text("constraint.progress.checking_window")
         detailLabel.textColor = .secondaryLabelColor
         progressIndicator.doubleValue = 0
         doneButton.isEnabled = false
@@ -91,11 +91,14 @@ final class ConstraintMeasurementProgressPanel: NSObject {
         progressIndicator.doubleValue = progress.fractionCompleted
         switch progress.phase {
         case .preparing:
-            detailLabel.stringValue = "計測前の状態を確認しています…"
+            detailLabel.stringValue = L10n.text("constraint.progress.preparing")
         case .measuring(let bound):
-            detailLabel.stringValue = "\(Self.title(for: bound))を取得しています…"
+            detailLabel.stringValue = L10n.format(
+                "constraint.progress.probing",
+                Self.title(for: bound)
+            )
         case .restoringOriginalFrame:
-            detailLabel.stringValue = "元の位置とサイズへ戻しています…"
+            detailLabel.stringValue = L10n.text("constraint.progress.restoring")
         }
     }
 
@@ -105,14 +108,17 @@ final class ConstraintMeasurementProgressPanel: NSObject {
         displayName: String
     ) {
         progressIndicator.doubleValue = min(max(fractionCompleted, 0), 1)
-        titleLabel.stringValue = "\(displayName) のサイズを取得中"
+        titleLabel.stringValue = L10n.format("constraint.progress.title", displayName)
         switch progress.phase {
         case .preparing:
-            detailLabel.stringValue = "計測前の状態を確認しています…"
+            detailLabel.stringValue = L10n.text("constraint.progress.preparing")
         case .measuring(let bound):
-            detailLabel.stringValue = "\(Self.title(for: bound))を取得しています…"
+            detailLabel.stringValue = L10n.format(
+                "constraint.progress.probing",
+                Self.title(for: bound)
+            )
         case .restoringOriginalFrame:
-            detailLabel.stringValue = "元の位置とサイズへ戻しています…"
+            detailLabel.stringValue = L10n.text("constraint.progress.restoring")
         }
     }
 
@@ -120,16 +126,16 @@ final class ConstraintMeasurementProgressPanel: NSObject {
         progressIndicator.doubleValue = 1
         doneButton.isEnabled = true
         if !restoredOriginalFrame {
-            titleLabel.stringValue = "元のサイズへ戻せませんでした"
-            detailLabel.stringValue = "対象ウィンドウの現在の状態を確認してください。"
+            titleLabel.stringValue = L10n.text("constraint.result.restore_failed.title")
+            detailLabel.stringValue = L10n.text("constraint.result.restore_failed.detail")
             detailLabel.textColor = .systemRed
         } else if confirmedValueCount == 0 {
-            titleLabel.stringValue = "取得できるサイズ制約はありませんでした"
-            detailLabel.stringValue = "保存済みの値は変更していません。"
+            titleLabel.stringValue = L10n.text("constraint.result.empty.title")
+            detailLabel.stringValue = L10n.text("constraint.result.empty.detail")
             detailLabel.textColor = .secondaryLabelColor
         } else {
-            titleLabel.stringValue = "サイズの取得が完了しました"
-            detailLabel.stringValue = "取得できたサイズ制約を記録しました。"
+            titleLabel.stringValue = L10n.text("constraint.result.completed.title")
+            detailLabel.stringValue = L10n.text("constraint.result.completed.detail")
             detailLabel.textColor = .secondaryLabelColor
         }
         panel.orderFrontRegardless()
@@ -162,10 +168,10 @@ final class ConstraintMeasurementProgressPanel: NSObject {
 
     private static func title(for bound: AppConstraintBound) -> String {
         switch bound {
-        case .minWidth: return "最小幅"
-        case .minHeight: return "最小高"
-        case .maxWidth: return "最大幅"
-        case .maxHeight: return "最大高"
+        case .minWidth: return L10n.text("constraint.bound.min_width")
+        case .minHeight: return L10n.text("constraint.bound.min_height")
+        case .maxWidth: return L10n.text("constraint.bound.max_width")
+        case .maxHeight: return L10n.text("constraint.bound.max_height")
         }
     }
 }

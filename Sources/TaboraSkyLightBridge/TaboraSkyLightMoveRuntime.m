@@ -242,12 +242,12 @@ BOOL TSLMoveRuntimeDispatchWindows(
     NSString * _Nullable * _Nullable diagnostic
 ) {
     if (windowIDs.count == 0 || destinationSpaceID == 0) {
-        if (diagnostic) *diagnostic = @"入力拒否: window/Spaceが空です";
+        if (diagnostic) *diagnostic = @"rejected: empty window or Space input";
         return NO;
     }
     for (NSNumber *windowID in windowIDs) {
         if (windowID.unsignedIntValue == 0) {
-            if (diagnostic) *diagnostic = @"入力拒否: WindowID=0です";
+            if (diagnostic) *diagnostic = @"rejected: WindowID is zero";
             return NO;
         }
     }
@@ -256,7 +256,7 @@ BOOL TSLMoveRuntimeDispatchWindows(
     Class operationClass = objc_getClass(TSLMoveOperationClassName);
     if (!TSLMoveRuntimeIsAvailable() || !operationClass) {
         if (diagnostic) {
-            *diagnostic = [@"runtime拒否: " stringByAppendingString:
+            *diagnostic = [@"runtime unavailable: " stringByAppendingString:
                 TSLMoveRuntimeCopyDiagnosticDescription()];
         }
         return NO;
@@ -268,14 +268,14 @@ BOOL TSLMoveRuntimeDispatchWindows(
                                           spaceID:destinationSpaceID];
         if (!operation) {
             if (diagnostic) {
-                *diagnostic = @"operation生成失敗: initializerがnilを返しました";
+                *diagnostic = @"operation creation failed: initializer returned nil";
             }
             return NO;
         }
         int64_t dispatchValue = runtime->performBridgedOperation(operation);
         if (diagnostic) {
             *diagnostic = [NSString stringWithFormat:
-                @"handoff完了: source=%@ opaqueResult=%lld",
+                @"handoff completed: source=%@ opaqueResult=%lld",
                 TSLPerformResolutionSourceDescription(
                     runtime->performResolutionSource
                 ),
@@ -286,7 +286,7 @@ BOOL TSLMoveRuntimeDispatchWindows(
     } @catch (NSException *exception) {
         if (diagnostic) {
             *diagnostic = [NSString stringWithFormat:
-                @"例外拒否: %@",
+                @"rejected by exception: %@",
                 exception.name ?: @"unknown"
             ];
         }

@@ -2476,7 +2476,7 @@ final class AXWindowService {
             let title: String = copyAttribute(
                 element,
                 kAXTitleAttribute as CFString
-            ) ?? app.localizedName ?? "ウィンドウ"
+            ) ?? app.localizedName ?? L10n.text("common.window")
             let minimized: Bool = copyAttribute(
                 element,
                 kAXMinimizedAttribute as CFString
@@ -2488,7 +2488,9 @@ final class AXWindowService {
             return ManagedWindow(
                 element: element,
                 pid: pid,
-                title: title.isEmpty ? (app.localizedName ?? "ウィンドウ") : title,
+                title: title.isEmpty
+                    ? (app.localizedName ?? L10n.text("common.window"))
+                    : title,
                 appIcon: app.icon,
                 frame: frame,
                 isMinimized: minimized,

@@ -22,15 +22,15 @@ enum SnapZone: String, Equatable, CaseIterable, Codable {
 
     var displayName: String {
         switch self {
-        case .leftHalf: return "左半分"
-        case .rightHalf: return "右半分"
-        case .topHalf: return "上半分"
-        case .bottomHalf: return "下半分"
-        case .topLeft: return "左上"
-        case .topRight: return "右上"
-        case .bottomLeft: return "左下"
-        case .bottomRight: return "右下"
-        case .maximize: return "最大化"
+        case .leftHalf: return L10n.text("zone.left_half")
+        case .rightHalf: return L10n.text("zone.right_half")
+        case .topHalf: return L10n.text("zone.top_half")
+        case .bottomHalf: return L10n.text("zone.bottom_half")
+        case .topLeft: return L10n.text("zone.top_left")
+        case .topRight: return L10n.text("zone.top_right")
+        case .bottomLeft: return L10n.text("zone.bottom_left")
+        case .bottomRight: return L10n.text("zone.bottom_right")
+        case .maximize: return L10n.text("zone.maximize")
         }
     }
 

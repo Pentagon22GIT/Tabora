@@ -39,11 +39,14 @@ extension SnapController {
             guard currentPermission == .undecided else { continue }
             let alert = NSAlert()
             alert.alertStyle = .informational
-            alert.messageText = "\(request.displayName) のサイズ制約の可能性を検出しました。"
+            alert.messageText = L10n.format(
+                "constraints.permission.title",
+                request.displayName
+            )
             alert.informativeText =
-                "記録を許可し、対象ウィンドウを動かして取得できるすべての最小・最大サイズを取得しますか？"
-            alert.addButton(withTitle: "取得する")
-            let denyButton = alert.addButton(withTitle: "許可しない")
+                L10n.text("constraints.permission.detail")
+            alert.addButton(withTitle: L10n.text("common.measure"))
+            let denyButton = alert.addButton(withTitle: L10n.text("common.deny"))
             denyButton.keyEquivalent = "\u{1b}"
             let response = alert.runModal()
             _ = appConstraintRegistry.ensureRecord(
@@ -94,7 +97,7 @@ extension SnapController {
         permissionConstraintMeasurementIsActive = true
         let displayName = requests.count == 1
             ? requests[0].displayName
-            : "\(requests.count)件のアプリ"
+            : L10n.format("constraints.multiple_apps", requests.count)
         permissionConstraintMeasurementProgressPanel.begin(
             displayName: displayName,
             screen: NSScreen.main

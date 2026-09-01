@@ -112,7 +112,6 @@ final class GroupSpaceMigrationLine {
         return GroupSpaceMigrationRuntimeStatus(
             isAvailable: capabilities.contains(.migrationMinimum),
             detail: capabilities.missingMigrationComponentDescription
-                + " / " + transportPort.moveRuntimeDiagnosticDescription
         )
     }
 

@@ -178,7 +178,7 @@ final class GroupSpaceMigrationTests: XCTestCase {
     func testVerifiedMigrationEnvironmentRemainsExplicit() {
         XCTAssertEqual(
             GroupSpaceMigrationRuntimeStatus.verifiedEnvironmentDescription,
-            "動作確認済み: macOS 26.5.2 / 26.6.2（2026-08-30）"
+            L10n.text("migration.verified_environment")
         )
     }
 
@@ -190,7 +190,13 @@ final class GroupSpaceMigrationTests: XCTestCase {
         ]
         XCTAssertEqual(
             capabilities.missingMigrationComponentDescription,
-            "不足: Space→Display解決, bridged move dispatch"
+            L10n.format(
+                "migration.component.missing",
+                [
+                    L10n.text("migration.component.read_space_display"),
+                    L10n.text("migration.component.dispatch_move")
+                ].joined(separator: ", ")
+            )
         )
     }
 

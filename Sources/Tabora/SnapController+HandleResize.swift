@@ -1042,7 +1042,8 @@ extension SnapController {
                 zone: placement.zone,
                 originalFrame: window.frame,
                 appConstraintIdentity: learningIdentity?.identity,
-                appConstraintDisplayName: learningIdentity?.displayName ?? "App",
+                appConstraintDisplayName: learningIdentity?.displayName
+                    ?? L10n.text("common.app"),
                 appConstraintLimits: limits,
                 targetFrame: window.frame
             )

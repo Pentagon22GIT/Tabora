@@ -8,16 +8,18 @@ enum WorkspaceEdgeDelayError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .commandFailed(let detail):
-            return detail.isEmpty
-                ? "macOSのWorkspace設定を変更できませんでした。"
-                : detail
+        case .commandFailed:
+            return L10n.text("workspace.error.command_failed")
         case .invalidStoredValue:
-            return "現在のworkspaces-edge-delayを数値として読み取れませんでした。"
+            return L10n.text("workspace.error.invalid_readback")
         case .verificationFailed:
-            return "設定を書き込んだ後の確認結果が一致しませんでした。"
+            return L10n.text("workspace.error.verification_failed")
         case .rollbackFailed(let primary, let rollback):
-            return "設定変更に失敗し、元の値への復元にも失敗しました。変更が部分的に適用されている可能性があります。\n変更エラー: \(primary)\n復元エラー: \(rollback)"
+            return L10n.format(
+                "workspace.error.rollback_failed",
+                primary,
+                rollback
+            )
         }
     }
 }
@@ -195,7 +197,11 @@ final class ExperimentalWorkspaceSettings {
         let outputPipe = Pipe()
         process.standardOutput = outputPipe
         process.standardError = outputPipe
-        try process.run()
+        do {
+            try process.run()
+        } catch {
+            throw WorkspaceEdgeDelayError.commandFailed("")
+        }
         // Drain the pipe while the child can still make progress. Waiting for
         // exit first can deadlock if a future command fills the pipe buffer.
         let data = outputPipe.fileHandleForReading.readDataToEndOfFile()

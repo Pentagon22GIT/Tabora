@@ -605,9 +605,9 @@ extension SnapController: GroupSpaceMigrationHost {
         guard let displayOrdinal = explicitGroupStore.displayOrdinal(
             for: groupID
         ) else {
-            return "グループ"
+            return L10n.text("group.title")
         }
-        return "グループ \(displayOrdinal)"
+        return L10n.format("group.number", displayOrdinal)
     }
 
     func groupSpaceMigrationDidDetectUnavailableAPI(

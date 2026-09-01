@@ -46,6 +46,9 @@ swift test
 - Mission Control Previewの16 / 32 / 128 MiB、cache解放、多数windowで15秒を跨ぐstale-while-revalidate
 - Activity Monitorでidle / 複数group / 多数window / Preview ON・OFFのCPUとEnergy Impactを比較し、定常的な異常負荷がないこと
 - settings / shortcuts
+- 5言語の設定、メニュー、Alert、Panel、権限説明を確認し、言語選択時に適用ボタンだけが選択先言語へ即時更新されること
+- 言語適用で同じapp bundleが一度だけ再起動し、全UIへ反映されること。App Constraint計測中は再起動せず、helper起動失敗時は現在processと保存言語を維持すること
+- 初回言語決定、日本語fallback、保存後にmacOS言語変更へ追従しないこと、および全言語のkey / placeholder一致を`LocalizationTests`で確認すること
 - v1.0.1以降では、straight boundaryを持つmulti-member replacement、misaligned boundaryの拒否、blocked後の既存group保持、drag / shortcut / menu parity
 
 非公開APIを変更したReleaseでは、[PRIVATE_API_GROUP_SPACE_MIGRATION.md](PRIVATE_API_GROUP_SPACE_MIGRATION.md)のmacOS更新時の保守手順とRelease確認表も必須とします。compile成功やdispatch戻り値だけを互換性の根拠にせず、実Window→Space membershipで物理到達を確認します。
@@ -54,7 +57,9 @@ swift test
 
 ### 最新の完了記録
 
-**2026-09-01 / 検証対象 v2.0.0 (Build 14) / 次期v2.0.1調整時点**
+**2026-09-01 / 検証対象 v2.1.0 (Build 16)**
+
+v2.1.0ではアプリ内UIとresource packagingだけが変更対象です。下記の処理系項目はv2.0.0の実機完了記録を基準に、v2.1.0差分がSnap / Group / Resize / Recovery / AX / Mission Controlの実行経路を変更していないことを始点・終点のsource差分監査で確認して継承します。言語適用と再起動はv2.1.0で別途確認済みです。
 
 - [x] 2 / 3 / 4 split、shared resize、replacement、Recoveryを実機確認
 - [x] Mission Control Proxy選択、Foreground、Desktop間group migrationを実機確認
@@ -65,6 +70,7 @@ swift test
 - [x] Architecture / Security Invariants / Foreground / Migration / Privacy / README / CHANGELOGの整合を確認
 - [x] Fast CI / Tabora Safety Invariants / CodeQLのRelease監査状態を確認
 - [x] dependency / secret alertとrelease差分のprivate data混入がないことを確認
+- [x] 5言語の全resource、権限説明、key / placeholder一致、アプリ内表示、適用ボタンの即時翻訳、再起動後の全体反映を確認
 
 性能検証の詳細は[PERFORMANCE_VALIDATION.md](PERFORMANCE_VALIDATION.md)に記録する。将来のReleaseではこの完了記録を根拠に手順自体を省略せず、変更範囲に応じて再確認する。
 

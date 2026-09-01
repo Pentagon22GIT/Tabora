@@ -534,9 +534,10 @@ private final class GroupSpaceMigrationReservationShadowView: NSView {
         let textFrame = frame.insetBy(dx: inset, dy: inset)
         guard textFrame.width > 12, textFrame.height > 12 else { return }
 
+        let reservationStatus = L10n.text("migration.shadow.reserved")
         var lines: [(text: String, weight: NSFont.Weight, scale: CGFloat)] = [
             (
-                "移動予約中",
+                reservationStatus,
                 .bold,
                 GroupSpaceMigrationReservationShadowTypographyPolicy
                     .statusHeightScale
@@ -549,7 +550,11 @@ private final class GroupSpaceMigrationReservationShadowView: NSView {
            let position = item.queuePosition,
            let total = item.queueTotal,
            total > 1 {
-            lines.append(("待機 \(position)/\(total)", .medium, 0.115))
+            lines.append((
+                L10n.format("migration.shadow.waiting", position, total),
+                .medium,
+                0.115
+            ))
         }
 
         let spacing = max(2, min(7, textFrame.height * 0.025))
@@ -563,7 +568,7 @@ private final class GroupSpaceMigrationReservationShadowView: NSView {
                 text: line.text,
                 weight: line.weight,
                 maximumPointSize: min(
-                    line.text == "移動予約中"
+                    line.text == reservationStatus
                         ? GroupSpaceMigrationReservationShadowTypographyPolicy
                             .statusMaximumPointSize
                         : 22,
@@ -627,4 +632,3 @@ private final class GroupSpaceMigrationReservationShadowView: NSView {
         return NSFont.systemFont(ofSize: max(1, pointSize), weight: weight)
     }
 }
-

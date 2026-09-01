@@ -1,0 +1,2 @@
+"NSAccessibilityUsageDescription" = "Tabora 使用「輔助使用」權限來移動視窗、調整視窗大小並進行貼齊佈局。";
+"NSScreenCaptureUsageDescription" = "啟用後，Tabora 使用「螢幕錄製」權限在佈局建議中顯示視窗預覽。";

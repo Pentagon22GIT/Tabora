@@ -5,7 +5,12 @@ final class AppSettingsTests: XCTestCase {
     func testSettingsCategoriesUseTheRequestedStableOrder() {
         XCTAssertEqual(
             SettingsCategory.allCases.map(\.title),
-            ["一般", "コマンド", "サイズ制約", "試験的機能"]
+            [
+                L10n.text("settings.category.general"),
+                L10n.text("settings.category.commands"),
+                L10n.text("settings.category.constraints"),
+                L10n.text("settings.category.experimental")
+            ]
         )
     }
 

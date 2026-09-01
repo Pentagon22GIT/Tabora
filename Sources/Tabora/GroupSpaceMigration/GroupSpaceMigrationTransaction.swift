@@ -262,6 +262,15 @@ enum GroupSpaceMigrationDispatchReadinessPolicy {
 enum GroupSpaceMigrationAPIFailureKind: String, Equatable {
     case runtimeUnavailable
     case dispatchRejected
+
+    var localizedDescription: String {
+        switch self {
+        case .runtimeUnavailable:
+            return L10n.text("migration.failure.runtime_unavailable")
+        case .dispatchRejected:
+            return L10n.text("migration.failure.dispatch_rejected")
+        }
+    }
 }
 
 struct GroupSpaceMigrationAPIUnavailableNotice: Equatable {
@@ -296,8 +305,9 @@ enum GroupSpaceMigrationAPIFailurePolicy {
 }
 
 struct GroupSpaceMigrationRuntimeStatus: Equatable {
-    static let verifiedEnvironmentDescription =
-        "動作確認済み: macOS 26.5.2 / 26.6.2（2026-08-30）"
+    static var verifiedEnvironmentDescription: String {
+        L10n.text("migration.verified_environment")
+    }
 
     let isAvailable: Bool
     let detail: String

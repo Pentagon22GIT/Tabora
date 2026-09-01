@@ -69,7 +69,9 @@ SnapFlow Final Baseline自体は移行前にユーザーが動作確認済みで
 
 ## 後続macOS実機監査の完了
 
-最新完了記録: **2026-09-01 / Tabora v2.0.0 (Build 14) / macOS 26.6.2**
+最新適用確認: **2026-09-01 / Tabora v2.1.0 (Build 16) / macOS 26.6.2**
+
+実機機能監査はv2.0.0 Build 14で完了した記録を基準とします。v2.1.0ではアプリ内localizationと安全な再起動境界だけを追加し、Snap / Group / Resize / Recovery / AX / Mission Control migrationの処理コードに変更がないことをsource差分の始点・終点監査で確認したため、完了状態を継承します。
 
 上記の移行時監査でLinux環境のため成功扱いしなかったruntime項目は、その後のmacOS実機開発・Release監査で確認を完了しました。移行時点の記録は履歴として維持し、現在の確認状態を次に固定します。
 
@@ -84,4 +86,3 @@ SnapFlow Final Baseline自体は移行前にユーザーが動作確認済みで
 - [x] Privacy / Security / Architecture / Release文書と現行挙動の整合を再監査
 
 性能面の最新値は[PERFORMANCE_VALIDATION.md](PERFORMANCE_VALIDATION.md)、Space移送の現行Release確認は[PRIVATE_API_GROUP_SPACE_MIGRATION.md](PRIVATE_API_GROUP_SPACE_MIGRATION.md)を参照してください。
-

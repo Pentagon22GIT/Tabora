@@ -29,6 +29,13 @@ readonly ACTUAL_SOURCE_DIRTY="$(/usr/libexec/PlistBuddy -c 'Print :TaboraSourceD
 [[ "$ACTUAL_EDITION" == "official" ]] || fail "公式Editionではありません。"
 [[ "$ACTUAL_SOURCE_REVISION" =~ '^[0-9a-f]{40}$' ]] || fail "公式版のソースリビジョンが不正です。"
 [[ "$ACTUAL_SOURCE_DIRTY" == "false" ]] || fail "未コミットのソースから作成された公式版です。"
+for LANGUAGE in ja en ko zh-Hans zh-Hant; do
+  LANGUAGE_DIRECTORY="$APP/Contents/Resources/$LANGUAGE.lproj"
+  [[ -f "$LANGUAGE_DIRECTORY/Localizable.strings" ]] || \
+    fail "$LANGUAGEのアプリ内翻訳が含まれていません。"
+  [[ -f "$LANGUAGE_DIRECTORY/InfoPlist.strings" ]] || \
+    fail "$LANGUAGEの権限説明翻訳が含まれていません。"
+done
 
 /usr/bin/codesign --verify --strict --verbose=4 "$APP"
 /usr/bin/lipo "$APP/Contents/MacOS/Tabora" -verify_arch arm64 x86_64 || \

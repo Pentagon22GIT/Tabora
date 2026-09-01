@@ -167,18 +167,18 @@ struct SpaceRuntimeCapabilities: OptionSet, Equatable {
 
     var missingMigrationComponentDescription: String {
         let components: [(Self, String)] = [
-            (.resolveWindowID, "AX WindowID解決"),
-            (.readWindowSpaces, "Window→Space観測"),
-            (.readSpaceType, "Space種別判定"),
-            (.readSpaceDisplay, "Space→Display解決"),
-            (.dispatchBridgedMove, "bridged move dispatch")
+            (.resolveWindowID, L10n.text("migration.component.resolve_window_id")),
+            (.readWindowSpaces, L10n.text("migration.component.read_window_spaces")),
+            (.readSpaceType, L10n.text("migration.component.read_space_type")),
+            (.readSpaceDisplay, L10n.text("migration.component.read_space_display")),
+            (.dispatchBridgedMove, L10n.text("migration.component.dispatch_move"))
         ]
         let missing = components.compactMap { capability, name in
             contains(capability) ? nil : name
         }
         return missing.isEmpty
-            ? "不足コンポーネントなし"
-            : "不足: " + missing.joined(separator: ", ")
+            ? L10n.text("migration.component.none_missing")
+            : L10n.format("migration.component.missing", missing.joined(separator: ", "))
     }
 }
 
@@ -237,10 +237,10 @@ protocol WindowSpaceTransportPort: AnyObject {
 
 extension WindowSpaceTransportPort {
     var moveRuntimeDiagnosticDescription: String {
-        "transport内部診断なし"
+        L10n.text("migration.diagnostic.transport_unavailable")
     }
 
     var lastMoveDispatchDiagnosticDescription: String {
-        "dispatch詳細なし"
+        L10n.text("migration.diagnostic.dispatch_unavailable")
     }
 }

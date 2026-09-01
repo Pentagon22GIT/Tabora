@@ -55,14 +55,18 @@ enum MissionControlGroupProxyMigrationPresentationPolicy {
     ) -> MissionControlGroupProxyMigrationPresentation {
         let position = max(queuePosition, 1)
         let total = max(queueTotal, position)
-        let title = position == 1 ? "移動準備中" : "移動待機"
-        let queueDescription = total > 1 ? "\(position)/\(total)  •  " : ""
+        let title = position == 1
+            ? L10n.text("migration.proxy.ready")
+            : L10n.text("migration.proxy.waiting")
+        let subtitle = total > 1
+            ? L10n.format("migration.proxy.subtitle.queued", position, total)
+            : L10n.text("migration.proxy.subtitle")
         return MissionControlGroupProxyMigrationPresentation(
             title: title,
-            subtitle: queueDescription + "Mission Controlを閉じると移動",
+            subtitle: subtitle,
             windowTitle: position == 1
-                ? "移動準備中 1/\(total)（Mission Controlを閉じると移動）"
-                : "移動待機 \(position)/\(total)"
+                ? L10n.format("migration.proxy.window_title.ready", total)
+                : L10n.format("migration.proxy.window_title.waiting", position, total)
         )
     }
 }
@@ -781,7 +785,7 @@ final class MissionControlGroupProxyController {
                     surfaces: orderingSurfaces
                 )
             proxyWindow.update(
-                title: "グループ \(displayOrdinal)",
+                title: L10n.format("group.number", displayOrdinal),
                 frame: bounds,
                 members: members,
                 requiredWindowIDs: requiredWindowIDs

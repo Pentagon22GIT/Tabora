@@ -2,7 +2,7 @@
 
 最終更新日: 2026-09-01
 
-Taboraはローカルで動作するmacOSアプリです。現在のv2.0.1ソースを静的監査した範囲では、解析、広告、テレメトリー、クラッシュレポート自動送信、ユーザーアカウント、アプリ自身によるHTTP通信を実装していません。
+Taboraはローカルで動作するmacOSアプリです。現在のv2.1.0ソースを静的監査した範囲では、解析、広告、テレメトリー、クラッシュレポート自動送信、ユーザーアカウント、アプリ自身によるHTTP通信を実装していません。
 
 ## ローカルで扱う情報
 
@@ -20,7 +20,7 @@ Taboraはローカルで動作するmacOSアプリです。現在のv2.0.1ソー
 
 ### App Constraint記録
 
-v2.0.1でも、Taboraが要求したサイズを対象アプリ自身が拒否し、settle後のaccepted boundaryを確認できた場合に限り、アプリ固有のサイズ制約候補をローカルで記録できます。通常のresize履歴や単なるAX失敗は制約として記録しません。
+v2.1.0でも、Taboraが要求したサイズを対象アプリ自身が拒否し、settle後のaccepted boundaryを確認できた場合に限り、アプリ固有のサイズ制約候補をローカルで記録できます。通常のresize履歴や単なるAX失敗は制約として記録しません。
 
 試験的なDesktop間グループ移送を有効にした場合、TaboraはWindow ServerからウィンドウID、Space ID、Space種別、Managed Display識別子を実行中のメモリへ読み取ります。これらは移送・分離確認だけに使用し、ネットワーク送信や新規の永続ファイル保存は行いません。
 
@@ -66,7 +66,7 @@ App Constraint recordは次のローカルJSONへ保存します。
 
 ## 永続保存
 
-`UserDefaults.standard`へ、ショートカット、スナップ判定範囲、表示方式、Recovery/前面化に関係するユーザー設定、App Constraintの記録確認ON/OFFなどのscalar設定を保存します。
+`UserDefaults.standard`へ、ショートカット、スナップ判定範囲、表示方式、Recovery/前面化に関係するユーザー設定、App Constraintの記録確認ON/OFF、選択した表示言語などのscalar設定を保存します。表示言語は初回起動時だけmacOSの最優先言語から決定し、対応する言語codeを`appLanguage`と`AppleLanguages`へ保存します。言語一覧や選択結果を外部へ送信しません。
 
 App Constraintのアプリ別record本体は`UserDefaults`へ詰め込まず、前述の専用Application Support JSONへ保存します。
 

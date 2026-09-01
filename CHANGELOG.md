@@ -1,5 +1,20 @@
 # 更新履歴
 
+## 2.1.0 — 2026-09-01
+
+### Localization
+
+- アプリ内に表示される設定、メニュー、Alert、Panel、Snap / Assist / Resize、App Constraint、Mission Control連携を日本語、英語、韓国語、簡体字中国語、繁体字中国語へ対応した。READMEや`Documentation/`は日本語の正本を維持する。
+- 初回起動時だけmacOSの最優先言語から初期値を決定し、未対応・取得不能・不正な保存値は日本語へfallbackする。決定した言語は`UserDefaults`へ保存し、後のOS言語変更やアップデートでは自動変更しない。
+- 設定の「一般」に言語選択を追加した。選択肢は各言語の自称表記とし、適用ボタンだけを選択先の言語へリアルタイム更新する。適用後は保存を同期してアプリを安全に終了し、親processの終了確認後に同じapp bundleを再起動する。
+- App Constraintの明示計測中は言語変更による再起動を拒否する。helper起動に失敗した場合は選択を保存せず、現在processを継続してlocalized errorを表示する。
+- 全言語でlocalization key、format placeholder、権限説明の集合が一致すること、およびSwift sourceに日本語の表示literalが残っていないことをtestとOfficial検証へ追加した。
+
+### Compatibility / documentation
+
+- Snap / Group / Resize / Recovery / AX / Mission Control migrationの処理ロジックと安全不変条件は変更していない。
+- Versionを`2.1.0`、build numberを`16`へ更新し、README、Architecture、Privacy、Release、性能・移送の最終確認点、第三者通知を現行実装へ同期した。
+
 ## 2.0.1 — 2026-09-01
 
 ### Documentation / validation

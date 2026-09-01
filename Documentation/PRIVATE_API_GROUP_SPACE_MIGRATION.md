@@ -180,7 +180,9 @@ destination drop直後にもmember SpaceまたはAX elementが一時的に`unkno
 
 ## Release確認表
 
-最新完了記録: **2026-09-01 / Tabora v2.0.0 (Build 14) / macOS 26.6.2**
+最新適用確認: **2026-09-01 / Tabora v2.1.0 (Build 16) / macOS 26.6.2**
+
+実機確認内容はv2.0.0 Build 14で完了した記録を基準とします。v2.1.0はlocalization resourceと明示的な言語適用時のapp再起動だけを変更し、この文書が対象とするObservation / Transport / FIFO / rollback / AX layout / foreground intentへ変更がないことをsource差分の始点・終点監査で確認したため、同じ安全確認点を継承します。
 
 - [x] 2/3/4 member、同一/異なるアプリ。
 - [x] 同一アプリ複数memberで各AX elementが別Window IDへ解決され、重複ID captureがdispatch前に拒否されること。

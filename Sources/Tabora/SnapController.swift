@@ -3331,7 +3331,7 @@ final class SnapController {
             } else {
                 observation = SnapConstraintObservation(
                     identity: nil,
-                    displayName: "App",
+                    displayName: L10n.text("common.app"),
                     limits: .unknown,
                     eligibleForLearning: false
                 )
@@ -3391,7 +3391,7 @@ final class SnapController {
                 targetFrame: target,
                 appConstraintLimits: limitsByIdentity[identity] ?? .unknown,
                 appConstraintIdentity: learning?.0,
-                appConstraintDisplayName: learning?.1 ?? "App"
+                appConstraintDisplayName: learning?.1 ?? L10n.text("common.app")
             )
         }
         return .ready(InitialConstraintSnapPlan(

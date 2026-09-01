@@ -9,10 +9,10 @@ enum SettingsCategory: Int, CaseIterable {
 
     var title: String {
         switch self {
-        case .general: return "一般"
-        case .commands: return "コマンド"
-        case .tabRecords: return "サイズ制約"
-        case .experimental: return "試験的機能"
+        case .general: return L10n.text("settings.category.general")
+        case .commands: return L10n.text("settings.category.commands")
+        case .tabRecords: return L10n.text("settings.category.constraints")
+        case .experimental: return L10n.text("settings.category.experimental")
         }
     }
 }
@@ -43,6 +43,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     var onMissionControlPreviewCacheClear: (() -> Void)?
     var onMissionControlGroupMigrationRuntimeStatusRequest:
         (() -> GroupSpaceMigrationRuntimeStatus?)?
+    var onLanguageApply: ((AppLanguage) -> Bool)?
     private let settings = AppSettings.shared
     private let experimentalWorkspaceSettings = ExperimentalWorkspaceSettings.shared
     private let scrollView = NSScrollView()
@@ -63,37 +64,48 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private var resizeModeButtons: [LinkedResizeDisplayMode: NSButton] = [:]
     private var resizeStyleButtons: [LinkedResizePresentationStyle: NSButton] = [:]
     private let linkedResizeOptionsStack = NSStackView()
-    private let launchCheckbox = NSButton(checkboxWithTitle: "ログイン時にTaboraを起動", target: nil, action: nil)
-    private let windowPreviewsCheckbox = NSButton(
-        checkboxWithTitle: "配置候補にウィンドウ画像を表示",
+    private let launchCheckbox = NSButton(
+        checkboxWithTitle: L10n.text("settings.general.launch_at_login"),
         target: nil,
         action: nil
     )
+    private let windowPreviewsCheckbox = NSButton(
+        checkboxWithTitle: L10n.text("settings.general.show_window_previews"),
+        target: nil,
+        action: nil
+    )
+    private let languagePopup = NSPopUpButton()
+    private lazy var applyLanguageButton = NSButton(
+        title: L10n.text("settings.language.apply_restart"),
+        target: self,
+        action: #selector(applyLanguage)
+    )
+    private var pendingLanguage = L10n.language
     private let missionControlGroupMigrationCheckbox = NSButton(
-        checkboxWithTitle: "Mission Controlでグループを別Desktopへ移動",
+        checkboxWithTitle: L10n.text("settings.experimental.group_migration.checkbox"),
         target: nil,
         action: nil
     )
     private let missionControlGroupMigrationRuntimeStatus = NSTextField(
-        labelWithString: "現在のAPI状態: 確認待ち"
+        labelWithString: L10n.text("settings.experimental.api_status.pending")
     )
     private let restoreSizeOnMoveCheckbox = NSButton(
-        checkboxWithTitle: "移動時にスナップ前のサイズへ戻す",
+        checkboxWithTitle: L10n.text("settings.general.restore_size.checkbox"),
         target: nil,
         action: nil
     )
     private let linkedResizeCheckbox = NSButton(
-        checkboxWithTitle: "分割ウィンドウを一緒にリサイズ",
+        checkboxWithTitle: L10n.text("settings.general.linked_resize.checkbox"),
         target: nil,
         action: nil
     )
     private let raiseConnectedWindowsOnClickCheckbox = NSButton(
-        checkboxWithTitle: "スナップ中のウィンドウ選択による最前面移動",
+        checkboxWithTitle: L10n.text("settings.general.raise_group.checkbox"),
         target: nil,
         action: nil
     )
     private let resizeCursorAdornmentCheckbox = NSButton(
-        checkboxWithTitle: "カーソル付近にリサイズ方向を表示",
+        checkboxWithTitle: L10n.text("settings.general.resize_cursor.checkbox"),
         target: nil,
         action: nil
     )
@@ -104,32 +116,34 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let cornerBandSlider = NSSlider()
     private let cornerBandValue = NSTextField(labelWithString: "")
     private let sideDwellExpansionCheckbox = NSButton(
-        checkboxWithTitle: "左右端で待つと上下半分を四隅へ切り替える",
+        checkboxWithTitle: L10n.text("settings.general.side_dwell.checkbox"),
         target: nil,
         action: nil
     )
     private let sideDwellDurationSlider = NSSlider()
     private let sideDwellDurationValue = NSTextField(labelWithString: "")
     private let assistLayoutSwitchingCheckbox = NSButton(
-        checkboxWithTitle: "Optionで2 / 3 / 4分割Assistを切り替える",
+        checkboxWithTitle: L10n.text("settings.experimental.assist.checkbox"),
         target: nil,
         action: nil
     )
-    private let workspaceEdgeDelayStatus = NSTextField(labelWithString: "確認中…")
+    private let workspaceEdgeDelayStatus = NSTextField(
+        labelWithString: L10n.text("settings.experimental.workspace.status.checking")
+    )
     private lazy var delayWorkspaceEdgeButton = NSButton(
-        title: "Space移動を60秒まで遅延",
+        title: L10n.text("settings.experimental.workspace.delay_button"),
         target: self,
         action: #selector(applyWorkspaceEdgeDelay)
     )
     private lazy var resetWorkspaceEdgeButton = NSButton(
-        title: "デフォルトに戻す",
+        title: L10n.text("common.restore_defaults"),
         target: self,
         action: #selector(resetWorkspaceEdgeDelay)
     )
     private let previewMemoryLimitSlider = NSSlider()
     private let previewMemoryLimitValue = NSTextField(labelWithString: "")
     private lazy var clearPreviewCacheButton = NSButton(
-        title: "画像キャッシュを解放",
+        title: L10n.text("settings.experimental.preview.clear_cache"),
         target: self,
         action: #selector(clearMissionControlPreviewCache)
     )
@@ -142,7 +156,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let constraintMeasurementProgressPanel =
         ConstraintMeasurementProgressPanel()
     private let constraintPromptCheckbox = NSButton(
-        checkboxWithTitle: "新しいサイズ制約を確認",
+        checkboxWithTitle: L10n.text("settings.constraints.confirm_new"),
         target: nil,
         action: nil
     )
@@ -160,8 +174,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         )
         let version = Bundle.main.object(
             forInfoDictionaryKey: "CFBundleShortVersionString"
-        ) as? String ?? "Development"
-        window.title = "Tabora \(version) 設定"
+        ) as? String ?? L10n.text("common.development")
+        window.title = L10n.format("settings.window.title", version)
         window.center()
         window.isReleasedWhenClosed = false
         super.init(window: window)
@@ -200,6 +214,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func show() {
+        pendingLanguage = L10n.language
         refresh()
         refreshExperimentalWorkspaceState()
         onVisibilityChange?(true)
@@ -257,7 +272,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     private func makeGeneralSettingsView() -> NSView {
         let stack = makeSettingsStack()
-        stack.addArrangedSubview(sectionTitle("一般"))
+        stack.addArrangedSubview(sectionTitle(L10n.text("settings.category.general")))
         launchCheckbox.target = self
         launchCheckbox.action = #selector(toggleLaunchAtLogin)
         stack.addArrangedSubview(launchCheckbox)
@@ -266,19 +281,46 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         windowPreviewsCheckbox.action = #selector(toggleWindowPreviews)
         stack.addArrangedSubview(windowPreviewsCheckbox)
         let previewNote = NSTextField(
-            wrappingLabelWithString: "画面収録の許可が必要です。画像は保存・送信しません。"
+            wrappingLabelWithString: L10n.text("settings.general.preview_note")
         )
         previewNote.textColor = .secondaryLabelColor
         previewNote.maximumNumberOfLines = 0
         stack.addArrangedSubview(previewNote)
 
+        let languageTitle = NSTextField(
+            labelWithString: L10n.text("settings.language.title")
+        )
+        languageTitle.font = .systemFont(ofSize: 13, weight: .medium)
+        stack.addArrangedSubview(languageTitle)
+        languagePopup.removeAllItems()
+        for language in AppLanguage.allCases {
+            languagePopup.addItem(withTitle: language.displayName)
+            languagePopup.lastItem?.representedObject = language.rawValue
+        }
+        languagePopup.target = self
+        languagePopup.action = #selector(changeLanguageSelection)
+        languagePopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 180).isActive = true
+        applyLanguageButton.bezelStyle = .rounded
+        let languageRow = NSStackView(views: [languagePopup, applyLanguageButton])
+        languageRow.orientation = .horizontal
+        languageRow.alignment = .centerY
+        languageRow.spacing = 10
+        stack.addArrangedSubview(languageRow)
+        let languageNote = NSTextField(
+            wrappingLabelWithString: L10n.text("settings.language.note")
+        )
+        languageNote.textColor = .secondaryLabelColor
+        languageNote.font = .systemFont(ofSize: 11)
+        languageNote.maximumNumberOfLines = 0
+        stack.addArrangedSubview(languageNote)
+
         stack.addArrangedSubview(separator())
-        stack.addArrangedSubview(sectionTitle("ウィンドウ移動"))
+        stack.addArrangedSubview(sectionTitle(L10n.text("settings.general.window_movement")))
         restoreSizeOnMoveCheckbox.target = self
         restoreSizeOnMoveCheckbox.action = #selector(toggleRestoreSizeOnMove)
         stack.addArrangedSubview(restoreSizeOnMoveCheckbox)
         let restoreSizeNote = NSTextField(
-            wrappingLabelWithString: "スナップしたウィンドウを動かすと、元の大きさに戻します。"
+            wrappingLabelWithString: L10n.text("settings.general.restore_size.note")
         )
         restoreSizeNote.textColor = .secondaryLabelColor
         restoreSizeNote.maximumNumberOfLines = 0
@@ -288,7 +330,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         linkedResizeCheckbox.action = #selector(toggleLinkedResize)
         stack.addArrangedSubview(linkedResizeCheckbox)
         let linkedResizeNote = NSTextField(
-            wrappingLabelWithString: "選択した操作方式で共有境界を動かすと、隣のウィンドウも一緒にサイズが変わります。"
+            wrappingLabelWithString: L10n.text("settings.general.linked_resize.note")
         )
         linkedResizeNote.textColor = .secondaryLabelColor
         linkedResizeNote.maximumNumberOfLines = 0
@@ -305,7 +347,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         )
 
         let linkedResizeAvailabilityNote = NSTextField(
-            wrappingLabelWithString: "以下の設定は、分割ウィンドウの連動リサイズがオンのときだけ使用されます。"
+            wrappingLabelWithString: L10n.text("settings.general.linked_resize.options_note")
         )
         linkedResizeAvailabilityNote.textColor = .secondaryLabelColor
         linkedResizeAvailabilityNote.font = .systemFont(ofSize: 11)
@@ -316,14 +358,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         raiseConnectedWindowsOnClickCheckbox.action = #selector(toggleRaiseConnectedWindowsOnClick)
         linkedResizeOptionsStack.addArrangedSubview(raiseConnectedWindowsOnClickCheckbox)
         let raiseConnectedWindowsOnClickNote = NSTextField(
-            wrappingLabelWithString: "デスクトップ上でスナップ中のウィンドウを通常クリックした時だけ、接続されているウィンドウも一緒に最前面へ移動します。Mission Controlやアプリ切替による単体選択は維持されます。"
+            wrappingLabelWithString: L10n.text("settings.general.raise_group.note")
         )
         raiseConnectedWindowsOnClickNote.textColor = .secondaryLabelColor
         raiseConnectedWindowsOnClickNote.maximumNumberOfLines = 0
         linkedResizeOptionsStack.addArrangedSubview(raiseConnectedWindowsOnClickNote)
 
         let presentationStyleTitle = NSTextField(
-            labelWithString: "共有リサイズの操作表示"
+            labelWithString: L10n.text("settings.general.resize_style.title")
         )
         presentationStyleTitle.font = .systemFont(ofSize: 13, weight: .medium)
         linkedResizeOptionsStack.addArrangedSubview(presentationStyleTitle)
@@ -335,18 +377,18 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let styleDescriptions: [(LinkedResizePresentationStyle, String, String)] = [
             (
                 .mac,
-                "つまみ表示（mac風）",
-                "通常は中央のつまみだけを表示します。交点がある分割では交点操作を優先します。"
+                L10n.text("settings.general.resize_style.mac.title"),
+                L10n.text("settings.general.resize_style.mac.detail")
             ),
             (
                 .windows,
-                "共有境界表示（Windows風）",
-                "中央のつまみを表示せず、共有境界を線で表示します。境界のどこからでも一緒にリサイズできます。"
+                L10n.text("settings.general.resize_style.windows.title"),
+                L10n.text("settings.general.resize_style.windows.detail")
             ),
             (
                 .combined,
-                "つまみ＋共有境界表示（推奨）",
-                "中央のつまみと細い共有境界線を表示します。境界のどこからでも一緒にリサイズできます。"
+                L10n.text("settings.general.resize_style.combined.title"),
+                L10n.text("settings.general.resize_style.combined.detail")
             )
         ]
         for (style, title, detail) in styleDescriptions {
@@ -372,7 +414,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         }
         linkedResizeOptionsStack.addArrangedSubview(presentationStyleStack)
         let presentationStyleNote = NSTextField(
-            wrappingLabelWithString: "共有リサイズ処理は3方式で共通です。交点では1つの操作領域だけが入力を受け取ります。"
+            wrappingLabelWithString: L10n.text("settings.general.resize_style.note")
         )
         presentationStyleNote.textColor = .secondaryLabelColor
         presentationStyleNote.maximumNumberOfLines = 0
@@ -386,7 +428,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             resizeCursorAdornmentCheckbox
         )
         let resizeCursorAdornmentNote = NSTextField(
-            wrappingLabelWithString: "通常のカーソルは変更せず、共有境界の上だけ固定サイズの方向表示を添えます。カーソルを大きくしている場合は間隔を広げられます。"
+            wrappingLabelWithString: L10n.text("settings.general.resize_cursor.note")
         )
         resizeCursorAdornmentNote.textColor = .secondaryLabelColor
         resizeCursorAdornmentNote.font = .systemFont(ofSize: 11)
@@ -394,7 +436,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         linkedResizeOptionsStack.addArrangedSubview(resizeCursorAdornmentNote)
 
         let resizeCursorAdornmentDistanceTitle = NSTextField(
-            labelWithString: "カーソルからの距離"
+            labelWithString: L10n.text("settings.general.resize_cursor.distance")
         )
         resizeCursorAdornmentDistanceTitle.font = .systemFont(ofSize: 13, weight: .medium)
         linkedResizeOptionsStack.addArrangedSubview(resizeCursorAdornmentDistanceTitle)
@@ -419,7 +461,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         resizeCursorAdornmentDistanceStack.spacing = 10
         linkedResizeOptionsStack.addArrangedSubview(resizeCursorAdornmentDistanceStack)
 
-        let displayModeTitle = NSTextField(labelWithString: "ドラッグ中の表示")
+        let displayModeTitle = NSTextField(
+            labelWithString: L10n.text("settings.general.drag_display.title")
+        )
         displayModeTitle.font = .systemFont(ofSize: 13, weight: .medium)
         linkedResizeOptionsStack.addArrangedSubview(displayModeTitle)
 
@@ -428,9 +472,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         displayModeStack.alignment = .leading
         displayModeStack.spacing = 7
         let modeDescriptions: [(LinkedResizeDisplayMode, String, String)] = [
-            (.lightweight, "軽量", "すべてアイコンで表示"),
-            (.mainOnly, "標準", "操作中のウィンドウだけ内容を表示"),
-            (.allWindows, "すべて表示", "すべてのウィンドウ内容を表示")
+            (.lightweight, L10n.text("settings.general.drag_display.lightweight.title"), L10n.text("settings.general.drag_display.lightweight.detail")),
+            (.mainOnly, L10n.text("settings.general.drag_display.standard.title"), L10n.text("settings.general.drag_display.standard.detail")),
+            (.allWindows, L10n.text("settings.general.drag_display.all.title"), L10n.text("settings.general.drag_display.all.detail"))
         ]
         for (mode, title, detail) in modeDescriptions {
             let button = NSButton(
@@ -444,7 +488,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         }
         linkedResizeOptionsStack.addArrangedSubview(displayModeStack)
         let displayModeNote = NSTextField(
-            wrappingLabelWithString: "表示するウィンドウが多いほど、動作が重くなる場合があります。"
+            wrappingLabelWithString: L10n.text("settings.general.drag_display.note")
         )
         displayModeNote.textColor = .secondaryLabelColor
         displayModeNote.maximumNumberOfLines = 0
@@ -453,8 +497,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         stack.addArrangedSubview(linkedResizeOptionsStack)
 
         stack.addArrangedSubview(separator())
-        stack.addArrangedSubview(sectionTitle("ドラッグ判定"))
-        let detectionNote = NSTextField(wrappingLabelWithString: "画面の端や四隅が反応する範囲を調整します。")
+        stack.addArrangedSubview(sectionTitle(L10n.text("settings.general.drag_detection.title")))
+        let detectionNote = NSTextField(
+            wrappingLabelWithString: L10n.text("settings.general.drag_detection.note")
+        )
         detectionNote.textColor = .secondaryLabelColor
         detectionNote.maximumNumberOfLines = 0
         stack.addArrangedSubview(detectionNote)
@@ -469,8 +515,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             action: #selector(changeSideDwellDuration(_:))
         )
         stack.addArrangedSubview(settingRow(
-            title: "四分割に切り替わるまで",
-            detail: "待機後は左右半分をなくし、上下50%ずつを四隅として選択します。",
+            title: L10n.text("settings.general.side_dwell.title"),
+            detail: L10n.text("settings.general.side_dwell.note"),
             slider: sideDwellDurationSlider,
             valueLabel: sideDwellDurationValue
         ))
@@ -481,8 +527,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             action: #selector(changeEdgeThreshold(_:))
         )
         stack.addArrangedSubview(settingRow(
-            title: "画面端の反応範囲",
-            detail: "大きくすると、端から少し離れていても反応します。",
+            title: L10n.text("settings.general.edge_range.title"),
+            detail: L10n.text("settings.general.edge_range.note"),
             slider: edgeThresholdSlider,
             valueLabel: edgeThresholdValue
         ))
@@ -493,13 +539,17 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             action: #selector(changeCornerBand(_:))
         )
         stack.addArrangedSubview(settingRow(
-            title: "四隅の反応範囲",
-            detail: "大きくすると、左右分割より四分割を選びやすくなります。",
+            title: L10n.text("settings.general.corner_range.title"),
+            detail: L10n.text("settings.general.corner_range.note"),
             slider: cornerBandSlider,
             valueLabel: cornerBandValue
         ))
 
-        let resetDetectionButton = NSButton(title: "ドラッグ判定を標準に戻す", target: self, action: #selector(resetDetectionSettings))
+        let resetDetectionButton = NSButton(
+            title: L10n.text("settings.general.drag_detection.reset"),
+            target: self,
+            action: #selector(resetDetectionSettings)
+        )
         resetDetectionButton.bezelStyle = .rounded
         stack.addArrangedSubview(resetDetectionButton)
 
@@ -508,8 +558,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     private func makeCommandSettingsView() -> NSView {
         let stack = makeSettingsStack()
-        stack.addArrangedSubview(sectionTitle("コマンド"))
-        let note = NSTextField(wrappingLabelWithString: "ボタンを押してキーを入力します。Escでキャンセルできます。")
+        stack.addArrangedSubview(sectionTitle(L10n.text("settings.category.commands")))
+        let note = NSTextField(
+            wrappingLabelWithString: L10n.text("settings.commands.note")
+        )
         note.textColor = .secondaryLabelColor
         note.maximumNumberOfLines = 0
         stack.addArrangedSubview(note)
@@ -519,13 +571,21 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         grid.columnSpacing = 18
         for action in ShortcutAction.allCases {
             let label = NSTextField(labelWithString: action.title)
-            let button = NSButton(title: "未設定", target: self, action: #selector(recordShortcut(_:)))
+            let button = NSButton(
+                title: L10n.text("common.not_set"),
+                target: self,
+                action: #selector(recordShortcut(_:))
+            )
             button.identifier = NSUserInterfaceItemIdentifier(action.rawValue)
             button.bezelStyle = .rounded
             button.widthAnchor.constraint(greaterThanOrEqualToConstant: 150).isActive = true
             shortcutButtons[action] = button
 
-            let clearButton = NSButton(title: "消去", target: self, action: #selector(clearShortcut(_:)))
+            let clearButton = NSButton(
+                title: L10n.text("common.clear"),
+                target: self,
+                action: #selector(clearShortcut(_:))
+            )
             clearButton.identifier = NSUserInterfaceItemIdentifier(action.rawValue)
             clearButton.bezelStyle = .rounded
             clearButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 62).isActive = true
@@ -538,19 +598,23 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         grid.column(at: 2).xPlacement = .fill
         stack.addArrangedSubview(grid)
 
-        stack.addArrangedSubview(NSButton(title: "すべてのショートカットを消去", target: self, action: #selector(clearShortcuts)))
+        stack.addArrangedSubview(NSButton(
+            title: L10n.text("settings.commands.clear_all"),
+            target: self,
+            action: #selector(clearShortcuts)
+        ))
 
         return stack
     }
 
     private func makeTabRecordSettingsView() -> NSView {
         let stack = makeSettingsStack()
-        stack.addArrangedSubview(sectionTitle("アプリ別のサイズ制約"))
+        stack.addArrangedSubview(sectionTitle(L10n.text("settings.constraints.title")))
         constraintPromptCheckbox.target = self
         constraintPromptCheckbox.action = #selector(toggleConstraintRecordingPrompts)
         stack.addArrangedSubview(constraintPromptCheckbox)
         let constraintNote = NSTextField(
-            wrappingLabelWithString: "確認済みの制約を、配置と共有リサイズに使用します。"
+            wrappingLabelWithString: L10n.text("settings.constraints.note")
         )
         constraintNote.textColor = .secondaryLabelColor
         constraintNote.maximumNumberOfLines = 0
@@ -565,10 +629,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     private func makeExperimentalSettingsView() -> NSView {
         let stack = makeSettingsStack()
-        stack.addArrangedSubview(sectionTitle("試験的機能"))
+        stack.addArrangedSubview(sectionTitle(L10n.text("settings.category.experimental")))
 
         let groupMigrationTitle = NSTextField(
-            labelWithString: "グループのDesktop間移送"
+            labelWithString: L10n.text("settings.experimental.group_migration.title")
         )
         groupMigrationTitle.font = .systemFont(ofSize: 13, weight: .medium)
         stack.addArrangedSubview(groupMigrationTitle)
@@ -578,7 +642,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         )
         stack.addArrangedSubview(missionControlGroupMigrationCheckbox)
         let groupMigrationNote = NSTextField(
-            wrappingLabelWithString: "Mission ControlでTaboraのグループ画像を別Desktopへドロップすると移動予約になり、所属する実ウィンドウ画像にも予約済みの影を表示します。Mission Controlを閉じた後に実ウィンドウをまとめて移送し、複数グループは表示された順番で一件ずつ処理します。非公開APIを使用するため、既定ではオフです。"
+            wrappingLabelWithString: L10n.text("settings.experimental.group_migration.note")
         )
         groupMigrationNote.textColor = .secondaryLabelColor
         groupMigrationNote.maximumNumberOfLines = 0
@@ -600,7 +664,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         stack.addArrangedSubview(separator())
 
         let assistLayoutTitle = NSTextField(
-            labelWithString: "2 / 3 / 4分割Assist切り替え"
+            labelWithString: L10n.text("settings.experimental.assist.title")
         )
         assistLayoutTitle.font = .systemFont(ofSize: 13, weight: .medium)
         stack.addArrangedSubview(assistLayoutTitle)
@@ -610,7 +674,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         )
         stack.addArrangedSubview(assistLayoutSwitchingCheckbox)
         let assistLayoutNote = NSTextField(
-            wrappingLabelWithString: "Option（⌥）を押している間、4分割候補の残り2面を1つへ統合して3分割候補にできます。反対に、左右または上下の半分が1枚だけ配置され、残り領域へ異なる2ウィンドウを配置できる場合は、その領域を2面へ分けた3分割候補へ切り替えます。"
+            wrappingLabelWithString: L10n.text("settings.experimental.assist.note")
         )
         assistLayoutNote.textColor = .secondaryLabelColor
         assistLayoutNote.maximumNumberOfLines = 0
@@ -618,12 +682,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         stack.addArrangedSubview(separator())
 
         let workspaceEdgeTitle = NSTextField(
-            labelWithString: "画面端でのSpace移動を遅延"
+            labelWithString: L10n.text("settings.experimental.workspace.title")
         )
         workspaceEdgeTitle.font = .systemFont(ofSize: 13, weight: .medium)
         stack.addArrangedSubview(workspaceEdgeTitle)
         let workspaceEdgeNote = NSTextField(
-            wrappingLabelWithString: "macOS全体の未公開Preferenceを変更します。将来のmacOSでは動作しない可能性があり、適用時にDockが再起動します。Tabora終了時には元へ戻しません。"
+            wrappingLabelWithString: L10n.text("settings.experimental.workspace.note")
         )
         workspaceEdgeNote.textColor = .secondaryLabelColor
         workspaceEdgeNote.maximumNumberOfLines = 0
@@ -640,12 +704,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         stack.addArrangedSubview(separator())
 
         let previewMemoryTitle = NSTextField(
-            labelWithString: "Mission Control画像メモリ"
+            labelWithString: L10n.text("settings.experimental.preview.title")
         )
         previewMemoryTitle.font = .systemFont(ofSize: 13, weight: .medium)
         stack.addArrangedSubview(previewMemoryTitle)
         let previewMemoryNote = NSTextField(
-            wrappingLabelWithString: "ウィンドウ画像に使用するメモリ上限です。上限を増やすと、多数のウィンドウでも画像を高精細に保ちやすくなります。変更時は既存キャッシュだけを解放し、安全な通常画面で再取得します。"
+            wrappingLabelWithString: L10n.text("settings.experimental.preview.note")
         )
         previewMemoryNote.textColor = .secondaryLabelColor
         previewMemoryNote.maximumNumberOfLines = 0
@@ -781,6 +845,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func refresh() {
+        if let index = AppLanguage.allCases.firstIndex(of: pendingLanguage) {
+            languagePopup.selectItem(at: index)
+        }
+        applyLanguageButton.title = L10n.text(
+            "settings.language.apply_restart",
+            language: pendingLanguage
+        )
+        applyLanguageButton.isEnabled = pendingLanguage != L10n.language
         launchCheckbox.state = settings.launchAtLogin ? .on : .off
         windowPreviewsCheckbox.state = settings.windowPreviewsEnabled ? .on : .off
         restoreSizeOnMoveCheckbox.state = settings.restoreSnappedWindowSizeOnMove ? .on : .off
@@ -818,7 +890,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         sideDwellDurationSlider.isEnabled = settings.sideDwellExpansionEnabled
         sideDwellDurationValue.textColor = settings.sideDwellExpansionEnabled ? .labelColor : .tertiaryLabelColor
         sideDwellDurationSlider.doubleValue = settings.sideDwellDuration
-        sideDwellDurationValue.stringValue = String(format: "%.1f 秒", settings.sideDwellDuration)
+        sideDwellDurationValue.stringValue = L10n.format(
+            "value.seconds",
+            settings.sideDwellDuration
+        )
         assistLayoutSwitchingCheckbox.state = settings
             .assistLayoutSwitchingEnabled ? .on : .off
         missionControlGroupMigrationCheckbox.state = settings
@@ -826,14 +901,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         if let status = onMissionControlGroupMigrationRuntimeStatusRequest?() {
             missionControlGroupMigrationRuntimeStatus.stringValue = status
                 .isAvailable
-                ? "現在のAPI状態: 利用可能"
-                : "現在のAPI状態: 利用不可（機能をオフにしてください）"
+                ? L10n.text("settings.experimental.api_status.available")
+                : L10n.text("settings.experimental.api_status.unavailable")
             missionControlGroupMigrationRuntimeStatus.textColor = status
                 .isAvailable ? .secondaryLabelColor : .systemRed
             missionControlGroupMigrationRuntimeStatus.toolTip = status.detail
         } else {
             missionControlGroupMigrationRuntimeStatus.stringValue =
-                "現在のAPI状態: 確認待ち"
+                L10n.text("settings.experimental.api_status.pending")
             missionControlGroupMigrationRuntimeStatus.textColor =
                 .secondaryLabelColor
             missionControlGroupMigrationRuntimeStatus.toolTip = nil
@@ -863,7 +938,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let values = settings.shortcuts
         for action in ShortcutAction.allCases {
             let binding = values[action]
-            shortcutButtons[action]?.title = binding?.displayText ?? "未設定"
+            shortcutButtons[action]?.title = binding?.displayText
+                ?? L10n.text("common.not_set")
             clearButtons[action]?.isEnabled = binding != nil
         }
     }
@@ -878,7 +954,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let records = constraintRegistry.records
         guard !records.isEmpty else {
             let empty = NSTextField(
-                wrappingLabelWithString: "記録されたアプリはありません。"
+                wrappingLabelWithString: L10n.text("settings.constraints.empty")
             )
             empty.textColor = .secondaryLabelColor
             constraintRecordsStack.addArrangedSubview(empty)
@@ -902,13 +978,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             if hasPending || record.candidateConflict || record.needsVerification {
                 appName.stringValue += (
                     record.candidateConflict || record.needsVerification
-                        ? "（要確認）"
-                        : "（確認待ち）"
+                        ? L10n.text("settings.constraints.needs_review_suffix")
+                        : L10n.text("settings.constraints.pending_suffix")
                 )
             }
 
             let permissionButton = NSButton(
-                checkboxWithTitle: "記録を許可",
+                checkboxWithTitle: L10n.text("settings.constraints.allow_recording"),
                 target: self,
                 action: #selector(changeConstraintPermission(_:))
             )
@@ -916,7 +992,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             permissionButton.state = record.recordingPermission == .allowed ? .on : .off
 
             let verifyButton = NSButton(
-                title: "サイズを取得",
+                title: L10n.text("settings.constraints.measure"),
                 target: self,
                 action: #selector(acquireConstraintSizes(_:))
             )
@@ -924,14 +1000,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             verifyButton.isEnabled = !constraintMeasurementInProgress
 
             let inspectButton = NSButton(
-                title: "値を確認",
+                title: L10n.text("settings.constraints.inspect"),
                 target: self,
                 action: #selector(inspectConstraintRecord(_:))
             )
             inspectButton.identifier = NSUserInterfaceItemIdentifier(controlID)
 
             let deleteButton = NSButton(
-                title: "削除",
+                title: L10n.text("common.delete"),
                 target: self,
                 action: #selector(deleteConstraintRecord(_:))
             )
@@ -956,8 +1032,42 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func constraintDisplayValue(_ value: CGFloat?) -> String {
-        guard let value else { return "未取得" }
+        guard let value else { return L10n.text("settings.constraints.not_measured") }
         return String(format: "%.0f pt", value)
+    }
+
+    @objc private func changeLanguageSelection() {
+        guard let rawValue = languagePopup.selectedItem?.representedObject as? String,
+              let language = AppLanguage(rawValue: rawValue) else {
+            pendingLanguage = L10n.language
+            refresh()
+            return
+        }
+        pendingLanguage = language
+        applyLanguageButton.title = L10n.text(
+            "settings.language.apply_restart",
+            language: language
+        )
+        applyLanguageButton.isEnabled = language != L10n.language
+    }
+
+    @objc private func applyLanguage() {
+        guard pendingLanguage != L10n.language else { return }
+        guard !constraintMeasurementInProgress else {
+            let alert = NSAlert()
+            alert.messageText = L10n.text("settings.language.busy.title")
+            alert.informativeText = L10n.text("settings.language.busy.detail")
+            alert.runModal()
+            return
+        }
+        guard onLanguageApply?(pendingLanguage) == true else {
+            let alert = NSAlert()
+            alert.messageText = L10n.text("settings.language.relaunch_failed.title")
+            alert.informativeText = L10n.text("settings.language.relaunch_failed.detail")
+            alert.runModal()
+            return
+        }
+        applyLanguageButton.isEnabled = false
     }
 
     @objc private func toggleConstraintRecordingPrompts() {
@@ -989,8 +1099,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             }
         guard !windows.isEmpty else {
             let alert = NSAlert()
-            alert.messageText = "対象ウィンドウを確認できません"
-            alert.informativeText = "\(record.displayName) の標準ウィンドウを開いてから、もう一度実行してください。"
+            alert.messageText = L10n.text("constraints.alert.window_unavailable.title")
+            alert.informativeText = L10n.format(
+                "constraints.alert.open_window.detail",
+                record.displayName
+            )
             alert.runModal()
             return
         }
@@ -1008,7 +1121,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
                 let base = item.title.trimmingCharacters(
                     in: .whitespacesAndNewlines
                 )
-                let title = base.isEmpty ? "ウィンドウ \(index + 1)" : base
+                let title = base.isEmpty
+                    ? L10n.format("common.window_number", index + 1)
+                    : base
                 let nextCount = (duplicateCounts[title] ?? 0) + 1
                 duplicateCounts[title] = nextCount
                 return nextCount == 1 ? title : "\(title) (\(nextCount))"
@@ -1016,12 +1131,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             selector.addItems(withTitles: displayTitles)
 
             let selectionAlert = NSAlert()
-            selectionAlert.messageText = "対象ウィンドウを選択"
+            selectionAlert.messageText = L10n.text("constraints.alert.select_window.title")
             selectionAlert.informativeText =
-                "サイズを取得するウィンドウを選んでください。"
+                L10n.text("constraints.alert.select_window.detail")
             selectionAlert.accessoryView = selector
-            selectionAlert.addButton(withTitle: "選択")
-            selectionAlert.addButton(withTitle: "キャンセル")
+            selectionAlert.addButton(withTitle: L10n.text("common.select"))
+            selectionAlert.addButton(withTitle: L10n.text("common.cancel"))
             guard selectionAlert.runModal() == .alertFirstButtonReturn else {
                 return
             }
@@ -1032,25 +1147,25 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
         guard let screen = bestScreen(for: window.frame) else {
             let alert = NSAlert()
-            alert.messageText = "対象ウィンドウを確認できません"
+            alert.messageText = L10n.text("constraints.alert.window_unavailable.title")
             alert.informativeText =
-                "対象ウィンドウがあるディスプレイを確認できませんでした。"
+                L10n.text("constraints.alert.display_unavailable.detail")
             alert.runModal()
             return
         }
 
         let alert = NSAlert()
-        alert.messageText = "サイズを取得"
-        alert.informativeText = "ウィンドウを動かして最小・最大サイズを取得します。"
-        alert.addButton(withTitle: "取得する")
-        alert.addButton(withTitle: "キャンセル")
+        alert.messageText = L10n.text("settings.constraints.measure")
+        alert.informativeText = L10n.text("constraints.alert.measure.detail")
+        alert.addButton(withTitle: L10n.text("common.measure"))
+        alert.addButton(withTitle: L10n.text("common.cancel"))
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
         guard onConstraintMeasurementWillBegin?() ?? true else {
             let busy = NSAlert()
-            busy.messageText = "操作の完了後にもう一度実行してください"
+            busy.messageText = L10n.text("constraints.alert.busy.title")
             busy.informativeText =
-                "スナップやリサイズなどの操作中はサイズを取得できません。"
+                L10n.text("constraints.alert.busy.detail")
             busy.runModal()
             return
         }
@@ -1095,7 +1210,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
               let record = constraintRegistry.record(for: identity)
         else { return }
 
-        let labels = ["最小幅", "最小高", "最大幅", "最大高"].map {
+        let labels = [
+            L10n.text("constraint.bound.min_width"),
+            L10n.text("constraint.bound.min_height"),
+            L10n.text("constraint.bound.max_width"),
+            L10n.text("constraint.bound.max_height")
+        ].map {
             NSTextField(labelWithString: $0)
         }
         let values = AppConstraintBound.allCases.map { bound -> NSTextField in
@@ -1135,10 +1255,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         ])
 
         let alert = NSAlert()
-        alert.messageText = "\(record.displayName) の制約値"
-        alert.informativeText = "現在保存されている値です。更新は「サイズを取得」から行います。"
+        alert.messageText = L10n.format(
+            "constraints.alert.values.title",
+            record.displayName
+        )
+        alert.informativeText = L10n.text("constraints.alert.values.detail")
         alert.accessoryView = valuePanel
-        alert.addButton(withTitle: "閉じる")
+        alert.addButton(withTitle: L10n.text("common.close"))
         alert.runModal()
     }
 
@@ -1147,9 +1270,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
               let record = constraintRegistry.record(for: identity)
         else { return }
         let alert = NSAlert()
-        alert.messageText = "\(record.displayName) の記録を削除しますか？"
-        alert.addButton(withTitle: "削除")
-        alert.addButton(withTitle: "キャンセル")
+        alert.messageText = L10n.format(
+            "constraints.alert.delete.title",
+            record.displayName
+        )
+        alert.addButton(withTitle: L10n.text("common.delete"))
+        alert.addButton(withTitle: L10n.text("common.cancel"))
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         constraintRegistry.deleteRecord(identity: identity)
         refreshConstraintRecords()
@@ -1185,7 +1311,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     @objc private func changeSideDwellDuration(_ sender: NSSlider) {
         let value = (sender.doubleValue * 10).rounded() / 10
         settings.sideDwellDuration = value
-        sideDwellDurationValue.stringValue = String(format: "%.1f 秒", value)
+        sideDwellDurationValue.stringValue = L10n.format("value.seconds", value)
     }
 
     @objc private func toggleSideDwellExpansion() {
@@ -1204,8 +1330,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         } catch {
             launchCheckbox.state = settings.launchAtLogin ? .on : .off
             let alert = NSAlert()
-            alert.messageText = "ログイン項目を変更できませんでした"
-            alert.informativeText = error.localizedDescription
+            alert.messageText = L10n.text("settings.general.launch_at_login.error.title")
+            alert.informativeText = L10n.text("settings.general.launch_at_login.error.detail")
             alert.runModal()
         }
     }
@@ -1295,8 +1421,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func applyWorkspaceEdgeDelay() {
         guard confirmWorkspaceMutation(
-            message: "Space移動の発火を60秒まで遅らせますか？",
-            detail: "macOS全体の設定を変更し、Dockを再起動します。"
+            message: L10n.text("workspace.confirm_delay.title"),
+            detail: L10n.text("workspace.confirm_delay.detail")
         ) else { return }
         setWorkspaceButtonsEnabled(false)
         experimentalWorkspaceSettings.applyDelayedEdgeSwitching {
@@ -1307,8 +1433,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func resetWorkspaceEdgeDelay() {
         guard confirmWorkspaceMutation(
-            message: "Space移動の遅延をデフォルトに戻しますか？",
-            detail: "未公開Preferenceが存在する場合は削除し、Dockを再起動します。"
+            message: L10n.text("workspace.confirm_reset.title"),
+            detail: L10n.text("workspace.confirm_reset.detail")
         ) else { return }
         setWorkspaceButtonsEnabled(false)
         experimentalWorkspaceSettings.restoreDefaultEdgeSwitching {
@@ -1319,7 +1445,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     private func refreshExperimentalWorkspaceState() {
         setWorkspaceButtonsEnabled(false)
-        workspaceEdgeDelayStatus.stringValue = "現在値を確認中…"
+        workspaceEdgeDelayStatus.stringValue = L10n.text(
+            "settings.experimental.workspace.status.checking"
+        )
         experimentalWorkspaceSettings.readEdgeDelay { [weak self] result in
             self?.finishWorkspaceMutation(result, showsFailureAlert: false)
         }
@@ -1333,18 +1461,22 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         switch result {
         case .success(let value):
             if let value {
-                workspaceEdgeDelayStatus.stringValue = String(
-                    format: "現在の遅延: %.1f秒",
+                workspaceEdgeDelayStatus.stringValue = L10n.format(
+                    "settings.experimental.workspace.status.value",
                     value
                 )
             } else {
-                workspaceEdgeDelayStatus.stringValue = "現在の遅延: macOSデフォルト"
+                workspaceEdgeDelayStatus.stringValue = L10n.text(
+                    "settings.experimental.workspace.status.default"
+                )
             }
         case .failure(let error):
-            workspaceEdgeDelayStatus.stringValue = "現在値を確認できません"
+            workspaceEdgeDelayStatus.stringValue = L10n.text(
+                "settings.experimental.workspace.status.unavailable"
+            )
             guard showsFailureAlert else { return }
             let alert = NSAlert()
-            alert.messageText = "Workspace設定を変更できませんでした"
+            alert.messageText = L10n.text("workspace.error.title")
             alert.informativeText = error.localizedDescription
             alert.runModal()
         }
@@ -1363,8 +1495,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         alert.messageText = message
         alert.informativeText = detail
         alert.alertStyle = .warning
-        alert.addButton(withTitle: "変更する")
-        alert.addButton(withTitle: "キャンセル")
+        alert.addButton(withTitle: L10n.text("common.change"))
+        alert.addButton(withTitle: L10n.text("common.cancel"))
         return alert.runModal() == .alertFirstButtonReturn
     }
 
@@ -1386,7 +1518,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         guard let raw = sender.identifier?.rawValue,
               let action = ShortcutAction(rawValue: raw) else { return }
         recordingAction = action
-        sender.title = "キーを入力…"
+        sender.title = L10n.text("settings.commands.press_key")
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, let action = self.recordingAction else { return event }

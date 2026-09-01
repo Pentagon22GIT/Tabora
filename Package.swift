@@ -3,12 +3,16 @@ import PackageDescription
 
 let package = Package(
     name: "Tabora",
+    defaultLocalization: "ja",
     platforms: [.macOS(.v13)],
     products: [.executable(name: "Tabora", targets: ["Tabora"])],
     targets: [
         .executableTarget(
             name: "Tabora",
             dependencies: ["TaboraSkyLightBridge"],
+            resources: [
+                .process("Resources")
+            ],
             linkerSettings: [
                 .linkedFramework("AppKit"),
                 .linkedFramework("ApplicationServices"),

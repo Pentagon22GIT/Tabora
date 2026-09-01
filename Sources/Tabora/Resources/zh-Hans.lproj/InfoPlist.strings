@@ -1,0 +1,2 @@
+"NSAccessibilityUsageDescription" = "Tabora 使用“辅助功能”权限来移动窗口、调整窗口大小并进行吸附布局。";
+"NSScreenCaptureUsageDescription" = "启用后，Tabora 使用“屏幕录制”权限在布局建议中显示窗口预览。";

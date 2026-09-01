@@ -6,8 +6,10 @@
 
 - `AppMain.swift` はメニューバーアプリのライフサイクル、メニューコマンド、グローバルショートカット登録、更新リンクの表示、Accessibility設定への導線を管理します。
 - `AppSettings.swift` は現在のアプリの `UserDefaults.standard` domainへscalarなユーザー設定を保存し、`ServiceManagement` を使ってログイン項目登録を管理します。
+- `Localization.swift` は対応言語、初回言語決定、保存、resource bundle解決、日本語fallbackを一つの境界へ集約します。初回だけmacOSの最優先言語を参照し、以後は保存した`appLanguage`を使用します。不正値とresource欠落は日本語へfail closedします。
 - `ConstraintStore.swift` はアプリ別App Constraint recordをschema version付きJSONとしてApplication SupportのBundle ID別directoryへatomic writeします。Official / Community間でrecordを暗黙共有せず、record単位でvalidationして1 recordの破損を他recordの消失へ波及させません。
-- `SettingsWindowController.swift` は上部固定のカテゴリ切替で一般 / コマンド / サイズ制約 / 試験的機能を表示し、「アプリ別のサイズ制約」でApp Constraintの記録許可・読み取り専用の値表示・明示計測・record削除をローカルstoreへ反映します。手動の数値編集経路は持ちません。
+- `SettingsWindowController.swift` は上部固定のカテゴリ切替で一般 / コマンド / サイズ制約 / 試験的機能を表示し、「アプリ別のサイズ制約」でApp Constraintの記録許可・読み取り専用の値表示・明示計測・record削除をローカルstoreへ反映します。手動の数値編集経路は持ちません。一般設定の言語選択では適用ボタンだけを選択先言語で即時表示し、明示計測中は再起動を拒否します。
+- 言語適用は現在process内でUI objectを部分的に差し替えません。`AppMain.swift`が同じ`.app` bundleだけを対象にrelaunch helperを起動できた場合に限り選択を保存し、現在processを終了します。helperは親processの終了を有限時間確認してから`/usr/bin/open -g`を実行します。起動失敗時は保存も終了も行いません。この再起動境界はSnap / Group / Resize / Recovery / Mission Control stateへ新しいmutation経路を追加しません。
 - 2 / 3 / 4分割Assist切り替えは初期OFFです。隣接Quarterが2枚配置されたsession、または単一Halfから反対側を異なる2windowへ分割可能なsessionだけ、Picker表示中にcombined-sessionのOption状態を約60 Hzで確認します。通常コマンド用Carbon HotKeyやkeyboard event経路には登録せず、Option eventも消費しません。session終了、cancel、drag、shared resize、Space/display遷移、設定OFFではtimerを即時解除します。
 
 ## ウィンドウ観測とidentity

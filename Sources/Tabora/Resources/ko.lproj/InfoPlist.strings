@@ -1,0 +1,2 @@
+"NSAccessibilityUsageDescription" = "Tabora가 윈도우를 이동하고 크기를 조절하여 스냅 배치하기 위해 손쉬운 사용 권한을 사용합니다.";
+"NSScreenCaptureUsageDescription" = "사용자가 기능을 켜면 Tabora가 배치 제안에 윈도우 미리보기를 표시하기 위해 화면 기록 권한을 사용합니다.";

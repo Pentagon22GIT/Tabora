@@ -1,0 +1,2 @@
+"NSAccessibilityUsageDescription" = "Tabora uses Accessibility to move and resize windows into snap layouts.";
+"NSScreenCaptureUsageDescription" = "When enabled, Tabora uses Screen Recording to show window previews in layout suggestions.";

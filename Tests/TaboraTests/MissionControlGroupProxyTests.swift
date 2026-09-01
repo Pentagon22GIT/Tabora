@@ -9,18 +9,18 @@ final class MissionControlGroupProxyTests: XCTestCase {
                 queuePosition: 1,
                 queueTotal: 2
             )
-        XCTAssertEqual(queued.title, "移動準備中")
+        XCTAssertEqual(queued.title, L10n.text("migration.proxy.ready"))
         XCTAssertEqual(
             queued.subtitle,
-            "1/2  •  Mission Controlを閉じると移動"
+            L10n.format("migration.proxy.subtitle.queued", 1, 2)
         )
 
         let waiting = MissionControlGroupProxyMigrationPresentationPolicy
             .presentation(queuePosition: 2, queueTotal: 2)
-        XCTAssertEqual(waiting.title, "移動待機")
+        XCTAssertEqual(waiting.title, L10n.text("migration.proxy.waiting"))
         XCTAssertEqual(
             waiting.subtitle,
-            "2/2  •  Mission Controlを閉じると移動"
+            L10n.format("migration.proxy.subtitle.queued", 2, 2)
         )
     }
 

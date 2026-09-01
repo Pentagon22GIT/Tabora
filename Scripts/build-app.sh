@@ -7,6 +7,7 @@ readonly EDITION="${1:-}"
 readonly VERSION_FILE="$ROOT/VERSION"
 readonly BUILD_NUMBER_FILE="$ROOT/BUILD_NUMBER"
 readonly OFFICIAL_CONFIG="$ROOT/Config/OfficialSigning.plist"
+readonly LOCALIZATION_ROOT="$ROOT/Sources/Tabora/Resources"
 
 fail() {
   echo "エラー: $1" >&2
@@ -81,6 +82,14 @@ esac
 /bin/rm -rf "$OUTPUT_DIR"
 /bin/mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 /bin/cp "$BIN" "$APP/Contents/MacOS/Tabora"
+for LANGUAGE in ja en ko zh-Hans zh-Hant; do
+  LANGUAGE_DIRECTORY="$LOCALIZATION_ROOT/$LANGUAGE.lproj"
+  [[ -f "$LANGUAGE_DIRECTORY/Localizable.strings" ]] || \
+    fail "$LANGUAGEのLocalizable.stringsがありません。"
+  [[ -f "$LANGUAGE_DIRECTORY/InfoPlist.strings" ]] || \
+    fail "$LANGUAGEのInfoPlist.stringsがありません。"
+  /bin/cp -R "$LANGUAGE_DIRECTORY" "$APP/Contents/Resources/"
+done
 
 /usr/bin/plutil -create xml1 "$INFO_PLIST"
 /usr/bin/plutil -insert CFBundleName -string "$DISPLAY_NAME" "$INFO_PLIST"
@@ -90,6 +99,9 @@ esac
 /usr/bin/plutil -insert CFBundleShortVersionString -string "$VERSION" "$INFO_PLIST"
 /usr/bin/plutil -insert CFBundleExecutable -string Tabora "$INFO_PLIST"
 /usr/bin/plutil -insert CFBundlePackageType -string APPL "$INFO_PLIST"
+/usr/bin/plutil -insert CFBundleDevelopmentRegion -string ja "$INFO_PLIST"
+/usr/bin/plutil -insert CFBundleLocalizations -json \
+  '["ja","en","ko","zh-Hans","zh-Hant"]' "$INFO_PLIST"
 /usr/bin/plutil -insert LSMinimumSystemVersion -string 13.0 "$INFO_PLIST"
 /usr/bin/plutil -insert LSUIElement -bool YES "$INFO_PLIST"
 /usr/bin/plutil -insert LSMultipleInstancesProhibited -bool YES "$INFO_PLIST"

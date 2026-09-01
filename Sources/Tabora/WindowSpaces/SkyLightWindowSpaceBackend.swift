@@ -6,7 +6,9 @@ import TaboraSkyLightBridge
 final class SkyLightWindowSpaceBackend:
     WindowSpaceObservationPort,
     WindowSpaceTransportPort {
-    private(set) var lastMoveDispatchDiagnosticDescription = "dispatch未実行"
+    private(set) var lastMoveDispatchDiagnosticDescription = L10n.text(
+        "migration.diagnostic.not_dispatched"
+    )
     private let windowIDResolver = RuntimeWindowIDResolver()
 
     var capabilities: SpaceRuntimeCapabilities {
@@ -100,15 +102,18 @@ final class SkyLightWindowSpaceBackend:
         to destination: TaboraSpaceID
     ) -> SpaceTransportDispatchResult {
         guard capabilities.contains(.dispatchBridgedMove) else {
-            lastMoveDispatchDiagnosticDescription =
-                "runtime利用不可: \(moveRuntimeDiagnosticDescription)"
+            lastMoveDispatchDiagnosticDescription = L10n.format(
+                "migration.diagnostic.runtime_unavailable",
+                moveRuntimeDiagnosticDescription
+            )
             return .unavailable
         }
         let uniqueWindowIDs = Array(Set(windowIDs)).sorted()
         guard !uniqueWindowIDs.isEmpty,
               uniqueWindowIDs.allSatisfy({ $0 != 0 }) else {
-            lastMoveDispatchDiagnosticDescription =
-                "入力拒否: 有効なWindowIDがありません"
+            lastMoveDispatchDiagnosticDescription = L10n.text(
+                "migration.diagnostic.invalid_window_ids"
+            )
             return .rejected
         }
         var detail: NSString?
@@ -118,7 +123,7 @@ final class SkyLightWindowSpaceBackend:
             &detail
         )
         lastMoveDispatchDiagnosticDescription = detail.map { $0 as String }
-            ?? "bridge詳細なし"
+            ?? L10n.text("migration.diagnostic.bridge_unavailable")
         return dispatched ? .dispatched : .rejected
     }
 }

@@ -1,0 +1,2 @@
+"NSAccessibilityUsageDescription" = "ウィンドウを移動・サイズ変更してスナップ配置するために使用します。";
+"NSScreenCaptureUsageDescription" = "利用者が有効にした場合に、配置候補のプレビュー画像を表示するために使用します。";

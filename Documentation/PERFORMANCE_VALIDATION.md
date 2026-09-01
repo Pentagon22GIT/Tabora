@@ -8,6 +8,7 @@
 
 - 計測日: **2026-09-01**
 - 対象: **Tabora v2.0.0 (Build 14)**
+- 適用確認: **Tabora v2.1.0 (Build 16) — 2026-09-01**
 - Source Revision: `d41b500a2b9f3e94cb067eb517b7dba52e7b526a`
 - macOS: **26.6.2 (25G83)**
 - CPU: **10コア**
@@ -18,6 +19,8 @@
 - Window構成: Chrome 3枚 + Finder 3枚の同一6ウィンドウ
 - Group構成: 3分割Group × 2組
 - Phase間では指定設定だけを変更し、Group構成、上下関係、ウィンドウ構成を維持
+
+v2.1.0はlocalization resource、UI文字列参照、初回言語保存、明示適用時の再起動だけを追加し、平常時のSnap / Group / Resize / Recovery / Preview / Foreground / Migration処理を変更していません。計測値そのものは上記v2.0.0 Build 14の実測を維持し、v2.1.0 Build 16への適用は処理経路の始点・終点を含むsource差分監査によって確認しています。新しい常駐timer、network、画像取得、Window Server pollingは追加していません。
 
 ### 検証Phase
 
@@ -179,6 +182,7 @@ Battery残量は各Phase内で安定し、Low Power ModeはOFFでした。温度
 - [x] Foreground監視の低頻度fallback設計と実測値の整合を確認
 - [x] 既存Architecture / Security Invariants / Foreground / Migration文書との整合を確認
 - [x] 設定画面の2 / 3 / 4分割Assist表記を現在仕様へ統一
-- [x] README / CHANGELOG / Privacy / Third-party notice / Version / Build Numberのv2.0.1整合を確認
+- [x] v2.1.0の変更がlocalization / resource / relaunch境界に限定され、計測対象の常駐処理経路を変更していないことを差分監査
+- [x] README / CHANGELOG / Privacy / Third-party notice / Version / Build Numberのv2.1.0整合を確認
 
 この記録は性能の最新確認点です。今後、常駐監視方式、Preview更新方式、WindowServerへの継続的な表示処理を変更した場合は、同じPhase構成で再計測し、この文書へ新しい検証記録を追記します。

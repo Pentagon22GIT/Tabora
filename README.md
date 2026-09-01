@@ -4,6 +4,8 @@ Taboraは、macOSのウィンドウを画面端・四隅・分割領域へ配置
 
 Tabora v1.0.0は、技術的に完成したSnapFlow Final v1.3.0の挙動を凍結し、製品identity、version、ドキュメント、署名trust domain、GitHub基盤だけを新しいプロジェクトとして移行したものです。移行そのものによるSnap / Group / Resize / Recovery / AX / Mission Controlのアルゴリズム変更は行いません。由来と移行境界は[ORIGIN.md](Documentation/ORIGIN.md)と[MIGRATION_AUDIT.md](Documentation/MIGRATION_AUDIT.md)を参照してください。
 
+Tabora v2.0.1は、v2.0.0の動作を維持した軽微なメンテナンス更新です。試験的な2 / 3 / 4分割Assistの設定表記を現在の双方向仕様へ統一し、平常時のTabora直接負荷とWindowServer委託負荷を統合した最終性能検証記録を追加しました。最新の実測ではFull Residentの総合CPUは1コア約3.84%、10コア全体約0.384%です。詳細は[PERFORMANCE_VALIDATION.md](Documentation/PERFORMANCE_VALIDATION.md)を参照してください。
+
 Tabora v2.0.0は、実際のWindow→Space membershipを用いるグループ分離判定と、Mission Control上のグループProxyを別Desktopへドロップして実ウィンドウ群を移送する試験的機能を追加します。移送はMission Control内で予約し、exact PID + Window IDで一致した実ウィンドウ画像へ入力透過の予約shadowを表示します。Shadowは受理済み予約scene中だけ起動する表示専用10 Hz observerで管理し、操作中は即時hideしてWindow Server geometry取得も止めます。mouse-up後はOSのretilingが静止したことを複数frameで確認してから復帰し、settle後は各group 1枚のsentinelだけを判定対象にします。Mission Controlのlive thumbnail frameはon-screen Window Server listから取得し、予約済みexact PID + CGWindowIDだけをfilterして使います。終了側はfadeせずfail-closedで即時退避し、application activationなどの早期hint後に古いone-shot/capture refreshがShadowを再点灯させないrearm gateを持ちます。閉じた後は複数グループをFIFOで一件ずつ移送します。通常移送はz-orderを変更しませんが、「移動準備中／移動待機」のqueued Proxyを明示選択した場合だけ、成功済みgroupを全FIFO terminal後に一度だけ前面化するpost-migration intentを記録します。移送は初期OFFで、非公開APIは独立Bridge / Backendへ隔離しています。Shadow observerとforeground intentはtransport/FIFO/rollbackへ状態を返しません。詳細は[PRIVATE_API_GROUP_SPACE_MIGRATION.md](Documentation/PRIVATE_API_GROUP_SPACE_MIGRATION.md)を参照してください。
 
 ## 主な機能
@@ -22,7 +24,7 @@ Tabora v2.0.0は、実際のWindow→Space membershipを用いるグループ分
 - 任意の配置候補プレビュー
 - Mission ControlのグループProxyによるDesktop間移送（試験的・初期OFF）
 
-詳細な構成は[ARCHITECTURE.md](Documentation/ARCHITECTURE.md)、最前面監視のevent / gate / fallback境界は[FOREGROUND_MONITORING.md](Documentation/FOREGROUND_MONITORING.md)を参照してください。
+詳細な構成は[ARCHITECTURE.md](Documentation/ARCHITECTURE.md)、最前面監視のevent / gate / fallback境界は[FOREGROUND_MONITORING.md](Documentation/FOREGROUND_MONITORING.md)、最新の常駐負荷検証は[PERFORMANCE_VALIDATION.md](Documentation/PERFORMANCE_VALIDATION.md)を参照してください。
 
 ## 動作環境
 

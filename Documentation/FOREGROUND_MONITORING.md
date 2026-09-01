@@ -64,20 +64,20 @@ Space移送では各memberのAX stable identityから解決したWindowIDが全�
 
 ## 互換性監査表
 
-| シナリオ | 必須結果 |
-| --- | --- |
-| group memberを通常クリック | 既存のexact click認可を維持し、必要ならgroupを前面化 |
-| Mission Controlでgroup proxy選択 | exact captured groupだけを有限raiseし、成功後automatic |
-| Mission Controlで実windowを1枚選択 | companionをraiseせずsolo、group構造は維持 |
-| Mission Controlでmemberを順番に選択 | 途中はsoloのまま。全member前面を証明した最後の選択で、そのgroupだけautomaticへ移る |
-| Command-Tabでgroupが物理的に揃う | 全member前面を証明できた時だけautomaticへ移り、追加AXRaiseは発行しない |
-| group外windowをsystem選択 | 以前のautomaticをdisabledへ閉じ、group-localなsoloは維持 |
-| frontmost判定が不明 | fail-closedでselected groupをsoloとし、automaticを持ち越さない |
-| 同一アプリの複数windowをdrag | pointerのCGWindowIDへ一意対応したAX windowだけを操作 |
-| snap後に上端maximize | snap transaction終了/rollback owner以外はframe・groupを変更しない |
-| shared/native resize | selection settlementをcancelし、resize owner終了後に再baseline |
-| Space移送 | migration owner中はfallback停止、commit/rollback後に再baseline |
-| session lock / disable / stop | monitor停止、pending work cancel、復帰時はfresh baseline |
+| シナリオ | 必須結果 | 2026-09-01実機監査 |
+| --- | --- | --- |
+| group memberを通常クリック | 既存のexact click認可を維持し、必要ならgroupを前面化 | ✓ |
+| Mission Controlでgroup proxy選択 | exact captured groupだけを有限raiseし、成功後automatic | ✓ |
+| Mission Controlで実windowを1枚選択 | companionをraiseせずsolo、group構造は維持 | ✓ |
+| Mission Controlでmemberを順番に選択 | 途中はsoloのまま。全member前面を証明した最後の選択で、そのgroupだけautomaticへ移る | ✓ |
+| Command-Tabでgroupが物理的に揃う | 全member前面を証明できた時だけautomaticへ移り、追加AXRaiseは発行しない | ✓ |
+| group外windowをsystem選択 | 以前のautomaticをdisabledへ閉じ、group-localなsoloは維持 | ✓ |
+| frontmost判定が不明 | fail-closedでselected groupをsoloとし、automaticを持ち越さない | ✓ |
+| 同一アプリの複数windowをdrag | pointerのCGWindowIDへ一意対応したAX windowだけを操作 | ✓ |
+| snap後に上端maximize | snap transaction終了/rollback owner以外はframe・groupを変更しない | ✓ |
+| shared/native resize | selection settlementをcancelし、resize owner終了後に再baseline | ✓ |
+| Space移送 | migration owner中はfallback停止、commit/rollback後に再baseline | ✓ |
+| session lock / disable / stop | monitor停止、pending work cancel、復帰時はfresh baseline | ✓ |
 
 ## 今後の変更点
 

@@ -1,6 +1,6 @@
 # 非公開APIを用いたグループのDesktop間移送
 
-**最終更新:** 2026-08-31
+**最終更新:** 2026-09-01
 **動作確認済み環境:** macOS 26.5.2 / 26.6.2  
 **対象:** Mission Control上のグループProxy移送、Window→Space観測、将来のABI保守
 
@@ -180,24 +180,26 @@ destination drop直後にもmember SpaceまたはAX elementが一時的に`unkno
 
 ## Release確認表
 
-- 2/3/4 member、同一/異なるアプリ。
-- 同一アプリ複数memberで各AX elementが別Window IDへ解決され、重複ID captureがdispatch前に拒否されること。
-- 同一displayおよび別display、異なるvisible frame/scale、大小destination。
-- exact projectionとconstraint-adjusted projection、confirmed infeasible。
-- dispatch no-op timeout、部分移送、単一origin／複数origin rollback成功・不完全。
-- frame apply失敗、entry frame復元、group rebuild失敗。
-- 移送中のfeature OFF、window close、display/session変化、controller停止。
-- Mission Control cancel、Proxy選択との排他、往復移送、失敗後再試行。
-- destination確定後もMission Control中は実memberのmembershipが変化せず、通常Desktop安定後に一度だけmoveがdispatchされること。
-- capture直後に移動先Proxyへ受付済み表示が出て、Preview内容、frame、Window ID、ordering、collection behaviorを変更しないこと。同じProxyを再操作しても重複transactionを生成しないこと。
-- 予約済みProxyを第三のDesktopへ再ドロップするとFIFO位置を維持したまま最新destinationへ移送されること。sourceへ戻すと実moveなしで予約が解除され、同じProxy画像と選択判定が残り、次回Mission Controlでも候補画像が欠落しないこと。
-- physical commit後のAX layoutでTabora生成のfloating handoff coverが一切表示されず、実window更新だけが見えること。cover撤去によってtransport、membership verify、layout completion、group commit、Proxy rearmの順序が変化しないこと。
-- 同じMission Control sessionで異なる2groupを別Desktopへ移動し、両captureが保持され、終了後にdrop順のFIFOで一件ずつ完了すること。先行groupのverify/layout/rollback中に後続moveをdispatchしないこと。
-- FIFO処理中にdestination Desktopへ切り替えても、Active Space cleanupがmigrationのframe batchをcancelせず、両groupがlayout/commitまで完了すること。
-- capture後にmemberを一枚だけ別user Spaceへ手動移動した場合もcapture済みWindow IDが一致するそのmemberをdestinationへ集約すること。既にdestinationにいるmemberはprivate move対象から除外し、全member到着済みならmoveを発行しないこと。移送失敗時は各memberを実行時originへ戻し、capture前から分離していたgroupは復元後に解散すること。
-- group移送完了後にMission Controlを再度開き、同一PID/別PIDの通常windowを移送しても縮小transform、操作不能surface、group画像欠落が起きないこと。
-- `completed`とdispatch前cancelでは、消費済みProxyを同じMission Control compositor tailへ再生成しないため対象groupだけnormal Desktop rearmを通すこと。`rolledBack`やdestination dissolutionでは不要な旧scene quarantineを残さないこと。
-- 通常の外部Space分離における`knownSame/knownDifferent/unknown`。
-- 通常移送だけではfocus、activate、AXRaise、既存foreground modeを変更しないこと。queued Proxyを明示選択した場合だけ、全FIFO terminal後のone-shot foreground intentを許可し、失敗terminalでは実行しないこと。
+最新完了記録: **2026-09-01 / Tabora v2.0.0 (Build 14) / macOS 26.6.2**
+
+- [x] 2/3/4 member、同一/異なるアプリ。
+- [x] 同一アプリ複数memberで各AX elementが別Window IDへ解決され、重複ID captureがdispatch前に拒否されること。
+- [x] 同一displayおよび別display、異なるvisible frame/scale、大小destination。
+- [x] exact projectionとconstraint-adjusted projection、confirmed infeasible。
+- [x] dispatch no-op timeout、部分移送、単一origin／複数origin rollback成功・不完全。
+- [x] frame apply失敗、entry frame復元、group rebuild失敗。
+- [x] 移送中のfeature OFF、window close、display/session変化、controller停止。
+- [x] Mission Control cancel、Proxy選択との排他、往復移送、失敗後再試行。
+- [x] destination確定後もMission Control中は実memberのmembershipが変化せず、通常Desktop安定後に一度だけmoveがdispatchされること。
+- [x] capture直後に移動先Proxyへ受付済み表示が出て、Preview内容、frame、Window ID、ordering、collection behaviorを変更しないこと。同じProxyを再操作しても重複transactionを生成しないこと。
+- [x] 予約済みProxyを第三のDesktopへ再ドロップするとFIFO位置を維持したまま最新destinationへ移送されること。sourceへ戻すと実moveなしで予約が解除され、同じProxy画像と選択判定が残り、次回Mission Controlでも候補画像が欠落しないこと。
+- [x] physical commit後のAX layoutでTabora生成のfloating handoff coverが一切表示されず、実window更新だけが見えること。cover撤去によってtransport、membership verify、layout completion、group commit、Proxy rearmの順序が変化しないこと。
+- [x] 同じMission Control sessionで異なる2groupを別Desktopへ移動し、両captureが保持され、終了後にdrop順のFIFOで一件ずつ完了すること。先行groupのverify/layout/rollback中に後続moveをdispatchしないこと。
+- [x] FIFO処理中にdestination Desktopへ切り替えても、Active Space cleanupがmigrationのframe batchをcancelせず、両groupがlayout/commitまで完了すること。
+- [x] capture後にmemberを一枚だけ別user Spaceへ手動移動した場合もcapture済みWindow IDが一致するそのmemberをdestinationへ集約すること。既にdestinationにいるmemberはprivate move対象から除外し、全member到着済みならmoveを発行しないこと。移送失敗時は各memberを実行時originへ戻し、capture前から分離していたgroupは復元後に解散すること。
+- [x] group移送完了後にMission Controlを再度開き、同一PID/別PIDの通常windowを移送しても縮小transform、操作不能surface、group画像欠落が起きないこと。
+- [x] `completed`とdispatch前cancelでは、消費済みProxyを同じMission Control compositor tailへ再生成しないため対象groupだけnormal Desktop rearmを通すこと。`rolledBack`やdestination dissolutionでは不要な旧scene quarantineを残さないこと。
+- [x] 通常の外部Space分離における`knownSame/knownDifferent/unknown`。
+- [x] 通常移送だけではfocus、activate、AXRaise、既存foreground modeを変更しないこと。queued Proxyを明示選択した場合だけ、全FIFO terminal後のone-shot foreground intentを許可し、失敗terminalでは実行しないこと。
 
 private APIの互換性はcompile成功だけでは保証できない。対応環境ごとにruntime capabilityと実membershipによる往復確認をRelease条件とする。

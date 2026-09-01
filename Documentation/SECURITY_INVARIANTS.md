@@ -1,6 +1,6 @@
 # Security / Correctness不変条件
 
-これらの不変条件はSnapFlow最終安定化から継承され、v1系の安全境界とv2.0.0のSpace membership / group migrationを含め、2 / 3 / 4 split layoutへ同等に適用されます。
+これらの不変条件はSnapFlow最終安定化から継承され、v1系の安全境界とv2.0.0以降のSpace membership / group migrationを含め、2 / 3 / 4 split layoutへ同等に適用されます。
 
 ## Space membership / group migration
 

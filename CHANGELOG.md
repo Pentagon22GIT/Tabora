@@ -1,5 +1,16 @@
 # 更新履歴
 
+## 2.0.1 — 2026-09-01
+
+### Documentation / validation
+
+- v2.0.0の平常状態を同一6ウィンドウ・2 Group構成で再検証し、Tabora直接CPU、WindowServer委託CPU、総合CPU、Wakeup、Memory、System CPU、Battery、Thermalを`Documentation/PERFORMANCE_VALIDATION.md`へ統合した。Full Residentの総合CPUは約38.4 ms/s、1コア約3.84%、10コア全体約0.384%。
+- 最新の実機監査結果をForeground / Mission Control migrationの確認表へ反映し、現在の文書と実装の整合を再確認した。
+
+### Settings
+
+- 試験的Assistの設定表示を旧来の「4分割Assistを3分割へ切り替える」から現在の双方向2 / 3 / 4分割仕様に合わせ、タイトルと説明を更新した。動作ロジック、永続設定key、初期値は変更しない。
+
 ## 2.0.0 — 2026-08-29
 
 ### Space group migration

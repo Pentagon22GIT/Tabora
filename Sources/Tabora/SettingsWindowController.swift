@@ -111,7 +111,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let sideDwellDurationSlider = NSSlider()
     private let sideDwellDurationValue = NSTextField(labelWithString: "")
     private let assistLayoutSwitchingCheckbox = NSButton(
-        checkboxWithTitle: "4分割Assistを3分割へ切り替える",
+        checkboxWithTitle: "Optionで2 / 3 / 4分割Assistを切り替える",
         target: nil,
         action: nil
     )
@@ -610,7 +610,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         )
         stack.addArrangedSubview(assistLayoutSwitchingCheckbox)
         let assistLayoutNote = NSTextField(
-            wrappingLabelWithString: "Option（⌥）を押している間、隣接する四隅2枚の残りを1つへ統合できます。また、左右または上下の半分が1枚だけ配置され、異なる2ウィンドウを残り領域へ配置できる場合は、その領域を2つへ分けた3分割候補を表示します。"
+            wrappingLabelWithString: "Option（⌥）を押している間、4分割候補の残り2面を1つへ統合して3分割候補にできます。反対に、左右または上下の半分が1枚だけ配置され、残り領域へ異なる2ウィンドウを配置できる場合は、その領域を2面へ分けた3分割候補へ切り替えます。"
         )
         assistLayoutNote.textColor = .secondaryLabelColor
         assistLayoutNote.maximumNumberOfLines = 0

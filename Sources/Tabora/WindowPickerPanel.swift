@@ -1,6 +1,12 @@
 import AppKit
 import CoreGraphics
 
+typealias PickerPreviewCaptureAuthorization = () -> Bool
+typealias PickerPreviewProvider = (
+    CGWindowID?,
+    @escaping PickerPreviewCaptureAuthorization
+) -> CGImage?
+
 enum PickerPreviewWorkPolicy {
     static let totalPreviewByteBudget = 32 * 1024 * 1024
     static let bytesPerPixel = 4
@@ -20,7 +26,7 @@ enum PickerPreviewWorkPolicy {
 
 private final class PreviewImageLoader {
     private static let maximumPreviewPixelSize = CGSize(width: 680, height: 420)
-    private let provider: (CGWindowID?) -> CGImage?
+    private let provider: PickerPreviewProvider
     private let perImageByteBudget: Int
     private static let queue: OperationQueue = {
         let queue = OperationQueue()
@@ -41,7 +47,7 @@ private final class PreviewImageLoader {
     private var generation: UInt64 = 0
 
     init(
-        provider: @escaping (CGWindowID?) -> CGImage?,
+        provider: @escaping PickerPreviewProvider,
         candidateCount: Int
     ) {
         self.provider = provider
@@ -85,14 +91,26 @@ private final class PreviewImageLoader {
         guard self.generation == generation, pending[key] != nil else { return }
         let provider = self.provider
         let byteBudget = perImageByteBudget
-        let operation = BlockOperation { [weak self] in
-            guard self != nil else { return }
-            let imageRef = provider(windowID).flatMap { source in
+        let operation = BlockOperation()
+        operation.addExecutionBlock { [weak self, weak operation] in
+            guard self != nil, let operation,
+                  !operation.isCancelled else { return }
+            let captureIsAuthorized: PickerPreviewCaptureAuthorization = {
+                [weak operation] in
+                operation?.isCancelled == false
+            }
+            let source = provider(windowID, captureIsAuthorized)
+            // Picker cancellation invalidates presentation immediately. A
+            // request that was waiting for the shared capture slot must not
+            // become a late WindowServer capture or a retry after cancellation.
+            guard captureIsAuthorized() else { return }
+            let imageRef = source.flatMap { source in
                 Self.makePreviewImage(
                     from: source,
                     byteBudget: byteBudget
                 )
             }
+            guard captureIsAuthorized() else { return }
             DispatchQueue.main.async { [weak self] in
                 self?.finishRequest(
                     key: key,
@@ -279,7 +297,7 @@ final class WindowPickerPanel: NSObject {
         zoneFrames: [SnapZone: CGRect],
         backdropFrames: [CGRect] = [],
         previewCandidateBudgetCount: Int? = nil,
-        previewProvider: @escaping (CGWindowID?) -> CGImage?,
+        previewProvider: @escaping PickerPreviewProvider,
         onCancel: @escaping () -> Void,
         onSelect: @escaping (ManagedWindow, SnapZone) -> Void
     ) {

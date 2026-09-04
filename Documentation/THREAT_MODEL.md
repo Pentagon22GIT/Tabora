@@ -57,6 +57,10 @@ public repository、GitHub Actions dependency、release tag、hash、code signin
 - relevant-scene Recovery
 - bounded / disposable preview cache
 - Mission Control / Assist間でglobal capture concurrencyを共有し、両系統の枠待機はbackgroundの有限時間に限定
+- 通常Mission Control preview cacheは初回・確定resize/display移動・確定COLDだけをtriggerとし、定期取得とcache freshnessを持たない
+- Mission Control開始時の追加画像は通常cacheから分離したsession限定transientで、直前のcomplete通常Desktop観測でgroup全体がHOTと証明された場合だけ全member集合を可視Space条件と交差させて一度固定し、安定transform・独立memory/work budget・single-flight直接window取得gateを満たす場合にatomicなgroup単位で取得・適用する。通常HOT stateがunknownで保持されてもtransient認可には使わず、部分遮蔽groupを分割取得しない。Mission Control内および結果適用時にHOT/COLDを再判定しない
+- activeな待機要求は物理window単位で合流して保持し、固定実行上限の空きへdisplay間round-robin・display内FIFOで投入
+- Mission Control / Space / display変形中は共通gateで新規取得を停止し、完了画像も通常desktop再検証までcacheへ適用しない
 - group / descriptor単位のrecovery debt
 
 ### 破損した永続設定
@@ -99,6 +103,12 @@ transient observation failureでTabora shared-resize surfaceが消え、その�
 
 対策:
 physical participantがまだ存在する場合のshort quarantineは、最後にvalidatedされたTabora-owned regionだけへ限定します。confirmed occlusionまたはstructural destructionではregionを解放します。
+
+### Display topology / transient capture pressure
+
+Display消失通知直後は`NSScreen`、Window→Space、AX frameのpublication順が一致しない可能性があります。Taboraはgroupを即解散せず、通知所有の有限settlementで「全memberが同一user Spaceかつ同一物理displayへ収束し、既存zone関係のconnected geometryを維持」を再証明します。未解決候補だけを短い期限付きdebtとして既存1 Hzへ渡し、全group topology scanや画像取得を常駐監視へ追加しません。
+
+発行済みの直接window captureはlogical cancellationと同時に物理停止できない可能性を前提に、すでに同期CG取得へ入った仕事をOS側で強制中断しません。一方、通常Mission Control PreviewとAssistはglobal capture admission待機中に所有operationがcancelされた場合、既存`shouldCapture`へそのlivenessを渡して枠取得後の新規Window Server captureを発行しません。この判定はメモリ上のoperation cancelだけで、追加のWindow Server/AX観測やtimerを持ちません。transient transactionはさらに最大1本へ制限し、同じglobal admission後にsession generationを再確認します。MC終了はgenerationを失効して結果を棄却し、旧captureが収束するまで次sessionのcaptureを重ねず、取得後も縮小・再sample前後で再確認して不要な派生処理を早期終了します。これにより論理的に死んだ待機仕事だけを物理取得前で止め、発行済み仕事には追加OS操作を行いません。
 
 ### Mission Control stale evidence
 

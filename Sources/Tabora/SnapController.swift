@@ -736,7 +736,10 @@ final class SnapController {
         [SnapGroupID: GroupPresentationTransitionLease] = [:]
     var groupPresentationRecoveryGeneration = 0
     var groupPresentationRecoveryChecksAreScheduled = false
-    private var displayTopologyGeneration = 0
+    var displayTopologyGeneration = 0
+    var lastKnownVisibleFrameByDisplayID: [CGDirectDisplayID: CGRect] = [:]
+    var displayTopologyRecoveryDebtsByGroupID:
+        [SnapGroupID: DisplayTopologyGroupRecoveryDebt] = [:]
     var connectedLayoutPlacementCount: Int {
         explicitGroupStore.connectedMemberCount
     }
@@ -953,6 +956,17 @@ final class SnapController {
             // will leave the cache debt pending if Mission Control is already moving.
             self.refreshMissionControlGroupProxies()
         }
+        missionControlGroupProxyController.onPreviewConfirmationNeeded = {
+            [weak self] in
+            guard let self,
+                  self.canRefreshPresentationAfterAsyncTransaction else {
+                return
+            }
+            // One bounded re-observation confirms only Preview-owned state.
+            // Do not route Preview confirmation through resize-handle refresh:
+            // focus/order churn must not recursively re-evaluate Toggle geometry.
+            self.refreshMissionControlGroupProxies()
+        }
     }
 
     func start() {
@@ -967,6 +981,7 @@ final class SnapController {
         startRecoveryTimer()
         updateSelectionMonitoringState()
         activeWindowObserver.observeFrontmostApplication()
+        recordCurrentDisplayGeometrySnapshot()
         refreshResizeHandles()
     }
 
@@ -1007,6 +1022,7 @@ final class SnapController {
         resetGroupSpaceMigrationForegroundIntents()
         lastGroupWindowServerEvidenceByIdentity.removeAll()
         resetGroupPresentationTransitionRecovery()
+        displayTopologyRecoveryDebtsByGroupID.removeAll()
         liveResizeScheduler.cancelAll()
         resetDragState()
         activeSession = nil
@@ -1041,6 +1057,7 @@ final class SnapController {
         resetGroupSpaceMigrationForegroundIntents()
         lastGroupWindowServerEvidenceByIdentity.removeAll()
         resetGroupPresentationTransitionRecovery()
+        displayTopologyRecoveryDebtsByGroupID.removeAll()
         cancelHandleResize(restoreOriginalFrames: true)
     }
 
@@ -2122,6 +2139,12 @@ final class SnapController {
               !isConstraintPermissionPromptActive,
               !isRestoreTransactionActive else { return }
 
+        // Display-loss recovery may borrow this watchdog only for a tiny,
+        // expiring set of groups created by a recent screen-change event. It
+        // performs no global topology scan and owns no permanent 1 Hz work.
+        let restoredDisplayTopologyGroup =
+            recoverDisplayTopologyGroupsFromWatchdogIfNeeded()
+
         // Normal focus/click/Mission Control changes arrive through event
         // paths. Reuse this already-existing 1 Hz watchdog only for events the
         // OS did not deliver; no independent high-frequency timer exists.
@@ -2141,21 +2164,6 @@ final class SnapController {
            pendingNativeResizeCandidates.isEmpty,
            !unresolvedNativeResizeWasActivated,
            !isWindowMoveConfirmed {
-            if !isApplicationInteractionSuppressed,
-               !isPreservingGroupPresentationForWindowServerTransform {
-                missionControlGroupProxyController
-                    .refreshStalePreviewCacheIfNeeded(
-                        // The established HOT/COLD lanes retain their normal
-                        // Recovery behavior. Only the new resize-settled lane
-                        // yields while Assist/Snap owns the shared Window
-                        // Server capture capacity.
-                        allowsSettledGeometryRefresh:
-                            activeSession == nil
-                                && !picker.isVisible
-                                && !isAssistPlacementPending
-                                && !isSnapPlacementInProgress
-                    )
-            }
             // Liveness is a cheap presentation-only check. It does not perform
             // discovery, so the 1 Hz watchdog can detect an orderOut/cache loss
             // even when the Window Server scene itself did not change.
@@ -2171,7 +2179,8 @@ final class SnapController {
                 interactionRegions: lastValidatedRecoveryInteractionRegions
             )
             let hasPresentationRecoveryDebt =
-                signature != lastRecoverySceneSignature
+                restoredDisplayTopologyGroup
+                || signature != lastRecoverySceneSignature
                 || !handleGeometryFailureCountsByGroupID.isEmpty
                 || !handleOcclusionFailureCountsByDescriptorID.isEmpty
                 || !handleLivenessFailureCountsByGroupID.isEmpty
@@ -2204,6 +2213,21 @@ final class SnapController {
                 )
             case .none:
                 break
+            }
+            // Admit trigger-owned captures only after this tick has classified
+            // the Window Server scene. Mission Control transforms therefore
+            // close one shared gate before any initial/COLD/geometry request
+            // can enter the bounded queue.
+            if !isApplicationInteractionSuppressed,
+               !isPreservingGroupPresentationForWindowServerTransform {
+                missionControlGroupProxyController
+                    .processPendingPreviewCapturesIfNeeded(
+                        allowsGeometryRefresh:
+                            activeSession == nil
+                                && !picker.isVisible
+                                && !isAssistPlacementPending
+                                && !isSnapPlacementInProgress
+                    )
             }
         }
 
@@ -5015,15 +5039,18 @@ final class SnapController {
                 zoneFrames: zoneFrames,
                 backdropFrames: backdropFrames,
                 previewCandidateBudgetCount: candidates.count,
-                previewProvider: { [weak self] windowID in
+                previewProvider: {
+                    [weak self] windowID, captureIsAuthorized in
                     guard let self,
-                          self.settings.windowPreviewsEnabled else { return nil }
+                          self.settings.windowPreviewsEnabled,
+                          captureIsAuthorized() else { return nil }
                     return self.windowService.previewCGImage(
                         for: windowID,
                         capacityWait:
                             PreviewCaptureAdmissionPolicy.assistCapacityWait,
                         shouldCapture: { [weak self] in
                             self?.settings.windowPreviewsEnabled == true
+                                && captureIsAuthorized()
                         }
                     )
                 },
@@ -5748,6 +5775,21 @@ final class SnapController {
            explicitGroupStore.group(containing: window.stableIdentity) != nil {
             stagedGroupDeparture = nil
         }
+        let previewGeometryMutationIDs = Set(
+            acceptedFramesByIdentity.compactMap { identity, frame -> String? in
+                guard let previous = previousLockedPlacements[identity] else {
+                    return nil
+                }
+                let sizeChanged = abs(previous.appliedFrame.width - frame.width) > 0.5
+                    || abs(previous.appliedFrame.height - frame.height) > 0.5
+                return sizeChanged ? identity : nil
+            }
+        )
+        if !previewGeometryMutationIDs.isEmpty {
+            missionControlGroupProxyController.notePreviewGeometryMutation(
+                memberIDs: previewGeometryMutationIDs
+            )
+        }
         registrationSucceeded = true
         updateSelectionMonitoringState()
         return true
@@ -5765,6 +5807,9 @@ final class SnapController {
         // derived from the old topology immediately, but do not run a broad AX
         // census from the notification callback and do not finalize a staged
         // drag departure merely because NSScreen changed.
+        missionControlGroupProxyController
+            .setDesktopPresentationStable(false)
+        let displayRecoveryCandidates = displayTopologyRecoveryCandidates()
         displayTopologyGeneration &+= 1
         groupSpaceMigrationLine.cancelForEnvironmentInvalidation()
         groupSpaceMigrationReservationShadowObserver
@@ -5776,6 +5821,17 @@ final class SnapController {
         // explicit Proxy click raise windows after a display reconfiguration.
         resetGroupSpaceMigrationForegroundIntents()
         let topologyGeneration = displayTopologyGeneration
+        let topologyEventStartedAt = ProcessInfo.processInfo.systemUptime
+        recordCurrentDisplayGeometrySnapshot()
+        installDisplayTopologyRecoveryDebts(
+            candidates: displayRecoveryCandidates,
+            topologyGeneration: topologyGeneration,
+            eventStartedAt: topologyEventStartedAt
+        )
+        scheduleDisplayTopologyGroupRecovery(
+            topologyGeneration: topologyGeneration,
+            eventStartedAt: topologyEventStartedAt
+        )
 
         resetSideDwellState()
         stopEscapeMonitoring()
@@ -5850,6 +5906,15 @@ final class SnapController {
             migrationPresentationIsOwned:
                 groupSpaceMigrationLine.ownsPresentationTransaction
         )
+        // Unselected temporary pixels are discarded at the session boundary.
+        // The exact selection owner retains them only through the existing
+        // expansion/real-window handoff, whose success/cancellation retires
+        // that proxy.
+        missionControlGroupProxyController.endTransientPreviewSession(
+            preservingAppliedGroupIDs: cleanupDecision.preservedProxyGroupIDs
+        )
+        missionControlGroupProxyController
+            .setDesktopPresentationStable(false)
 
         groupSpaceMigrationReservationShadowObserver
             .suppressPresentationImmediately()

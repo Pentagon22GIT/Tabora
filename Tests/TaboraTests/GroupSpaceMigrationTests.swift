@@ -229,21 +229,6 @@ final class GroupSpaceMigrationTests: XCTestCase {
         XCTAssertFalse(observationOnly.contains(.migrationMinimum))
     }
 
-    func testProxyMonitoringOutlivesShortPresentationLease() {
-        XCTAssertTrue(
-            GroupSpaceProxyMonitoringPolicy.isWithinLifetime(
-                startedAt: 10,
-                now: 20
-            )
-        )
-        XCTAssertFalse(
-            GroupSpaceProxyMonitoringPolicy.isWithinLifetime(
-                startedAt: 10,
-                now: 10 + GroupSpaceProxyMonitoringPolicy.maximumDuration + 0.01
-            )
-        )
-    }
-
     func testProxyDestinationRequiresSettledDropWithoutSpaceSignal() {
         XCTAssertFalse(
             GroupSpaceProxyMonitoringPolicy.destinationIsSettled(
@@ -1395,6 +1380,32 @@ final class GroupSpaceMigrationTests: XCTestCase {
                 preferredMemberID: "main"
             ),
             ["back-follower", "front-follower"]
+        )
+    }
+
+    func testManagedDisplayTopologyReturnsEveryDisplayForSharedSpace() {
+        let shared = TaboraSpaceID(900)!
+        let privateSpace = TaboraSpaceID(901)!
+        let topology = ManagedDisplaySpaceTopology(displays: [
+            .init(
+                managedDisplayIdentifier: "DISPLAY-A",
+                currentSpaceID: shared,
+                spaceIDs: [shared]
+            ),
+            .init(
+                managedDisplayIdentifier: "DISPLAY-B",
+                currentSpaceID: shared,
+                spaceIDs: [shared, privateSpace]
+            )
+        ])
+
+        XCTAssertEqual(
+            topology.managedDisplayIdentifiers(for: shared),
+            Set(["DISPLAY-A", "DISPLAY-B"])
+        )
+        XCTAssertEqual(
+            topology.managedDisplayIdentifiers(for: privateSpace),
+            Set(["DISPLAY-B"])
         )
     }
 

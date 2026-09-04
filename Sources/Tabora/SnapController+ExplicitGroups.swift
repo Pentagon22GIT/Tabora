@@ -747,16 +747,16 @@ extension SnapController {
             let axMissing = group.memberIDs.subtracting(windowsByIdentity.keys)
             if screen(withDisplayID: group.displayID) == nil {
                 // Display/Space topology can settle asynchronously. Keep the
-                // structural group, suppress only its presentation, and let
-                // Recovery obtain a fresh observation.
+                // structural group and suppress only its presentation. The
+                // display-change transaction owns a targeted, expiring rebind
+                // debt; never promote a missing display into generic permanent
+                // presentation-recovery work.
                 presentationSuppressedGroupIDs.insert(group.id)
                 missionControlGroupProxyController.hide(groupID: group.id)
                 groupDegradationEvidenceByGroupID.removeValue(forKey: group.id)
                 groupSpaceSeparationEvidenceByGroupID.removeValue(
                     forKey: group.id
                 )
-                presentationRecoveryGroupIDs.insert(group.id)
-                fastPresentationRetryGroupIDs.insert(group.id)
                 continue
             }
 
@@ -975,42 +975,41 @@ extension SnapController {
             if case .suspendedForSpaceTransition = $0.state { return false }
             return true
         }
-        var exposedPreviewMemberIDsByGroupID: [SnapGroupID: Set<String>] = [:]
+        var previewFrontmostEvaluationByGroupID:
+            [SnapGroupID: GroupFrontmostEvaluation] = [:]
+        let foregroundPresentationIsSettling =
+            pendingSelectionRaiseWorkItem != nil
+                || pendingGroupRaiseWorkItem != nil
+                || ownedForegroundMutation != nil
         for group in presentableGroups {
-            let selectionsByMemberID = Dictionary(
-                uniqueKeysWithValues: group.memberIDs.compactMap { memberID in
-                    windowsByIdentity[memberID].flatMap { window
-                        -> (String, WindowServerSelectionSnapshot)? in
-                        guard let windowID = window.cgWindowID else {
-                            return nil
-                        }
-                        return (
-                            memberID,
-                            WindowServerSelectionSnapshot(
-                                pid: window.pid,
-                                windowID: windowID
-                            )
-                        )
-                    }
-                }
-            )
-            guard selectionsByMemberID.count == group.memberIDs.count else {
+            if foregroundPresentationIsSettling {
+                // A foreground transaction raises members sequentially. Its
+                // intermediate WindowServer ordering is not evidence that the
+                // structural group became COLD. Preserve prior normal HOT/COLD
+                // state and, because transient capture is stricter, fail closed
+                // for Mission Control-only replacement until settlement.
+                previewFrontmostEvaluationByGroupID[group.id] = .indeterminate
                 continue
             }
-            switch GroupPreviewActivityPolicy.evaluate(
-                memberSelections: Set(selectionsByMemberID.values),
-                snapshot: windowServerSnapshot
-            ) {
-            case .indeterminate:
-                // Absence means "preserve prior preview activity", not COLD.
-                break
-            case .observed(let exposedSelections):
-                exposedPreviewMemberIDsByGroupID[group.id] = Set(
-                    selectionsByMemberID.compactMap { memberID, selection in
-                        exposedSelections.contains(selection) ? memberID : nil
-                    }
-                )
+            let selections = Set(group.memberIDs.compactMap { memberID in
+                windowsByIdentity[memberID].flatMap { window
+                    -> WindowServerSelectionSnapshot? in
+                    guard let windowID = window.cgWindowID else { return nil }
+                    return WindowServerSelectionSnapshot(
+                        pid: window.pid,
+                        windowID: windowID
+                    )
+                }
+            })
+            guard selections.count == group.memberIDs.count else {
+                previewFrontmostEvaluationByGroupID[group.id] = .indeterminate
+                continue
             }
+            previewFrontmostEvaluationByGroupID[group.id] =
+                GroupFrontmostEvaluationPolicy.evaluate(
+                    memberSelections: selections,
+                    snapshot: windowServerSnapshot
+                )
         }
         let previewsEnabled = settings.windowPreviewsEnabled
         missionControlGroupProxyController.update(
@@ -1019,16 +1018,22 @@ extension SnapController {
             displayOrdinalsByGroupID:
                 explicitGroupStore.displayOrdinalsByGroupID,
             preservedGroupIDs: preservedPresentationGroupIDs,
-            exposedPreviewMemberIDsByGroupID:
-                exposedPreviewMemberIDsByGroupID,
+            structuralGroupIDs: Set(explicitGroupStore.groups.map(\.id)),
+            structuralMemberIDs: explicitGroupStore.groups.reduce(
+                into: Set<String>()
+            ) { $0.formUnion($1.memberIDs) },
+            previewFrontmostEvaluationByGroupID:
+                previewFrontmostEvaluationByGroupID,
             previewsEnabled: previewsEnabled,
             previewCacheByteLimit: AppSettings
                 .missionControlPreviewMemoryByteLimit(
                     settings.missionControlPreviewMemoryLimitMiB
                 ),
-            previewProvider: { [weak self] windowID in
+            previewProvider: {
+                [weak self] windowID, captureIsAuthorized in
                 guard let self,
-                      self.settings.windowPreviewsEnabled else { return nil }
+                      self.settings.windowPreviewsEnabled,
+                      captureIsAuthorized() else { return nil }
                 return self.windowService.previewCGImage(
                     for: windowID,
                     capacityWait:
@@ -1036,6 +1041,24 @@ extension SnapController {
                             .missionControlCapacityWait,
                     shouldCapture: { [weak self] in
                         self?.settings.windowPreviewsEnabled == true
+                            && captureIsAuthorized()
+                    }
+                )
+            },
+            transientPreviewProvider: {
+                [weak self] windowID, resolution, captureIsAuthorized in
+                guard let self,
+                      self.settings.windowPreviewsEnabled,
+                      captureIsAuthorized() else { return nil }
+                return self.windowService.previewCGImage(
+                    for: windowID,
+                    capacityWait:
+                        PreviewCaptureAdmissionPolicy
+                            .missionControlCapacityWait,
+                    resolution: resolution,
+                    shouldCapture: { [weak self] in
+                        self?.settings.windowPreviewsEnabled == true
+                            && captureIsAuthorized()
                     }
                 )
             }

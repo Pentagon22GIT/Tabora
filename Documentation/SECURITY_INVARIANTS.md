@@ -14,20 +14,26 @@
 8. Proxyドロップはforeground mutationを認可しない。通常Proxy選択callbackとmigration triggerを同一イベントとして扱わない。capture済みqueued Proxyの明示選択だけはtransportから独立したpost-migration foreground intentとして記録できるが、全FIFO terminal前、失敗terminal、source取消ではAXRaise/activateを実行してはいけない。
 9. private symbol / selector / ABIは`TaboraSkyLightBridge`とSpace backend外へ漏らさず、Layout / SnapGroup / foreground層はprivate APIを知らない。
 10. destination layoutは既知App Constraint、visible frame内収容、非重複、実geometry接続を満たしたframeだけをgroup commitへ渡す。
+11. managed-display topologyはread-only evidenceであり、通常1 Hz tickから全Space/全groupを再構築してはいけない。Display変更通知の有限settlementで未解決なexact loss candidateだけを期限付きで1 Hzへ委託し、expiry後は自動停止する。
+12. Display消失rebindは全memberのsame user Space、same physical NSScreen、managed-display identifier一致、既存zone関係としてのcomplete connected geometryを同時に要求する。unknown/分散ではgroupを破壊・移動しない。完全検証済みrebindでは旧display環境由来のdegraded stateとそのconfirmation evidenceを同時に解消するが、別transactionが所有するSpace transition suspensionは解除してはいけない。
 
 ## 派生処理とライフサイクル
 
-- Mission Controlのgroup数・member数が増えても、1回の周期更新とoutstanding capture数は固定上限を超えない。
-- memberのHOT/COLDは完全なWindow Server evidenceだけで更新し、判定不能をCOLDとして扱わない。隠れたmemberは有限のcooling final capture後に定期取得を停止する。
+- 通常Mission Control Previewのgroup数・member数が増えても、実行中CG capture数とOperationQueueは固定上限を超えない。上限到達はactiveな待機要求を破棄する根拠にせず、物理window単位の合流とdisplay間round-robin・display内FIFOで全候補へ有限の実行機会を与える。MC transientは別のsingle-flight / byte / work gateを持つ。
+- groupのHOT/COLDは全memberを含む完全なWindow Server evidenceだけで更新し、group内member同士のorderingは外部occlusionとして扱わない。一部memberだけの露出または判定不能をCOLDとして扱わない。HOT→COLDはgroupのoccluded状態を2観測して確定し、COLD→HOTは未確定および未投入のCOLD要求だけを取消す。
+- 通常Mission Control Preview cacheは初回、確定resize/display移動、確定COLD以外の理由で取得しない。Recovery tick、cache age、proxy再描画から通常cache用画像要求を生成しない。Mission Control開始は通常cacheとは独立したsession限定transient laneだけを起動できる。
+- MC transient laneは通常Desktopのcomplete exposure evidenceでgroup全体がHOTと証明された場合だけ、その全member集合を開始時の可視Space + exact group/member identityへ一度固定する。通常HOT stateのunknown保持をtransient認可へ流用しない。部分遮蔽groupを分割取得・部分適用せず、認可済みgroupをatomicに取得・適用する。Mission Control内と結果適用時にHOT/COLDを再評価せず、transform geometryが連続安定するまで取得せず、通常cacheへcommitしない。session/generation不一致、選択開始後のlate result、budget超過、取得失敗は棄却する。
+- MC transientは通常cache limitと同額の独立byte budget、固定済みHOT group plan単位のadmission、session member上限、物理transaction最大1本を必須とする。設定UIはnormal + transientの合計上限を表示し、各laneへ表示値の半分ずつを割り当てる。通常Preview/Assistと同じglobal CG capture gateも通し、旧sessionの物理requestが収束する前に次sessionのrequestを重ねない。global gate待機後およびCG取得後の派生画像処理でもsession generationを再確認し、失効済みsessionへ新規Window Server取得・縮小・再sampleを継続してはいけない。
 - previewは派生表示であり、取得失敗・上限超過・cancelによってgroup identity、foreground認可、placement、resize ownershipを変更しない。
 - Preview=ONの現在候補を枚数やLRU順で恒久的に画像なしへ落とさない。候補増加時は全候補のper-image byte budgetを縮小し、画像解像度で総量を調整する。
-- global画像取得数の上限はMission ControlとAssistで共有する。両系統の取得枠待機はbackground threadの有限時間に限定し、main thread、構造状態、画像枚数の打ち切りに流用しない。
+- 通常Mission Control CG Preview、Assist、MC transientはglobal画像取得数の上限を共有する。取得枠待機はbackground threadの有限時間に限定し、main thread、構造状態、画像枚数の打ち切りに流用しない。Normal Preview / Assistは枠待機後にその要求を所有する既存operationのcancel状態だけを再確認し、失効済みrequestから新しいCG captureを発行しない。この補完のためにHOT/COLD、Space、geometry、Window Server census、AX query、timerを追加してはいけない。既に同期CG captureが発行済みなら物理中断を試みず完了を許容し、logical cancellationにより結果を採用しない。MC transientはさらに独立single-flightで同時物理transactionを1本にする。
 - login session非アクティブ中はdesktop由来のcaptureとforeground selection観測を停止するが、event monitorを復帰させるRecovery coreは維持する。
 - 非同期frame mutationはPIDを含むwindow identityと単調増加tokenに所有され、cancel/完了後のcallbackは後続operationを完了させない。
 - 永続設定から読み出した座標、距離、待機時間は有限値に正規化してからgeometryやtimerへ渡す。
 - Preview OFFはproxy再構築の可否に依存せず、待機取得・retry・deadline・完了適用を失効する。OFF後のproviderはcurrent settingを再確認し、古いgenerationの結果をcacheへ入れない。
-- resize-settled previewは物理windowごとに最新geometryの1期限だけを保持し、quiet period到達後も既存global admission上限を超えない。
-- resize-settled deadlineが存在するgeometryは他の画像取得laneから取得を開始できず、deadline後の専用laneだけが許可する。専用laneは既存HOT／COLD処理より低優先度とし、Assist／Snap中は開始しない。
+- resize-settled previewは物理windowごとに最新geometryの確認候補を1件だけ保持する。最後の変化後の一回再観測で同じgeometryを確認するまで取得せず、COLD待機を含む旧geometryの要求は最新geometryへ置換する。Assist／Snap中はgeometry取得を開始しない。
+- COLD/geometryのcooldownは要求の破棄ではなくadmission保留である。実行中取得の後に成立したtriggerを先行取得へ吸収せず、最新keyの追従要求を1件保持する。
+- Mission Control / Space / display変形中は全preview triggerに共通するdesktop stability gateを閉じる。非同期結果は通常desktopでidentity・display・geometry・byte budgetを再検証するまでcacheへ適用しない。
 - 2 / 3 / 4分割Assist切り替えはPicker表示だけを変更し、選択前にwindow frame、group membership、restore state、Mission Control stateを変更しない。
 - AssistのOption monitorはPicker sessionだけが所有し、通常コマンド用Carbon HotKeyやkeyboard event経路へ流さずeventも消費しない。Picker表示session外ではmodifier-state timerを保持しない。
 - Option monitorはSnap transaction中には開始しない。ただし次のPickerが先に提示された場合はtransaction完了の復帰点で監視可否を必ず再評価し、表示中sessionを監視なしで残さない。
@@ -156,7 +162,7 @@
 2. Preview cache pressure / failureでplacement correctnessを変えてはいけない。
 3. optional candidate discoveryをstructural authorityにしてはいけない。
 4. Preview resolutionは2 / 3 / 4 layoutおよびmultiple group全体でmemory-boundedに保ち、quality変更のためidentity / ordering authorizationを弱めてはいけない。
-5. Mission Control previewのfreshness更新はactive memberへ限定し、bounded concurrencyで非同期実行する。capture completionはselection / snap / resize / measurement / restore transactionを横切ってproxy構造を直接変更してはいけない。
+5. Mission Control previewはactive memberの初回・確定resize/display移動・確定COLDだけをbounded concurrencyで非同期実行する。cache ageやRecovery tickから取得を生成しない。capture completionは次の要求を直接admitせず、selection / snap / resize / measurement / restore transactionを横切ってproxy構造を変更してはいけない。
 6. Preview imageをディスクへ永続化せず、cache refreshをdirectory / file scanとして実装しない。
 
 ## Release trust

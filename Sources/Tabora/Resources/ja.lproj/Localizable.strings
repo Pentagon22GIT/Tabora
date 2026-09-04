@@ -133,8 +133,8 @@
 "settings.experimental.workspace.status.value" = "現在の遅延: %.1f秒";
 "settings.experimental.workspace.status.default" = "現在の遅延: macOSデフォルト";
 "settings.experimental.workspace.status.unavailable" = "現在値を確認できません";
-"settings.experimental.preview.title" = "Mission Control画像メモリ";
-"settings.experimental.preview.note" = "ウィンドウ画像に使用するメモリ上限です。上限を増やすと、多数のウィンドウでも画像を高精細に保ちやすくなります。変更時は既存キャッシュだけを解放し、安全な通常画面で再取得します。";
+"settings.experimental.preview.title" = "Mission Control画像メモリ上限";
+"settings.experimental.preview.note" = "表示値は、通常キャッシュとMission Control中だけの一時キャッシュを合わせた合計上限です。初期値64 MiBのうち、半分の32 MiBを通常時に保持できるキャッシュ枠、残り半分を一時キャッシュ枠として使用します。一時画像はMission Control終了時に解放し、選択中の画像だけは実ウィンドウへの引き継ぎ完了まで保持します。上限を増やすと、多数のウィンドウでも画像を高精細に保ちやすくなります。変更時は既存キャッシュだけを解放し、安全な通常画面で再取得します。";
 "settings.experimental.preview.clear_cache" = "画像キャッシュを解放";
 
 "value.seconds" = "%.1f 秒";

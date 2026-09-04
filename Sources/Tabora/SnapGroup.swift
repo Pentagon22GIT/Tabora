@@ -58,61 +58,6 @@ enum GroupFrontmostEvaluation: Equatable {
     case indeterminate
 }
 
-enum GroupPreviewActivityEvaluation: Equatable {
-    case observed(exposedMembers: Set<WindowServerSelectionSnapshot>)
-    case indeterminate
-}
-
-enum GroupPreviewActivityPolicy {
-    /// Preview activity is presentation-only and member-scoped. This keeps a
-    /// system-isolated raised member HOT without refreshing its covered peers.
-    /// Missing Window Server evidence never proves that a member became COLD.
-    static func evaluate(
-        memberSelections: Set<WindowServerSelectionSnapshot>,
-        snapshot: [WindowOcclusionSnapshot]
-    ) -> GroupPreviewActivityEvaluation {
-        guard !memberSelections.isEmpty, !snapshot.isEmpty else {
-            return .indeterminate
-        }
-        let members = snapshot.filter { surface in
-            surface.layer == 0
-                && memberSelections.contains(
-                    WindowServerSelectionSnapshot(
-                        pid: surface.pid,
-                        windowID: surface.windowID
-                    )
-                )
-        }
-        guard members.count == memberSelections.count else {
-            return .indeterminate
-        }
-
-        let exposedMembers = Set(members.compactMap { member
-            -> WindowServerSelectionSnapshot? in
-            let memberSelection = WindowServerSelectionSnapshot(
-                pid: member.pid,
-                windowID: member.windowID
-            )
-            let isOccluded = snapshot.contains { surface in
-                let selection = WindowServerSelectionSnapshot(
-                    pid: surface.pid,
-                    windowID: surface.windowID
-                )
-                guard surface.layer == 0,
-                      surface.zIndex < member.zIndex,
-                      selection != memberSelection else {
-                    return false
-                }
-                let intersection = member.frame.intersection(surface.frame)
-                return !intersection.isNull
-                    && intersection.width > 1
-                    && intersection.height > 1
-            }
-            return isOccluded ? nil : memberSelection
-        })
-        return .observed(exposedMembers: exposedMembers)
-    }
-}
 
 enum GroupFrontmostEvaluationPolicy {
     static func evaluate(
@@ -786,6 +731,33 @@ struct SnapGroupStore {
         let peers = group.memberIDs.subtracting([memberID])
         removeGroup(group.id)
         return peers
+    }
+
+    @discardableResult
+    mutating func rebindDisplayAfterValidatedEnvironmentTransition(
+        groupID: SnapGroupID,
+        displayID: CGDirectDisplayID
+    ) -> SnapGroup? {
+        guard var group = groupsByID[groupID],
+              group.displayID != displayID else {
+            return groupsByID[groupID]
+        }
+        group.displayID = displayID
+        // This entry point is intentionally restricted to controller recovery
+        // that has already revalidated every member's physical identity, one
+        // user Space, one physical display, and complete connected geometry.
+        // Under that contract an older degraded state belongs to the vanished
+        // environment and must not survive the rebind. A Space-transition
+        // suspension is owned by a different transaction and remains intact.
+        switch group.state {
+        case .active, .occludedByMaximizedLayer, .degraded:
+            group.state = activeState(for: displayID)
+        case .suspendedForSpaceTransition:
+            break
+        }
+        group.revision &+= 1
+        groupsByID[groupID] = group
+        return group
     }
 
     mutating func setPreferredMember(_ memberID: String) {

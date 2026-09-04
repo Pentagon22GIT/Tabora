@@ -173,6 +173,10 @@ final class AppSettings {
     static func missionControlPreviewMemoryByteLimit(_ value: Int) -> Int {
         normalizedMissionControlPreviewMemoryLimitMiB(value) * 1024 * 1024
     }
+
+    static func missionControlPreviewTotalMemoryLimitMiB(_ value: Int) -> Int {
+        normalizedMissionControlPreviewMemoryLimitMiB(value) * 2
+    }
     static let edgeThresholdRange: ClosedRange<Double> = 8...80
     static let cornerBandRange: ClosedRange<Double> = 60...300
     static let sideDwellDurationRange: ClosedRange<Double> = 0.5...5

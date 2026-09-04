@@ -588,6 +588,11 @@ extension SnapController: GroupSpaceMigrationHost {
         // fallback baseline owned by the migration lifecycle.
         foregroundSelectionMonitor.invalidateBaseline()
         clearSpaceSeparationEvidence(for: capture.structuralSnapshot.groupID)
+        if terminalState == .completed {
+            missionControlGroupProxyController.notePreviewGeometryMutation(
+                memberIDs: capture.structuralSnapshot.memberIDs
+            )
+        }
         let migrationWorkRemains = groupSpaceMigrationLine
             .hasPendingOrActiveTransactions
         resizeHandleOverlay.setPresentationSuspended(migrationWorkRemains)
@@ -633,20 +638,7 @@ extension SnapController: GroupSpaceMigrationHost {
     private func migrationDestinationScreen(
         managedDisplayIdentifier: String
     ) -> NSScreen? {
-        let identifier = managedDisplayIdentifier.uppercased()
-        return NSScreen.screens.first(where: { screen in
-            guard let displayID = displayID(for: screen),
-                  let unmanagedUUID = CGDisplayCreateUUIDFromDisplayID(
-                      displayID
-                  )
-            else { return false }
-            // The CoreGraphics "Create" function returns an owned CF object
-            // as Unmanaged on this SDK. Consume that +1 exactly once before
-            // passing the value to another Core Foundation function.
-            let uuid = unmanagedUUID.takeRetainedValue()
-            return (CFUUIDCreateString(nil, uuid) as String).uppercased()
-                == identifier
-        })
+        screenForManagedDisplayIdentifier(managedDisplayIdentifier)
     }
 
     private func runMigrationFrameBatch(

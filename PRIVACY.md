@@ -1,8 +1,8 @@
 # プライバシーポリシー
 
-最終更新日: 2026-09-01
+最終更新日: 2026-09-03
 
-Taboraはローカルで動作するmacOSアプリです。現在のv2.1.0ソースを静的監査した範囲では、解析、広告、テレメトリー、クラッシュレポート自動送信、ユーザーアカウント、アプリ自身によるHTTP通信を実装していません。
+Taboraはローカルで動作するmacOSアプリです。現在のv2.2.0ソースを静的監査した範囲では、解析、広告、テレメトリー、クラッシュレポート自動送信、ユーザーアカウント、アプリ自身によるHTTP通信を実装していません。
 
 ## ローカルで扱う情報
 
@@ -20,7 +20,7 @@ Taboraはローカルで動作するmacOSアプリです。現在のv2.1.0ソー
 
 ### App Constraint記録
 
-v2.1.0でも、Taboraが要求したサイズを対象アプリ自身が拒否し、settle後のaccepted boundaryを確認できた場合に限り、アプリ固有のサイズ制約候補をローカルで記録できます。通常のresize履歴や単なるAX失敗は制約として記録しません。
+v2.2.0でも、Taboraが要求したサイズを対象アプリ自身が拒否し、settle後のaccepted boundaryを確認できた場合に限り、アプリ固有のサイズ制約候補をローカルで記録できます。通常のresize履歴や単なるAX失敗は制約として記録しません。
 
 試験的なDesktop間グループ移送を有効にした場合、TaboraはWindow ServerからウィンドウID、Space ID、Space種別、Managed Display識別子を実行中のメモリへ読み取ります。これらは移送・分離確認だけに使用し、ネットワーク送信や新規の永続ファイル保存は行いません。
 
@@ -51,9 +51,12 @@ App Constraint recordは次のローカルJSONへ保存します。
 - 初期状態では任意機能です。
 - 表示用のメモリキャッシュで扱います。
 - キャッシュはboundedな派生データとして破棄可能です。
-- 配置候補はpanelが必要とした対象を取得します。Mission Control連携はgroup proxy構築時のcache missに加え、groupが存在して機能が有効な間、通常desktopの操作停止中に15秒以上古いactive memberだけを非同期で更新します。
-- Mission Control画像はexact window IDを対象に最大2件並列で取得します。1秒ごとの画像取得、directory scan、画像ファイルscanは行いません。
-- group memberのresize後は最後のframe変更から2秒静止したことを確認し、既存Recoveryの安全な通常desktop観測から再取得します。連続resizeは最新の1期限へまとめます。
+- 配置候補はpanelが必要とした対象を取得します。Mission Controlの通常Preview cacheは新規member、確定resize/display移動、確定HOT→COLDだけをtriggerとして更新し、時間経過やcache ageを理由とした定期取得は行いません。
+- Mission Controlを開いた場合だけ、開始時に可視だったSpace上のgroupについて、変形geometryが安定した後にCore Graphicsの対象window直接取得で一時画像を追加取得する場合があります。この画像はMission Control表示/選択handoff専用で通常Preview cacheへ保存せず、session終了またはhandoff終了でメモリから破棄します。
+- Mission Control一時画像には通常Preview cacheとは別のbounded memory limitとsessionあたりの取得上限を設け、直接window取得transactionを同時に1本へ制限します。連続開閉で旧要求が未完了の場合は新しい取得を重ねず、session失効後はglobal capture admission待機後と画像縮小処理前にも認可を再確認して、不要な取得・派生処理を可能な限り早く棄却します。
+- 設定画面のメモリ上限は、通常キャッシュとMission Control中だけの一時キャッシュを合わせた合計値です。表示値の半分を通常キャッシュ枠、残り半分を一時キャッシュ枠として使用し、初期表示64 MiBでは各32 MiBです。
+- 通常Preview取得の実Window Server並列数は既存global gateに従います。1秒ごとの画像取得、directory scan、画像ファイルscanは行いません。
+- group memberのresize後は最新geometryを時間差の複数観測で確認してから通常Previewを再取得します。連続resizeは物理windowごとの最新候補へまとめます。
 - 設定をOFFにした時点で待機中の取得と再適用予約を失効し、取得直前にも現在の設定を確認します。
 - ディスクへ保存する処理はありません。
 - ネットワーク送信する処理はありません。

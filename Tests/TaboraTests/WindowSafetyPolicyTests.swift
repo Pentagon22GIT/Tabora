@@ -3,6 +3,17 @@ import XCTest
 @testable import Tabora
 
 final class WindowSafetyPolicyTests: XCTestCase {
+    func testAssistPreviewProviderAuthorizationCanCrossEscapingCaptureGate() {
+        var forwardedAuthorization: (() -> Bool)?
+        let provider: PickerPreviewProvider = { _, captureIsAuthorized in
+            forwardedAuthorization = captureIsAuthorized
+            return nil
+        }
+
+        XCTAssertNil(provider(nil, { true }))
+        XCTAssertTrue(forwardedAuthorization?() == true)
+    }
+
     func testFrameOperationOwnershipIncludesProcessIdentity() {
         let first = FrameOperationOwnershipPolicy.key(pid: 100, elementHash: "7")
         let same = FrameOperationOwnershipPolicy.key(pid: 100, elementHash: "7")

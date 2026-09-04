@@ -15,6 +15,7 @@ typedef CFStringRef _Nullable (*TSLSLSCopyManagedDisplayForSpaceFunction)(
     int,
     uint64_t
 );
+typedef CFArrayRef _Nullable (*TSLSLSCopyManagedDisplaySpacesFunction)(int);
 typedef AXError (*TSLAXUIElementGetWindowFunction)(
     AXUIElementRef,
     uint32_t *
@@ -29,6 +30,7 @@ typedef struct {
     TSLSLSCopySpacesForWindowsFunction copySpacesForWindows;
     TSLSSpaceGetTypeFunction spaceGetType;
     TSLSLSCopyManagedDisplayForSpaceFunction copyManagedDisplayForSpace;
+    TSLSLSCopyManagedDisplaySpacesFunction copyManagedDisplaySpaces;
     TSLAXUIElementGetWindowFunction axGetWindow;
     TSLBridgeCapability capabilities;
 } TSLRuntime;
@@ -61,6 +63,11 @@ static TSLRuntime TSLLoadRuntime(void) {
             runtime.skyLightHandle,
             "SLSCopyManagedDisplayForSpace"
         );
+    runtime.copyManagedDisplaySpaces =
+        (TSLSLSCopyManagedDisplaySpacesFunction)dlsym(
+            runtime.skyLightHandle,
+            "SLSCopyManagedDisplaySpaces"
+        );
     runtime.axGetWindow = (TSLAXUIElementGetWindowFunction)dlsym(
         RTLD_DEFAULT,
         "_AXUIElementGetWindow"
@@ -76,6 +83,9 @@ static TSLRuntime TSLLoadRuntime(void) {
     }
     if (runtime.mainConnectionID && runtime.copyManagedDisplayForSpace) {
         runtime.capabilities |= TSLBridgeCapabilityReadSpaceDisplay;
+    }
+    if (runtime.mainConnectionID && runtime.copyManagedDisplaySpaces) {
+        runtime.capabilities |= TSLBridgeCapabilityReadManagedDisplaySpaces;
     }
     return runtime;
 }
@@ -180,6 +190,27 @@ NSString * _Nullable TSLBridgeCopyManagedDisplayForSpace(uint64_t spaceID) {
         spaceID
     );
     return display ? CFBridgingRelease(display) : nil;
+}
+
+NSArray<NSDictionary *> * _Nullable TSLBridgeCopyManagedDisplaySpaces(void) {
+    const TSLRuntime *runtime = TSLSharedRuntime();
+    if (!runtime->mainConnectionID || !runtime->copyManagedDisplaySpaces) {
+        return nil;
+    }
+    CFArrayRef topology = runtime->copyManagedDisplaySpaces(
+        runtime->mainConnectionID()
+    );
+    if (!topology) {
+        return nil;
+    }
+    NSArray *bridged = CFBridgingRelease(topology);
+    NSMutableArray<NSDictionary *> *validated = [NSMutableArray array];
+    for (id value in bridged) {
+        if ([value isKindOfClass:NSDictionary.class]) {
+            [validated addObject:value];
+        }
+    }
+    return [validated copy];
 }
 
 BOOL TSLBridgeDispatchMoveWindows(

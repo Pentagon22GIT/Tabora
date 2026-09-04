@@ -29,6 +29,9 @@ final class SkyLightWindowSpaceBackend:
         if bridge.contains(.dispatchBridgedMove) {
             resolved.insert(.dispatchBridgedMove)
         }
+        if bridge.contains(.readManagedDisplaySpaces) {
+            resolved.insert(.readManagedDisplaySpaces)
+        }
         return resolved
     }
 
@@ -95,6 +98,39 @@ final class SkyLightWindowSpaceBackend:
     func managedDisplayIdentifier(for spaceID: TaboraSpaceID) -> String? {
         guard capabilities.contains(.readSpaceDisplay) else { return nil }
         return TSLBridgeCopyManagedDisplayForSpace(spaceID.rawValue)
+    }
+
+    func managedDisplaySpaceTopology() -> ManagedDisplaySpaceTopology? {
+        guard capabilities.contains(.readManagedDisplaySpaces),
+              let rawDisplays = TSLBridgeCopyManagedDisplaySpaces()
+        else { return nil }
+
+        let displays = rawDisplays.compactMap { raw -> ManagedDisplaySpaceTopology.Display? in
+            let dictionary = raw as NSDictionary
+            guard let identifier = dictionary["Display Identifier"] as? String,
+                  let currentDictionary = dictionary["Current Space"] as? NSDictionary,
+                  let currentSpaceID = Self.spaceID(from: currentDictionary)
+            else { return nil }
+
+            let rawSpaces = dictionary["Spaces"] as? [NSDictionary] ?? []
+            var spaces = Set(rawSpaces.compactMap(Self.spaceID(from:)))
+            spaces.insert(currentSpaceID)
+            return ManagedDisplaySpaceTopology.Display(
+                managedDisplayIdentifier: identifier,
+                currentSpaceID: currentSpaceID,
+                spaceIDs: spaces
+            )
+        }
+        return displays.isEmpty ? nil : ManagedDisplaySpaceTopology(
+            displays: displays
+        )
+    }
+
+    private static func spaceID(from dictionary: NSDictionary) -> TaboraSpaceID? {
+        let raw = (dictionary["ManagedSpaceID"] as? NSNumber)?.uint64Value
+            ?? (dictionary["id64"] as? NSNumber)?.uint64Value
+            ?? (dictionary["wsid"] as? NSNumber)?.uint64Value
+        return raw.flatMap(TaboraSpaceID.init)
     }
 
     func move(

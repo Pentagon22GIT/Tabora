@@ -925,7 +925,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         )
         previewMemoryLimitValue.stringValue = String(
             format: "%d MiB",
-            settings.missionControlPreviewMemoryLimitMiB
+            AppSettings.missionControlPreviewTotalMemoryLimitMiB(
+                settings.missionControlPreviewMemoryLimitMiB
+            )
         )
         let previewControlsAreEnabled = settings.windowPreviewsEnabled
         previewMemoryLimitSlider.isEnabled = previewControlsAreEnabled

@@ -133,8 +133,8 @@
 "settings.experimental.workspace.status.value" = "当前延迟：%.1f 秒";
 "settings.experimental.workspace.status.default" = "当前延迟：macOS 默认值";
 "settings.experimental.workspace.status.unavailable" = "无法获取当前值";
-"settings.experimental.preview.title" = "调度中心图像内存";
-"settings.experimental.preview.note" = "设置窗口图像的内存上限。提高上限有助于在窗口较多时保持图像清晰度。更改时只会清除现有缓存，并在安全的普通桌面上重新获取图像。";
+"settings.experimental.preview.title" = "调度中心图像内存上限";
+"settings.experimental.preview.note" = "显示的数值是普通缓存与仅在调度中心中使用的临时缓存的合计上限。默认64 MiB中，一半（32 MiB）用于普通使用期间保留的缓存，另一半用于临时缓存。退出调度中心时会释放临时图像；仅已选择的图像会保留到实际窗口接管完成。提高上限有助于在窗口较多时保持图像清晰度。更改时只会清除现有缓存，并在安全的普通桌面上重新获取图像。";
 "settings.experimental.preview.clear_cache" = "清除图像缓存";
 
 "value.seconds" = "%.1f 秒";

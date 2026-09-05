@@ -1,6 +1,6 @@
 # 非公開APIを用いたグループのDesktop間移送
 
-**最終更新:** 2026-09-01
+**最終更新:** 2026-09-05
 **動作確認済み環境:** macOS 26.5.2 / 26.6.2  
 **対象:** Mission Control上のグループProxy移送、Window→Space観測、将来のABI保守
 
@@ -29,7 +29,7 @@ Proxyのドロップは選択ではない。通常の移送だけではアプリ
 | 段階 | 成立条件 | 不成立時 |
 |---|---|---|
 | 通常提示 | exact group/member/Proxy Window IDと単一user source Space | baselineを作らず既存Recoveryへ戻る |
-| Mission Control観測 | 同じProxy identity、最大120秒 | 当該sessionだけ退役し通常復帰後に再arm |
+| Mission Control観測 | 同じProxy identityを同一Mission Control lifecycle中で維持 | 通常Desktop復帰、明示選択、group退役、機能/controller/session無効化、または構造不一致の既存終了経路で当該sessionを閉じる。時間だけを理由に観測を失効させない |
 | destination settle | sourceと異なる単一user Space、2観測・0.10秒以上・button up、またはactive Space通知による強い証拠 | 候補を保持または破棄し、実windowは変更しない |
 | preflight/capture | feature ON、同一groupのcaptureなし、全memberがsourceに存在、AX identity/Window ID/display/layoutがexact、全Window IDが相互に一意 | 一時的なSpace/AX publication unknownだけ既存0.10秒monitorで最大10回再観測。confirmed不成立はProxyだけを退役し、実windowは変更しない |
 | queued presentation | groupごとにexact capture済み、transport未dispatch | 移動済みProxyのgeometry/identityを固定してstatus/FIFO位置を更新し、同じcaptureの実member thumbnailだけをPID + CGWindowID完全一致の入力透過shadowで覆う。同一groupの重複captureと通常の即時foreground selectionは拒否する。queued Proxyの明示選択だけはpost-migration foreground intentとして記録し、transport終了まで実行しない |
@@ -42,6 +42,8 @@ Proxyのドロップは選択ではない。通常の移送だけではアプリ
 | finish | Space分離evidence消去。sourceへ戻した取消は同じProxyを通常表示へ戻す。`completed`とdispatch前cancelは、消費済みProxyを同じcompositor tailへ再生成しないため既存のgroup-local normal Desktop rearmを通してからfresh Proxy/handleを復帰する | 必ず定義済みterminal stateへ収束。rearmはpresentationだけに限定し、physical/group commit、FIFO、post-migration foreground intentを待たせない |
 
 `transport.move == .dispatched`は物理成功ではない。非公開関数のopaque戻り値にも成功判定を与えない。全memberのWindow→Space membership再観測だけがphysical commitを認可する。
+
+Proxyの未確定destination観測には固定120秒の寿命を設けない。Mission Controlを長時間開いたことだけで同一session内の移送機能を失効させると、ユーザー操作と内部期限が無関係に競合するためである。既存の0.10秒monitor頻度は変更せず、新しいtimer、watchdog、Mission Control生存pollを追加しない。観測sessionの終了は既存の通常Desktop復帰、Proxy選択、group退役、機能OFF、controller/session停止、構造不一致、またはmigration成立へ委ねる。`startedAt`は同時にsettleした複数Proxyの決定的な順序付けにだけ使用し、lifetime判定には使用しない。
 
 capture前のpreflight再観測はdestination確定直後のWindow Server publicationとAX応答が揃わない場合だけ最大10回（約1秒）待つ。この時点では全memberがcapture sourceに揃うこと、identity一意、group/proxy構造、layout成立を要求する。capture後のdispatch preflightでは同じstable identityとWindow IDを再確認し、各memberの現在の単一user Spaceを実行時originとして記録する。一度destination moveをdispatchした後は同じ命令を再発行せず、membership verifyと記録済みoriginへのrollbackだけを使用する。
 
@@ -86,6 +88,12 @@ capture時にsource/destinationの`visibleFrame`、memberの現在frame、zone�
 
 commitでは同じgroup ID/member集合/zoneをdestination displayへreconcileし、`lockedPlacements`のdisplay/frame/Window IDと、スナップ前へ戻す`restoreFrames`の座標domainをdestinationへ更新する。途中失敗時の解散は既存atomic group departureへ合流し、placement、restore、handle、Proxy cleanupを重複実装しない。
 
+## Display消失とmanaged-display topology
+
+`SLSCopyManagedDisplaySpaces`は移送commandではなく、可視Space判定とDisplay消失後の環境rebindにだけ使うread-only evidenceである。通常1 Hz Recoveryから全topologyをpollせず、screen-change通知とMission Control session開始という既存イベント境界でのみ取得する。
+
+Displayが消えたgroupは即解散しない。通知所有の0.15 / 0.35 / 0.75 / 1.25秒settlementでexact memberのWindow→SpaceとAX frameを再観測し、全memberが同一user Space、同一物理NSScreenへ収束し、そのSpaceのmanaged-display identifierも一致し、移動後frameが既存zone関係の完全な接続groupを維持している場合だけ同じgroup ID/member/zoneを新displayへrebindする。分散またはunknownは非破壊で保持する。通知内で確定しない候補だけ既存1 Hzへ最大6秒の期限付きdebtとして渡し、期限後は監視を停止する。
+
 ## 通常のSpace分離との関係
 
 Tabora所有migration以外でgroup memberのSpaceが分かれた場合は、実membershipを三値で扱う。
@@ -104,6 +112,7 @@ Bridgeは実行時に次を解決する。
 - `SLSCopySpacesForWindows`
 - `SLSSpaceGetType`
 - `SLSCopyManagedDisplayForSpace`
+- `SLSCopyManagedDisplaySpaces`（read-only。managed displayごとのCurrent Space / Space集合の観測）
 - `SLSBridgedMoveWindowsToManagedSpaceOperation`
 - `initWithWindows:spaceID:`
 - `SLSPerformAsynchronousBridgedWindowManagementOperation`のexport、または確認済みexact local Mach-O symbol
@@ -180,9 +189,11 @@ destination drop直後にもmember SpaceまたはAX elementが一時的に`unkno
 
 ## Release確認表
 
-最新適用確認: **2026-09-01 / Tabora v2.1.0 (Build 16) / macOS 26.6.2**
+最新source適用確認: **2026-09-03 / Tabora v2.2.0 (Build 17)**
 
-実機確認内容はv2.0.0 Build 14で完了した記録を基準とします。v2.1.0はlocalization resourceと明示的な言語適用時のapp再起動だけを変更し、この文書が対象とするObservation / Transport / FIFO / rollback / AX layout / foreground intentへ変更がないことをsource差分の始点・終点監査で確認したため、同じ安全確認点を継承します。
+最新macOS実機確認: **2026-09-01 / Tabora v2.1.0 (Build 16) / macOS 26.6.2**
+
+実機確認内容はv2.0.0 Build 14で完了した記録を基準とし、v2.1.0まで継承確認済みです。v2.2.0は共有するMission Control transform判定からpreview取得gateを閉じる接続だけを追加し、この文書が対象とするObservation / Transport / migration FIFO / rollback / AX layout / foreground intentは変更していません。source境界監査は完了し、v2.2.0の実機再確認はRelease前の未完了項目として維持します。
 
 - [x] 2/3/4 member、同一/異なるアプリ。
 - [x] 同一アプリ複数memberで各AX elementが別Window IDへ解決され、重複ID captureがdispatch前に拒否されること。

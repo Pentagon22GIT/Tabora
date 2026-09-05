@@ -323,38 +323,8 @@ enum MissionControlPreviewSizingPolicy {
     }
 }
 
-enum MissionControlPreviewFreshnessPolicy {
-    static let refreshInterval: TimeInterval = 15
-    static let applicationCoalescingInterval: TimeInterval = 0.06
-
-    static func needsRefresh(
-        capturedAt: TimeInterval?,
-        now: TimeInterval
-    ) -> Bool {
-        guard let capturedAt else { return true }
-        return now - capturedAt >= refreshInterval
-    }
-}
-
 enum MissionControlPreviewGeometryRefreshPolicy {
-    /// A resize is settled only after the frame size has remained unchanged.
-    /// The existing one-second Recovery watchdog admits the actual capture, so
-    /// normal completion occurs roughly two to three seconds after resize.
-    static let settleInterval: TimeInterval = 2
     static let maximumSettledCapturesPerRefresh = 2
-
-    static func deadline(after now: TimeInterval) -> TimeInterval {
-        now + settleInterval
-    }
-
-    static func resolvedDeadline(
-        sizeChanged: Bool,
-        pendingDeadline: TimeInterval?,
-        now: TimeInterval
-    ) -> TimeInterval? {
-        if sizeChanged { return deadline(after: now) }
-        return pendingDeadline
-    }
 
     static func requestCount(
         dueCount: Int,
@@ -377,60 +347,175 @@ enum MissionControlPreviewWorkPolicy {
     /// Two captures may run and two more may wait. A large number of groups
     /// must not create an equally large Window Server backlog.
     static let maximumOutstandingCaptureCount = 4
-    /// Periodic freshness is derived work. Bound it globally per watchdog
-    /// interval even when many members are simultaneously exposed.
-    static let maximumPeriodicCapturesPerRefresh = 2
-    /// A covered member receives one final settled image, then freezes.
-    static let coolingFinalCaptureDelay: TimeInterval = 3
+    static let maximumQueuedOperationCount = 8
+    /// Time never creates capture work. It only prevents repeated state and
+    /// geometry triggers from flooding WindowServer. A retained trigger is
+    /// retried once at this boundary and may be superseded by stronger work.
+    static let triggerCaptureCooldown: TimeInterval = 1
+    static let confirmationInterval: TimeInterval = 0.15
+    static let applicationCoalescingInterval: TimeInterval = 0.06
+}
 
-    static func periodicRequestCount(
-        staleCount: Int,
-        outstandingCount: Int
-    ) -> Int {
-        let available = max(
-            maximumOutstandingCaptureCount - max(outstandingCount, 0),
-            0
-        )
-        return min(
-            max(staleCount, 0),
-            maximumPeriodicCapturesPerRefresh,
-            available
-        )
-    }
+enum MissionControlPreviewTriggerReason:
+    Int, CaseIterable, Comparable, Hashable {
+    case coldConfirmed = 0
+    case initial = 1
+    case geometryConfirmed = 2
 
-    static func periodicRequestIndices(
-        staleCount: Int,
-        cursor: Int,
-        requestCount: Int
-    ) -> [Int] {
-        guard staleCount > 0, requestCount > 0 else { return [] }
-        let start = max(cursor, 0) % staleCount
-        return (0..<min(requestCount, staleCount)).map {
-            (start + $0) % staleCount
-        }
+    static func < (
+        lhs: MissionControlPreviewTriggerReason,
+        rhs: MissionControlPreviewTriggerReason
+    ) -> Bool {
+        lhs.rawValue < rhs.rawValue
     }
 }
 
-enum MissionControlPreviewActivityPolicy {
-    static func desiredHotMemberIDs<GroupID: Hashable>(
-        previousHotMemberIDs: Set<String>,
-        currentMemberIDsByGroupID: [GroupID: Set<String>],
-        observedExposedMemberIDsByGroupID: [GroupID: Set<String>]
-    ) -> Set<String> {
-        let currentMemberIDs = currentMemberIDsByGroupID.values.reduce(
-            into: Set<String>()
-        ) { $0.formUnion($1) }
-        var desired = previousHotMemberIDs.intersection(currentMemberIDs)
-        for (groupID, memberIDs) in currentMemberIDsByGroupID {
-            guard let exposed = observedExposedMemberIDsByGroupID[groupID]
-            else {
-                // An incomplete Window Server census preserves prior activity.
-                continue
-            }
-            desired.subtract(memberIDs)
-            desired.formUnion(exposed.intersection(memberIDs))
+enum MissionControlPreviewTriggerPolicy {
+    static let requiredStableObservationCount = 2
+
+    static func merged(
+        _ current: MissionControlPreviewTriggerReason?,
+        with incoming: MissionControlPreviewTriggerReason
+    ) -> MissionControlPreviewTriggerReason {
+        max(current ?? incoming, incoming)
+    }
+
+    static func nextStableObservationCount(
+        previousCount: Int?,
+        representsSameCandidate: Bool
+    ) -> Int {
+        representsSameCandidate ? max(previousCount ?? 0, 0) + 1 : 1
+    }
+
+    static func isConfirmed(observationCount: Int) -> Bool {
+        observationCount >= requiredStableObservationCount
+    }
+
+    static func isConfirmed(
+        observationCount: Int,
+        firstObservedAt: TimeInterval,
+        now: TimeInterval,
+        minimumStableInterval: TimeInterval
+    ) -> Bool {
+        isConfirmed(observationCount: observationCount)
+            && max(now - firstObservedAt, 0) >= minimumStableInterval
+    }
+
+    static func captureMatchesCurrentGeometry(
+        admittedRevision: UInt64,
+        currentRevision: UInt64
+    ) -> Bool {
+        admittedRevision == currentRevision
+    }
+
+    static func canReuseCapturedPixels(
+        representsSamePhysicalWindow: Bool,
+        displayMatches: Bool,
+        pixelSizeMatches: Bool
+    ) -> Bool {
+        representsSamePhysicalWindow && displayMatches && pixelSizeMatches
+    }
+
+    static func shouldObserveGeometryFallback(
+        sizeChanged: Bool,
+        displayChanged: Bool,
+        hasOutstandingCurrentGeometryWork: Bool
+    ) -> Bool {
+        (sizeChanged || displayChanged)
+            && !hasOutstandingCurrentGeometryWork
+    }
+
+    static func shouldRetainDebtAfterCaptureFailure(
+        hasReusableActiveKey: Bool
+    ) -> Bool {
+        // One active-geometry capture gets exactly one retry. If that retry
+        // also fails, drop this trigger and let a future real trigger try again.
+        // Debt is retained only when presentability vanished, because the work
+        // was blocked by target validation rather than exhausted by capture.
+        !hasReusableActiveKey
+    }
+
+    static func cooldownRemaining(
+        reason: MissionControlPreviewTriggerReason,
+        lastCaptureAt: TimeInterval?,
+        now: TimeInterval
+    ) -> TimeInterval {
+        guard reason != .initial, let lastCaptureAt else { return 0 }
+        return max(
+            MissionControlPreviewWorkPolicy.triggerCaptureCooldown
+                - max(now - lastCaptureAt, 0),
+            0
+        )
+    }
+}
+
+enum MissionControlPreviewDisplayFairnessPolicy {
+    /// Interleave displays while preserving deterministic order inside each.
+    /// This prevents one busy display from occupying all four global slots.
+    static func interleavedIndices<DisplayID: Hashable & Comparable>(
+        displayIDs: [DisplayID]
+    ) -> [Int] {
+        var buckets: [DisplayID: [Int]] = [:]
+        for (index, displayID) in displayIDs.enumerated() {
+            buckets[displayID, default: []].append(index)
         }
-        return desired
+        let orderedDisplays = buckets.keys.sorted()
+        var result: [Int] = []
+        var offset = 0
+        while result.count < displayIDs.count {
+            var appended = false
+            for displayID in orderedDisplays {
+                guard let bucket = buckets[displayID], offset < bucket.count
+                else { continue }
+                result.append(bucket[offset])
+                appended = true
+            }
+            guard appended else { break }
+            offset += 1
+        }
+        return result
+    }
+
+    /// Preserve FIFO order inside each display, then take one demand from each
+    /// display per round. Newly generated work therefore cannot repeatedly
+    /// overtake older groups, including groups sharing the same display.
+    static func fairFIFOIndices<DisplayID: Hashable & Comparable>(
+        displayIDs: [DisplayID],
+        enqueueOrders: [UInt64]
+    ) -> [Int] {
+        guard displayIDs.count == enqueueOrders.count else { return [] }
+        let fifoIndices = displayIDs.indices.sorted {
+            if enqueueOrders[$0] != enqueueOrders[$1] {
+                return enqueueOrders[$0] < enqueueOrders[$1]
+            }
+            return $0 < $1
+        }
+        let relativeIndices = interleavedIndices(
+            displayIDs: fifoIndices.map { displayIDs[$0] }
+        )
+        return relativeIndices.map { fifoIndices[$0] }
+    }
+}
+
+enum MissionControlPreviewAdmissionPolicy {
+    static func allowsCapture(
+        previewsEnabled: Bool,
+        captureSuspended: Bool,
+        desktopPresentationIsStable: Bool,
+        byteBudget: Int,
+        outstandingCount: Int,
+        queuedOperationCount: Int,
+        keyIsActive: Bool
+    ) -> Bool {
+        previewsEnabled
+            && !captureSuspended
+            && desktopPresentationIsStable
+            && byteBudget > 0
+            && outstandingCount
+                < MissionControlPreviewWorkPolicy.maximumOutstandingCaptureCount
+            && queuedOperationCount
+                < MissionControlPreviewWorkPolicy.maximumQueuedOperationCount
+            && keyIsActive
     }
 }
 
@@ -471,6 +556,7 @@ struct MissionControlGroupProxyMember {
 }
 
 private struct MissionControlPreviewCacheKey: Hashable {
+    let displayID: CGDirectDisplayID
     let pid: pid_t
     let windowID: CGWindowID
     let stableIdentity: String
@@ -483,16 +569,34 @@ private struct MissionControlPreviewCacheKey: Hashable {
 private struct MissionControlCachedPreview {
     let image: NSImage
     let byteCost: Int
-    let capturedAt: TimeInterval
     var accessEpoch: UInt64
 }
 
 private struct MissionControlPreviewRequest {
     let generation: UInt64
+    let geometryRevision: UInt64
+    let reason: MissionControlPreviewTriggerReason
     var retryRemaining: Bool
 }
 
+private struct MissionControlPendingPreviewResult {
+    let preview: MissionControlCachedPreview
+    let reason: MissionControlPreviewTriggerReason
+    let geometryRevision: UInt64
+}
+
+private struct MissionControlPreviewGeometryConfirmationCandidate {
+    let key: MissionControlPreviewCacheKey
+    var observationCount: Int
+    let firstObservedAt: TimeInterval
+}
+
 final class MissionControlGroupProxyController {
+    typealias PreviewCaptureAuthorization = () -> Bool
+    typealias PreviewProvider = (
+        CGWindowID?,
+        @escaping PreviewCaptureAuthorization
+    ) -> CGImage?
     var onSelectGroup: ((SnapGroupID, Set<String>) -> Void)?
     var onSelectQueuedMigrationGroup: ((SnapGroupID, Set<String>) -> Void)?
     var onSelectionConfirmationTerminated: (() -> Void)?
@@ -500,6 +604,7 @@ final class MissionControlGroupProxyController {
     var selectionConfirmationIsAllowed: ((SnapGroupID) -> Bool)?
     var queuedMigrationSelectionIsAllowed: ((SnapGroupID) -> Bool)?
     var onPreviewCacheReady: (() -> Void)?
+    var onPreviewConfirmationNeeded: (() -> Void)?
 
     private var windowsByGroupID: [SnapGroupID: MissionControlGroupProxyWindow] = [:]
     private var cachedPreviews: [MissionControlPreviewCacheKey:
@@ -514,9 +619,12 @@ final class MissionControlGroupProxyController {
     }()
     private var previewRequestsByKey =
         [MissionControlPreviewCacheKey: MissionControlPreviewRequest]()
+    private var pendingPreviewResults =
+        [MissionControlPreviewCacheKey: MissionControlPendingPreviewResult]()
     private var previewCaptureGeneration: UInt64 = 0
     private var previewsAreEnabled = true
     private var previewCaptureIsSuspended = false
+    private var desktopPresentationIsStable = true
     private var hasPendingPreviewCacheApplication = false
     private var previewCacheRefreshNotificationScheduled = false
     private var maximumCachedPreviewBytes = AppSettings
@@ -524,18 +632,58 @@ final class MissionControlGroupProxyController {
             AppSettings.defaultMissionControlPreviewMemoryLimitMiB
         )
     private var activePreviewKeys = Set<MissionControlPreviewCacheKey>()
+    // Structural membership owns finite Preview debt. AX/CG presentability only
+    // decides whether that debt can run now; a transient census omission must
+    // never manufacture a new member or erase already-authorized work.
+    private var structuralPreviewMemberIDs = Set<String>()
     private var knownPreviewMemberIDs = Set<String>()
-    private var hotPreviewKeys = Set<MissionControlPreviewCacheKey>()
-    private var immediatePreviewKeys = Set<MissionControlPreviewCacheKey>()
-    private var interruptedPreviewKeys = Set<MissionControlPreviewCacheKey>()
-    private var coolingPreviewDeadlines:
-        [MissionControlPreviewCacheKey: TimeInterval] = [:]
-    private var settledGeometryPreviewDeadlines:
-        [MissionControlPreviewCacheKey: TimeInterval] = [:]
+    private var hotPreviewGroupIDs = Set<SnapGroupID>()
+    private var coldConfirmationObservationCountByGroupID: [SnapGroupID: Int] = [:]
+    private var coldConfirmationFirstObservedAtByGroupID:
+        [SnapGroupID: TimeInterval] = [:]
+    private var pendingCaptureReasons:
+        [MissionControlPreviewCacheKey: MissionControlPreviewTriggerReason] = [:]
+    private var pendingCaptureEnqueueOrders:
+        [MissionControlPreviewCacheKey: UInt64] = [:]
+    private var deferredCaptureReasonsByMemberID:
+        [String: MissionControlPreviewTriggerReason] = [:]
+    private var deferredCaptureEnqueueOrdersByMemberID: [String: UInt64] = [:]
+    private var nextPendingCaptureEnqueueOrder: UInt64 = 0
+    // Observation fallback exists only for geometry changes that do not cross a
+    // Tabora transaction boundary (for example, app/OS-owned resize). It is one
+    // candidate per structural member and never reacts to position-only motion.
+    private var geometryConfirmationCandidates:
+        [String: MissionControlPreviewGeometryConfirmationCandidate] = [:]
+    private var lastCaptureAtByPhysicalIdentity: [String: TimeInterval] = [:]
+    private var geometryRevisionByPhysicalIdentity: [String: UInt64] = [:]
+    private var confirmationGeneration: UInt64 = 0
+    private var confirmationRefreshIsScheduled = false
+    private var cooldownGeneration: UInt64 = 0
+    private var cooldownRefreshIsScheduled = false
+    private var cooldownRefreshDeadline: TimeInterval?
     private var activePreviewByteBudget = 0
-    private var latestPreviewProvider: ((CGWindowID?) -> CGImage?)?
-    private var nextPreviewFreshnessCheckAt: TimeInterval = 0
-    private var periodicPreviewRefreshCursor = 0
+    private var latestPreviewProvider: PreviewProvider?
+    private var latestTransientPreviewProvider:
+        MissionControlTransientPreviewCapturer.PreviewProvider?
+    // Mission Control-only snapshots never enter the normal Preview cache.
+    // Their sole ownership is the current transform session.
+    private var transientPreviewPlansByGroupID:
+        [SnapGroupID: MissionControlTransientPreviewGroupPlan] = [:]
+    // Optional transient work is stricter than normal HOT persistence. Only a
+    // complete current WindowServer observation proving the whole Group frontmost
+    // may authorize it; Mission Control entry then freezes that atomic group set.
+    private var transientAuthorizedHotGroupIDs = Set<SnapGroupID>()
+    private var transientPreviewSessionPlansByGroupID:
+        [SnapGroupID: MissionControlTransientPreviewGroupPlan] = [:]
+    private var transientPreviewSessionGeneration: UInt64 = 0
+    private var transientPreviewTargetGroupIDs = Set<SnapGroupID>()
+    private var transientTransformObservationCount = 0
+    private var transientTransformFirstObservedAt: TimeInterval?
+    private var transientLastTransformFingerprint:
+        MissionControlTransientTransformFingerprint?
+    private var transientCaptureHasStarted = false
+    private var transientPreviewAppliedGroupIDs = Set<SnapGroupID>()
+    private let transientPreviewCapturer = MissionControlTransientPreviewCapturer()
     private var selectionCandidateGeneration: UInt64 = 0
     private var activeSelectionCandidate: MissionControlProxySelectionCandidate?
 
@@ -555,12 +703,17 @@ final class MissionControlGroupProxyController {
         visibleWindowsByIdentity: [String: ManagedWindow],
         displayOrdinalsByGroupID: [SnapGroupID: Int],
         preservedGroupIDs: Set<SnapGroupID> = [],
-        exposedPreviewMemberIDsByGroupID: [SnapGroupID: Set<String>] = [:],
+        structuralGroupIDs: Set<SnapGroupID>,
+        structuralMemberIDs: Set<String>,
+        previewFrontmostEvaluationByGroupID:
+            [SnapGroupID: GroupFrontmostEvaluation] = [:],
         previewsEnabled: Bool,
         previewCacheByteLimit: Int,
-        previewProvider: @escaping (CGWindowID?) -> CGImage?
+        previewProvider: @escaping PreviewProvider,
+        transientPreviewProvider: @escaping MissionControlTransientPreviewCapturer.PreviewProvider
     ) {
         setPreviewCacheByteLimit(previewCacheByteLimit)
+        structuralPreviewMemberIDs = structuralMemberIDs
         setPreviewsEnabled(previewsEnabled)
         let presentableGroups = groups.filter { group in
             group.memberIDs.count >= 2
@@ -570,30 +723,39 @@ final class MissionControlGroupProxyController {
         }
         let activeGroupIDs = Set(presentableGroups.map(\.id))
             .union(preservedGroupIDs)
+        if transientPreviewTargetGroupIDs.isEmpty {
+            transientPreviewPlansByGroupID = transientPreviewPlansByGroupID
+                .filter { activeGroupIDs.contains($0.key) }
+        }
+        // Ordering scope is independent from Preview capture. Keep the full
+        // presentable member set even though Preview keys are now built through
+        // previewKeyByMemberID below.
         let activeWindows = presentableGroups.flatMap { group in
             group.memberIDs.compactMap { visibleWindowsByIdentity[$0] }
         }
-        let currentPreviewKeys = Set(activeWindows.compactMap { window
-            -> MissionControlPreviewCacheKey? in
-            guard let windowID = window.cgWindowID else { return nil }
-            return Self.previewCacheKey(
-                for: window,
-                windowID: windowID
-            )
-        })
+        let previewKeyByMemberID = Dictionary(
+            presentableGroups.flatMap { group in
+                group.memberIDs.compactMap { memberID
+                    -> (String, MissionControlPreviewCacheKey)? in
+                    guard let window = visibleWindowsByIdentity[memberID],
+                          let windowID = window.cgWindowID else { return nil }
+                    return (
+                        memberID,
+                        Self.previewCacheKey(
+                            for: window,
+                            windowID: windowID,
+                            displayID: group.displayID
+                        )
+                    )
+                }
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let currentPreviewKeys = Set(previewKeyByMemberID.values)
         let previewKeysByGroupID = Dictionary(
             uniqueKeysWithValues: presentableGroups.map { group in
                 let keys = Set(group.memberIDs.compactMap { memberID in
-                    visibleWindowsByIdentity[memberID].flatMap { window
-                        -> MissionControlPreviewCacheKey? in
-                        guard let windowID = window.cgWindowID else {
-                            return nil
-                        }
-                        return Self.previewCacheKey(
-                            for: window,
-                            windowID: windowID
-                        )
-                    }
+                    previewKeyByMemberID[memberID]
                 })
                 return (group.id, keys)
             }
@@ -616,10 +778,14 @@ final class MissionControlGroupProxyController {
             activePreviewKeys = currentPreviewKeys
             activePreviewByteBudget = previewByteBudget
             latestPreviewProvider = previewProvider
-            // A frame-only key change must not turn a frozen COLD member into
-            // a new member and start an unbounded sequence of captures. Carry
-            // its derived image to the new geometry key; a size change is
-            // refreshed only through the settled-geometry lane below.
+            latestTransientPreviewProvider = transientPreviewProvider
+            commitValidatedPreviewResults(
+                currentPreviewKeys: currentPreviewKeys
+            )
+            // A frame-only key change must not turn a structurally known member
+            // into a new member and start an unbounded sequence of captures. Carry
+            // its derived image to the new key; committed size/display mutations
+            // receive one explicit geometry debt from their transaction owner.
             for key in currentPreviewKeys where cachedPreviews[key] == nil {
                 if let previous = cachedPreviews.first(where: {
                     Self.representsSamePhysicalWindow($0.key, key)
@@ -627,56 +793,81 @@ final class MissionControlGroupProxyController {
                     cachedPreviews[key] = previous
                 }
             }
-            // Frame-position changes do not alter captured pixels. A size
-            // change does, so debounce it by physical identity and retain only
-            // the newest active geometry key. Repeated resize samples keep
-            // moving this one deadline instead of adding capture operations.
             for key in currentPreviewKeys {
-                guard let previousKey = previousActivePreviewKeys.first(where: {
-                    Self.representsSamePhysicalWindow($0, key)
-                        && $0 != key
-                }) else { continue }
-                let pendingGeometryDeadline =
-                    settledGeometryPreviewDeadlines.first {
-                        Self.representsSamePhysicalWindow($0.key, key)
-                    }?.value
-                settledGeometryPreviewDeadlines =
-                    settledGeometryPreviewDeadlines.filter {
-                        !Self.representsSamePhysicalWindow($0.key, key)
-                    }
-                let sizeChanged = previousKey.frameWidth != key.frameWidth
-                    || previousKey.frameHeight != key.frameHeight
-                if let resolvedDeadline =
-                    MissionControlPreviewGeometryRefreshPolicy
-                        .resolvedDeadline(
-                            sizeChanged: sizeChanged,
-                            pendingDeadline: pendingGeometryDeadline,
-                            now: activityNow
-                        ) {
-                    // A position-only key change carries the existing wait;
-                    // a real size change starts a new quiet-period deadline.
-                    settledGeometryPreviewDeadlines[key] =
-                        resolvedDeadline
+                if let previousPending = pendingCaptureReasons.first(where: {
+                    Self.representsSamePhysicalWindow($0.key, key)
+                        && $0.key != key
+                }) {
+                    enqueueCapture(
+                        key: key,
+                        reason: previousPending.value
+                    )
                 }
             }
-            // Inactive frame-key variants have no current presentation value.
-            // Retiring them before new captures guarantees that the complete
-            // active set can occupy the configured budget together.
-            cachedPreviews = cachedPreviews.filter {
-                currentPreviewKeys.contains($0.key)
+            // Keep one current key for each presentable member, while allowing
+            // a temporarily absent structural member to retain its last bounded
+            // image. This avoids both AX-gap data loss and stale frame-key
+            // accumulation when ordinary ordering/position observations change.
+            let presentablePreviewMemberIDs = Set(
+                currentPreviewKeys.map(\.stableIdentity)
+            )
+            cachedPreviews = cachedPreviews.filter { entry in
+                guard structuralPreviewMemberIDs.contains(
+                    entry.key.stableIdentity
+                ) else { return false }
+                if presentablePreviewMemberIDs.contains(
+                    entry.key.stableIdentity
+                ) {
+                    return currentPreviewKeys.contains(entry.key)
+                }
+                return true
+            }
+            reconcileDeferredPreviewDebt(currentPreviewKeys: currentPreviewKeys)
+            advanceGeometryConfirmations(
+                currentPreviewKeys: currentPreviewKeys,
+                now: activityNow
+            )
+            // Explicit Tabora transactions own their geometry debt directly.
+            // This fallback restores only the pre-existing safety net for
+            // app/OS-owned size or display changes. Position-only movement is
+            // ignored, and repeated resize samples replace one candidate.
+            for key in currentPreviewKeys {
+                guard let previousKey = previousActivePreviewKeys.first(where: {
+                    Self.representsSamePhysicalWindow($0, key) && $0 != key
+                }) else { continue }
+                let sizeChanged = previousKey.frameWidth != key.frameWidth
+                    || previousKey.frameHeight != key.frameHeight
+                let displayChanged = previousKey.displayID != key.displayID
+                guard MissionControlPreviewTriggerPolicy
+                    .shouldObserveGeometryFallback(
+                        sizeChanged: sizeChanged,
+                        displayChanged: displayChanged,
+                        hasOutstandingCurrentGeometryWork:
+                            hasOutstandingCurrentGeometryWork(for: key)
+                    ) else { continue }
+                observeGeometryCandidate(key, now: activityNow)
             }
             updatePreviewActivity(
                 currentPreviewKeys: currentPreviewKeys,
                 previewKeysByGroupID: previewKeysByGroupID,
-                exposedMemberIDsByGroupID:
-                    exposedPreviewMemberIDsByGroupID,
-                now: activityNow
+                structuralGroupIDs: structuralGroupIDs,
+                frontmostEvaluationByGroupID:
+                    previewFrontmostEvaluationByGroupID
             )
+            if desktopPresentationIsStable {
+                transientAuthorizedHotGroupIDs =
+                    MissionControlTransientPreviewEligibilityPolicy
+                        .authorizedHotGroupIDs(
+                            currentGroupIDs: Set(previewKeysByGroupID.keys),
+                            currentEvaluationByGroupID:
+                                previewFrontmostEvaluationByGroupID
+                        )
+            }
             if perImageBudgetBecameSmaller {
-                // Adding another group reduces every member's share.
-                // Re-encode COLD members once too; otherwise an oversized old
-                // cache entry would be rejected and never replaced.
-                immediatePreviewKeys.formUnion(currentPreviewKeys)
+                // Budget changes are cache-management work, not WindowServer
+                // freshness work. Re-encode locally instead of recapturing every
+                // active member merely because another group appeared.
+                reencodeCachedPreviewsForActiveBudget()
             }
             schedulePriorityPreviewCaptures(
                 now: activityNow,
@@ -692,6 +883,7 @@ final class MissionControlGroupProxyController {
                 // callback can authorize real windows.
                 continue
             }
+            transientPreviewAppliedGroupIDs.remove(groupID)
             windowsByGroupID.removeValue(forKey: groupID)?.retire()
         }
 
@@ -706,6 +898,7 @@ final class MissionControlGroupProxyController {
                 $0.union($1.frame)
             }
             guard bounds.width > 1, bounds.height > 1 else {
+                transientPreviewAppliedGroupIDs.remove(group.id)
                 windowsByGroupID.removeValue(forKey: group.id)?.retire()
                 continue
             }
@@ -755,6 +948,40 @@ final class MissionControlGroupProxyController {
                 [weak self] groupID, memberIDs in
                 self?.onSelectQueuedMigrationGroup?(groupID, memberIDs)
             }
+            if transientPreviewTargetGroupIDs.isEmpty,
+               memberWindows.allSatisfy({ $0.cgWindowID != nil }) {
+                let sourceMembers = memberWindows.compactMap { window
+                    -> MissionControlTransientPreviewMemberPlan? in
+                    guard let windowID = window.cgWindowID else { return nil }
+                    let relativeFrame = window.frame.offsetBy(
+                        dx: -bounds.minX,
+                        dy: -bounds.minY
+                    )
+                    return MissionControlTransientPreviewMemberPlan(
+                        stableIdentity: window.stableIdentity,
+                        pid: window.pid,
+                        windowID: windowID,
+                        relativeFrame: relativeFrame,
+                        targetPixelSize: MissionControlPreviewPixelSize(
+                            width: max(Int((relativeFrame.width * 2).rounded()), 1),
+                            height: max(Int((relativeFrame.height * 2).rounded()), 1)
+                        ),
+                        byteBudget: .max
+                    )
+                }
+                if sourceMembers.count == memberWindows.count {
+                    transientPreviewPlansByGroupID[group.id] =
+                        MissionControlTransientPreviewGroupPlan(
+                            groupID: group.id,
+                            groupRevision: group.revision,
+                            displayID: group.displayID,
+                            proxyFrame: bounds,
+                            members: sourceMembers.sorted {
+                                $0.stableIdentity < $1.stableIdentity
+                            }
+                        )
+                }
+            }
             let members = memberWindows.map { window in
                 MissionControlGroupProxyMember(
                     stableIdentity: window.stableIdentity,
@@ -764,8 +991,7 @@ final class MissionControlGroupProxyController {
                     ),
                     preview: previewsEnabled ? previewImage(
                         for: window,
-                        byteBudget: previewByteBudget,
-                        previewProvider: previewProvider
+                        displayID: group.displayID
                     ) : nil,
                     icon: window.appIcon
                 )
@@ -792,6 +1018,255 @@ final class MissionControlGroupProxyController {
             )
         }
         hasPendingPreviewCacheApplication = false
+    }
+
+    var hasTransientPreviewSession: Bool {
+        !transientPreviewTargetGroupIDs.isEmpty
+            || transientCaptureHasStarted
+            || !transientPreviewAppliedGroupIDs.isEmpty
+    }
+
+    var transientPreviewSessionNeedsStabilityObservation: Bool {
+        !transientPreviewTargetGroupIDs.isEmpty && !transientCaptureHasStarted
+    }
+
+    func beginTransientPreviewSession(targetGroupIDs: Set<SnapGroupID>) {
+        guard previewsAreEnabled,
+              !previewCaptureIsSuspended,
+              transientPreviewTargetGroupIDs.isEmpty,
+              transientPreviewAppliedGroupIDs.isEmpty else { return }
+        let eligiblePlans = targetGroupIDs.compactMap { groupID
+            -> (SnapGroupID, MissionControlTransientPreviewGroupPlan)? in
+            guard transientAuthorizedHotGroupIDs.contains(groupID),
+                  let plan = transientPreviewPlansByGroupID[groupID],
+                  !plan.members.isEmpty,
+                  windowsByGroupID[groupID] != nil else { return nil }
+            return (groupID, plan)
+        }
+        guard !eligiblePlans.isEmpty else { return }
+        transientPreviewSessionGeneration &+= 1
+        transientPreviewSessionPlansByGroupID = Dictionary(
+            uniqueKeysWithValues: eligiblePlans
+        )
+        transientPreviewTargetGroupIDs = Set(
+            transientPreviewSessionPlansByGroupID.keys
+        )
+        transientTransformObservationCount = 0
+        transientTransformFirstObservedAt = nil
+        transientLastTransformFingerprint = nil
+        transientCaptureHasStarted = false
+        // Invalidates an accepted result from a previous logical session. The
+        // capturer's physical single-flight gate remains closed until any
+        // already-issued direct-window capture has actually quiesced.
+        transientPreviewCapturer.cancel()
+    }
+
+    func noteTransientMissionControlTransformObservation(
+        windowServerSnapshot: [WindowOcclusionSnapshot],
+        now: TimeInterval = ProcessInfo.processInfo.systemUptime
+    ) {
+        guard !transientPreviewTargetGroupIDs.isEmpty,
+              !transientCaptureHasStarted else { return }
+        let targetWindowIDs = Set(
+            transientPreviewTargetGroupIDs.flatMap { groupID in
+                transientPreviewSessionPlansByGroupID[groupID]?.members
+                    .map(\.windowID)
+                    ?? []
+            }
+        )
+        guard !targetWindowIDs.isEmpty else { return }
+        let framePairs = windowServerSnapshot.compactMap { observation
+            -> (CGWindowID, CGRect)? in
+            guard observation.layer == 0,
+                  targetWindowIDs.contains(observation.windowID) else {
+                return nil
+            }
+            return (observation.windowID, observation.frame)
+        }
+        let observedWindowIDs = Set(framePairs.map(\.0))
+        guard framePairs.count == targetWindowIDs.count,
+              observedWindowIDs == targetWindowIDs else {
+            transientTransformObservationCount = 0
+            transientTransformFirstObservedAt = nil
+            transientLastTransformFingerprint = nil
+            return
+        }
+        let frames = Dictionary(
+            framePairs,
+            uniquingKeysWith: { first, _ in first }
+        )
+        let fingerprint = MissionControlTransientTransformFingerprint(
+            framesByWindowID: frames
+        )
+        if let previous = transientLastTransformFingerprint,
+           MissionControlTransientTransformStabilityPolicy
+            .representsSameSettledGeometry(previous, fingerprint) {
+            transientTransformObservationCount += 1
+        } else {
+            transientTransformObservationCount = 1
+            transientTransformFirstObservedAt = now
+            transientLastTransformFingerprint = fingerprint
+        }
+        guard transientTransformObservationCount
+                >= MissionControlTransientTransformStabilityPolicy
+                    .requiredStableObservations,
+              let firstObservedAt = transientTransformFirstObservedAt,
+              now - firstObservedAt
+                >= MissionControlTransientTransformStabilityPolicy
+                    .minimumStableInterval else { return }
+        startTransientPreviewCapture()
+    }
+
+    func endTransientPreviewSession(
+        preservingAppliedGroupIDs preservedGroupIDs: Set<SnapGroupID> = []
+    ) {
+        guard hasTransientPreviewSession else { return }
+        transientPreviewSessionGeneration &+= 1
+        transientPreviewCapturer.cancel()
+        transientPreviewTargetGroupIDs.removeAll()
+        transientPreviewSessionPlansByGroupID.removeAll()
+        transientTransformObservationCount = 0
+        transientTransformFirstObservedAt = nil
+        transientLastTransformFingerprint = nil
+        transientCaptureHasStarted = false
+
+        let discardGroupIDs = transientPreviewAppliedGroupIDs
+            .subtracting(preservedGroupIDs)
+        for groupID in discardGroupIDs {
+            windowsByGroupID[groupID]?.discardTransientPreviews()
+        }
+        transientPreviewAppliedGroupIDs.formIntersection(preservedGroupIDs)
+    }
+
+    private func startTransientPreviewCapture() {
+        guard !transientCaptureHasStarted else { return }
+        let generation = transientPreviewSessionGeneration
+        let targetPlans = transientPreviewTargetGroupIDs.compactMap {
+            transientPreviewSessionPlansByGroupID[$0]
+        }
+        let totalBudget = MissionControlTransientPreviewPolicy.byteLimit(
+            normalPreviewByteLimit: maximumCachedPreviewBytes
+        )
+        let admittedPlans = MissionControlTransientPreviewPolicy.admittedPlans(
+            targetPlans,
+            totalByteBudget: totalBudget
+        )
+        let memberCount = admittedPlans.reduce(0) { $0 + $1.members.count }
+        let perImageBudget = MissionControlPreviewSizingPolicy
+            .perImageByteBudget(
+                totalByteBudget: totalBudget,
+                presentableMemberCount: memberCount
+            )
+        guard perImageBudget > 0, !admittedPlans.isEmpty else {
+            // No amount of retrying this exact session can create budget.
+            transientCaptureHasStarted = true
+            return
+        }
+        let plans = admittedPlans.compactMap { plan
+            -> MissionControlTransientPreviewGroupPlan? in
+            let members = plan.members.compactMap { member
+                -> MissionControlTransientPreviewMemberPlan? in
+                let sourceWidth = max(
+                    Int((member.relativeFrame.width * 2).rounded()), 1
+                )
+                let sourceHeight = max(
+                    Int((member.relativeFrame.height * 2).rounded()), 1
+                )
+                guard let target = MissionControlPreviewSizingPolicy
+                    .targetPixelSize(
+                        sourceWidth: sourceWidth,
+                        sourceHeight: sourceHeight,
+                        byteBudget: perImageBudget
+                    ) else { return nil }
+                return MissionControlTransientPreviewMemberPlan(
+                    stableIdentity: member.stableIdentity,
+                    pid: member.pid,
+                    windowID: member.windowID,
+                    relativeFrame: member.relativeFrame,
+                    targetPixelSize: target,
+                    byteBudget: perImageBudget
+                )
+            }
+            guard members.count == plan.members.count else { return nil }
+            return MissionControlTransientPreviewGroupPlan(
+                groupID: plan.groupID,
+                groupRevision: plan.groupRevision,
+                displayID: plan.displayID,
+                proxyFrame: plan.proxyFrame,
+                members: members
+            )
+        }
+
+        guard let previewProvider = latestTransientPreviewProvider else {
+            return
+        }
+        let admitted = transientPreviewCapturer.capture(
+            generation: generation,
+            plans: plans,
+            previewProvider: previewProvider,
+            onGroupReady: { [weak self] result in
+                self?.applyTransientPreviewResult(
+                    result,
+                    generation: generation
+                )
+            },
+            onFinished: {}
+        )
+        // A false result means a canceled physical request from a previous MC
+        // session has not quiesced yet. Leave the logical gate open so the
+        // existing bounded transform-recovery observations may retry.
+        if admitted {
+            transientCaptureHasStarted = true
+        }
+    }
+
+    private func applyTransientPreviewResult(
+        _ result: MissionControlTransientPreviewGroupResult,
+        generation: UInt64
+    ) {
+        guard generation == transientPreviewSessionGeneration,
+              transientPreviewTargetGroupIDs.contains(result.groupID),
+              !desktopPresentationIsStable,
+              !CGEventSource.buttonState(
+                  .combinedSessionState,
+                  button: .left
+              ),
+              previewsAreEnabled,
+              let plan = transientPreviewSessionPlansByGroupID[result.groupID],
+              plan.groupRevision == result.groupRevision,
+              result.previewsByMemberID.count == plan.members.count,
+              let window = windowsByGroupID[result.groupID],
+              window.allowsTransientPreviewMutation else { return }
+        let stableMemberIDs = Set(plan.members.map(\.stableIdentity))
+        guard stableMemberIDs.count == plan.members.count else { return }
+        let frames = Dictionary(
+            plan.members.map { ($0.stableIdentity, $0.relativeFrame) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let previewPairs = plan.members.compactMap { member
+            -> (String, NSImage)? in
+            guard let image = result.previewsByMemberID[
+                member.stableIdentity
+            ] else { return nil }
+            return (
+                member.stableIdentity,
+                NSImage(
+                    cgImage: image,
+                    size: member.relativeFrame.size
+                )
+            )
+        }
+        let previews = Dictionary(
+            previewPairs,
+            uniquingKeysWith: { first, _ in first }
+        )
+        guard previews.count == plan.members.count else { return }
+        if window.applyTransientPreviews(
+            previews,
+            expectedFramesByMemberID: frames
+        ) {
+            transientPreviewAppliedGroupIDs.insert(result.groupID)
+        }
     }
 
     var hasPresentationRecoveryDebt: Bool {
@@ -821,6 +1296,7 @@ final class MissionControlGroupProxyController {
     }
 
     func retireForSpaceMigration(groupID: SnapGroupID) {
+        transientPreviewAppliedGroupIDs.remove(groupID)
         windowsByGroupID.removeValue(forKey: groupID)?.retire()
         if activeSelectionCandidate?.groupID == groupID {
             activeSelectionCandidate = nil
@@ -859,6 +1335,7 @@ final class MissionControlGroupProxyController {
     }
 
     func hideAll(clearPreviewCache: Bool = false) {
+        endTransientPreviewSession()
         for window in windowsByGroupID.values {
             window.retire()
         }
@@ -878,6 +1355,7 @@ final class MissionControlGroupProxyController {
     ) {
         for groupID in Array(windowsByGroupID.keys) where
             !preservedGroupIDs.contains(groupID) {
+            transientPreviewAppliedGroupIDs.remove(groupID)
             windowsByGroupID.removeValue(forKey: groupID)?.retire()
         }
         if let candidate = activeSelectionCandidate,
@@ -889,11 +1367,11 @@ final class MissionControlGroupProxyController {
     func setPreviewCacheByteLimit(_ byteLimit: Int) {
         let normalized = max(byteLimit, 0)
         guard maximumCachedPreviewBytes != normalized else { return }
+        endTransientPreviewSession()
         maximumCachedPreviewBytes = normalized
         clearPreviewCache()
-        // A budget change invalidates every encoded size. Rebuild every active
-        // member once; COLD status controls only later periodic refreshes.
-        immediatePreviewKeys.formUnion(activePreviewKeys)
+        // clearPreviewCache() rebuilds every non-resizing active member once;
+        // a geometry candidate retains ownership of a concurrent resize.
     }
 
     /// Applies user authorization independently of proxy presentation. This is
@@ -901,119 +1379,341 @@ final class MissionControlGroupProxyController {
     /// proxy refresh is suppressed.
     func setPreviewsEnabled(_ enabled: Bool) {
         guard previewsAreEnabled != enabled else { return }
+        if !enabled { endTransientPreviewSession() }
         previewCaptureGeneration &+= 1
         previewsAreEnabled = enabled
         previewQueue.cancelAllOperations()
+        let interrupted = previewRequestsByKey
         previewRequestsByKey.removeAll()
-        nextPreviewFreshnessCheckAt = 0
         if enabled {
-            immediatePreviewKeys.formUnion(hotPreviewKeys)
+            for (key, request) in interrupted where activePreviewKeys.contains(key) {
+                enqueueCapture(key: key, reason: request.reason)
+            }
+            enqueueCapture(keys: activePreviewKeys, reason: .initial)
             return
         }
         cachedPreviews.removeAll()
+        pendingPreviewResults.removeAll()
         activePreviewKeys.removeAll()
+        structuralPreviewMemberIDs.removeAll()
         knownPreviewMemberIDs.removeAll()
-        hotPreviewKeys.removeAll()
-        immediatePreviewKeys.removeAll()
-        interruptedPreviewKeys.removeAll()
-        coolingPreviewDeadlines.removeAll()
-        settledGeometryPreviewDeadlines.removeAll()
+        hotPreviewGroupIDs.removeAll()
+        coldConfirmationObservationCountByGroupID.removeAll()
+        coldConfirmationFirstObservedAtByGroupID.removeAll()
+        geometryConfirmationCandidates.removeAll()
+        transientAuthorizedHotGroupIDs.removeAll()
+        pendingCaptureReasons.removeAll()
+        pendingCaptureEnqueueOrders.removeAll()
+        deferredCaptureReasonsByMemberID.removeAll()
+        deferredCaptureEnqueueOrdersByMemberID.removeAll()
+        lastCaptureAtByPhysicalIdentity.removeAll()
+        geometryRevisionByPhysicalIdentity.removeAll()
+        cancelConfirmationRefresh()
+        cancelCooldownRefresh()
         activePreviewByteBudget = 0
         latestPreviewProvider = nil
+        latestTransientPreviewProvider = nil
         hasPendingPreviewCacheApplication = false
         previewCacheRefreshNotificationScheduled = false
-        periodicPreviewRefreshCursor = 0
     }
 
     func clearPreviewCache() {
+        // A user-requested Preview cache purge is also an ownership boundary
+        // for Mission Control-only pixels. Do not let a separately-budgeted
+        // transient image survive an explicit clear operation.
+        endTransientPreviewSession()
         previewCaptureGeneration &+= 1
         previewQueue.cancelAllOperations()
         cachedPreviews.removeAll()
+        pendingPreviewResults.removeAll()
         previewRequestsByKey.removeAll()
+        transientAuthorizedHotGroupIDs.removeAll()
         hasPendingPreviewCacheApplication = false
-        nextPreviewFreshnessCheckAt = 0
-        periodicPreviewRefreshCursor = 0
-        settledGeometryPreviewDeadlines.removeAll()
-        immediatePreviewKeys.formUnion(hotPreviewKeys)
+        coldConfirmationObservationCountByGroupID.removeAll()
+        coldConfirmationFirstObservedAtByGroupID.removeAll()
+        pendingCaptureReasons.removeAll()
+        pendingCaptureEnqueueOrders.removeAll()
+        deferredCaptureReasonsByMemberID.removeAll()
+        deferredCaptureEnqueueOrdersByMemberID.removeAll()
+        cancelConfirmationRefresh()
+        cancelCooldownRefresh()
+        enqueueCapture(
+            keys: Set(activePreviewKeys.filter {
+                geometryConfirmationCandidates[$0.stableIdentity] == nil
+            }),
+            reason: .initial
+        )
+        if !geometryConfirmationCandidates.isEmpty {
+            scheduleConfirmationRefreshIfNeeded()
+        }
+        let activeMemberIDs = Set(activePreviewKeys.map(\.stableIdentity))
+        for memberID in structuralPreviewMemberIDs.subtracting(activeMemberIDs) {
+            deferCaptureReason(.initial, memberID: memberID)
+        }
     }
 
     func setPreviewCaptureSuspended(_ suspended: Bool) {
         guard previewCaptureIsSuspended != suspended else { return }
+        if suspended {
+            endTransientPreviewSession()
+            transientAuthorizedHotGroupIDs.removeAll()
+            preserveGeometryCandidatesAsDebt()
+        }
         previewCaptureIsSuspended = suspended
         previewCaptureGeneration &+= 1
-        interruptedPreviewKeys.formUnion(previewRequestsByKey.keys)
+        let interrupted = previewRequestsByKey
         previewRequestsByKey.removeAll()
         previewQueue.cancelAllOperations()
-        nextPreviewFreshnessCheckAt = 0
-        if !suspended {
-            // A queued/running initial or cooling capture may have been
-            // interrupted at lock time. Resume those exact active keys once.
-            immediatePreviewKeys.formUnion(
-                interruptedPreviewKeys.intersection(activePreviewKeys)
-            )
-            interruptedPreviewKeys.removeAll()
-            immediatePreviewKeys.formUnion(hotPreviewKeys)
+        for (key, request) in interrupted {
+            preserveCaptureDebt(key: key, reason: request.reason)
+        }
+        if suspended {
+            // A completed-but-uncommitted desktop image belongs to the old
+            // login-session scene. Preserve only its trigger debt, never its
+            // pixels, so wake/session resume cannot publish stale geometry.
+            for (key, result) in pendingPreviewResults {
+                preserveCaptureDebt(key: key, reason: result.reason)
+            }
+            pendingPreviewResults.removeAll()
+            hasPendingPreviewCacheApplication = false
+            cancelConfirmationRefresh()
+            cancelCooldownRefresh()
+        } else if !coldConfirmationObservationCountByGroupID.isEmpty {
+            scheduleConfirmationRefreshIfNeeded()
         }
     }
 
-    func refreshStalePreviewCacheIfNeeded(
+    func setDesktopPresentationStable(_ stable: Bool) {
+        guard desktopPresentationIsStable != stable else { return }
+        if !stable {
+            preserveGeometryCandidatesAsDebt()
+        }
+        desktopPresentationIsStable = stable
+        previewCaptureGeneration &+= 1
+        let interrupted = previewRequestsByKey
+        previewRequestsByKey.removeAll()
+        previewQueue.cancelAllOperations()
+        hasPendingPreviewCacheApplication = false
+        if stable {
+            for (key, request) in interrupted {
+                preserveCaptureDebt(key: key, reason: request.reason)
+            }
+            if !coldConfirmationObservationCountByGroupID.isEmpty {
+                scheduleConfirmationRefreshIfNeeded()
+            }
+        } else {
+            for (key, result) in pendingPreviewResults {
+                preserveCaptureDebt(key: key, reason: result.reason)
+            }
+            pendingPreviewResults.removeAll()
+            for (key, request) in interrupted {
+                preserveCaptureDebt(key: key, reason: request.reason)
+            }
+            cancelConfirmationRefresh()
+            cancelCooldownRefresh()
+        }
+    }
+
+    /// Records one finite Preview refresh debt from a successful Tabora-owned
+    /// geometry transaction. The transaction itself is the confirmation
+    /// boundary. A separate bounded observation fallback exists only for
+    /// size/display changes that occur outside Tabora-owned transactions. If the
+    /// structural member is temporarily not presentable, the debt waits by
+    /// stable identity until an ordinary presentation refresh resolves its key.
+    func notePreviewGeometryMutation(memberIDs: Set<String>) {
+        guard previewsAreEnabled, !memberIDs.isEmpty else { return }
+        for memberID in memberIDs where
+            structuralPreviewMemberIDs.contains(memberID) {
+            // A successful Tabora transaction is stronger evidence than an
+            // observation candidate. It owns exactly one geometry debt.
+            geometryConfirmationCandidates.removeValue(forKey: memberID)
+            queueConfirmedGeometryRefresh(
+                memberID: memberID,
+                preferredKey: activePreviewKeys.first(where: {
+                    $0.stableIdentity == memberID
+                }),
+                advancesRevision: true
+            )
+        }
+    }
+
+    private func queueConfirmedGeometryRefresh(
+        memberID: String,
+        preferredKey: MissionControlPreviewCacheKey?,
+        advancesRevision: Bool
+    ) {
+        guard structuralPreviewMemberIDs.contains(memberID) else { return }
+        if advancesRevision {
+            geometryRevisionByPhysicalIdentity[memberID, default: 0] &+= 1
+        }
+        for key in Array(pendingCaptureReasons.keys) where
+            key.stableIdentity == memberID {
+            pendingCaptureReasons.removeValue(forKey: key)
+            pendingCaptureEnqueueOrders.removeValue(forKey: key)
+        }
+        deferredCaptureReasonsByMemberID.removeValue(forKey: memberID)
+        deferredCaptureEnqueueOrdersByMemberID.removeValue(forKey: memberID)
+        let targetKey = preferredKey.flatMap { key in
+            activePreviewKeys.contains(key) ? key : nil
+        } ?? activePreviewKeys.first(where: {
+            $0.stableIdentity == memberID
+        })
+        if let targetKey {
+            enqueueCapture(key: targetKey, reason: .geometryConfirmed)
+        } else {
+            deferCaptureReason(.geometryConfirmed, memberID: memberID)
+        }
+    }
+
+    private func hasOutstandingCurrentGeometryWork(
+        for key: MissionControlPreviewCacheKey
+    ) -> Bool {
+        if pendingCaptureReasons[key] == .geometryConfirmed { return true }
+        if deferredCaptureReasonsByMemberID[key.stableIdentity]
+            == .geometryConfirmed {
+            return true
+        }
+        if previewRequestsByKey.contains(where: { entry in
+            entry.value.reason == .geometryConfirmed
+                && Self.canReuseCapturedPixels(from: entry.key, for: key)
+        }) {
+            return true
+        }
+        return pendingPreviewResults.contains(where: { entry in
+            entry.value.reason == .geometryConfirmed
+                && Self.canReuseCapturedPixels(from: entry.key, for: key)
+        })
+    }
+
+    private func observeGeometryCandidate(
+        _ key: MissionControlPreviewCacheKey,
+        now: TimeInterval
+    ) {
+        guard structuralPreviewMemberIDs.contains(key.stableIdentity) else {
+            return
+        }
+        let alreadyAwaitingGeometry =
+            geometryConfirmationCandidates[key.stableIdentity] != nil
+        // Invalidate an older in-flight geometry immediately, but do not create
+        // WindowServer work until this newest observed size/display settles.
+        geometryRevisionByPhysicalIdentity[key.stableIdentity, default: 0] &+= 1
+        for pendingKey in Array(pendingCaptureReasons.keys) where
+            pendingKey.stableIdentity == key.stableIdentity {
+            pendingCaptureReasons.removeValue(forKey: pendingKey)
+            pendingCaptureEnqueueOrders.removeValue(forKey: pendingKey)
+        }
+        deferredCaptureReasonsByMemberID.removeValue(forKey: key.stableIdentity)
+        deferredCaptureEnqueueOrdersByMemberID.removeValue(
+            forKey: key.stableIdentity
+        )
+        geometryConfirmationCandidates[key.stableIdentity] =
+            MissionControlPreviewGeometryConfirmationCandidate(
+                key: key,
+                observationCount: 1,
+                firstObservedAt: now
+            )
+        // Debounce continuous external resize without stealing a confirmation
+        // turn from another line. If no COLD candidate or queued capture needs
+        // the shared timer, move it to the newest geometry event. Otherwise let
+        // the justified earlier turn run; the time gate will request one final
+        // geometry pass only if the newest sample has not settled yet.
+        if alreadyAwaitingGeometry,
+           coldConfirmationObservationCountByGroupID.isEmpty,
+           pendingCaptureReasons.isEmpty {
+            cancelConfirmationRefresh()
+        }
+        scheduleConfirmationRefreshIfNeeded()
+    }
+
+    private func advanceGeometryConfirmations(
+        currentPreviewKeys: Set<MissionControlPreviewCacheKey>,
+        now: TimeInterval
+    ) {
+        let currentByMemberID = Dictionary(
+            uniqueKeysWithValues: currentPreviewKeys.map {
+                ($0.stableIdentity, $0)
+            }
+        )
+        for memberID in Array(geometryConfirmationCandidates.keys) {
+            guard structuralPreviewMemberIDs.contains(memberID) else {
+                geometryConfirmationCandidates.removeValue(forKey: memberID)
+                continue
+            }
+            guard let currentKey = currentByMemberID[memberID] else {
+                // Missing AX/CG presentation breaks contiguous settle evidence,
+                // but the observed geometry change itself remains real work.
+                // Keep one finite debt by structural identity and wait for an
+                // ordinary presentation refresh instead of adding a monitor.
+                geometryConfirmationCandidates.removeValue(forKey: memberID)
+                deferCaptureReason(.geometryConfirmed, memberID: memberID)
+                continue
+            }
+            guard var candidate = geometryConfirmationCandidates[memberID],
+                  candidate.key == currentKey else {
+                // The newest key is handled by observeGeometryCandidate below.
+                continue
+            }
+            candidate.observationCount = MissionControlPreviewTriggerPolicy
+                .nextStableObservationCount(
+                    previousCount: candidate.observationCount,
+                    representsSameCandidate: true
+                )
+            if MissionControlPreviewTriggerPolicy.isConfirmed(
+                observationCount: candidate.observationCount,
+                firstObservedAt: candidate.firstObservedAt,
+                now: now,
+                minimumStableInterval:
+                    MissionControlPreviewWorkPolicy.confirmationInterval
+            ) {
+                geometryConfirmationCandidates.removeValue(forKey: memberID)
+                queueConfirmedGeometryRefresh(
+                    memberID: memberID,
+                    preferredKey: currentKey,
+                    // Every observed key change already advanced the revision.
+                    advancesRevision: false
+                )
+            } else {
+                geometryConfirmationCandidates[memberID] = candidate
+                scheduleConfirmationRefreshIfNeeded()
+            }
+        }
+    }
+
+    private func preserveGeometryCandidatesAsDebt() {
+        for (memberID, candidate) in geometryConfirmationCandidates where
+            structuralPreviewMemberIDs.contains(memberID) {
+            if let activeKey = activePreviewKeys.first(where: {
+                $0.stableIdentity == memberID
+            }) {
+                enqueueCapture(key: activeKey, reason: .geometryConfirmed)
+            } else {
+                deferCaptureReason(
+                    .geometryConfirmed,
+                    memberID: candidate.key.stableIdentity
+                )
+            }
+        }
+        geometryConfirmationCandidates.removeAll()
+    }
+
+    func processPendingPreviewCapturesIfNeeded(
         now: TimeInterval = ProcessInfo.processInfo.systemUptime,
-        allowsSettledGeometryRefresh: Bool = true
+        allowsGeometryRefresh: Bool = true
     ) {
         guard previewsAreEnabled,
               !previewCaptureIsSuspended,
+              desktopPresentationIsStable,
               activePreviewByteBudget > 0,
               let previewProvider = latestPreviewProvider else { return }
         schedulePriorityPreviewCaptures(
             now: now,
-            previewProvider: previewProvider
+            previewProvider: previewProvider,
+            allowsGeometryRefresh: allowsGeometryRefresh
         )
-        if now >= nextPreviewFreshnessCheckAt {
-            nextPreviewFreshnessCheckAt = now
-                + MissionControlPreviewFreshnessPolicy.refreshInterval
-            let staleKeys = hotPreviewKeys.filter { key in
-                settledGeometryPreviewDeadlines[key] == nil
-                    && MissionControlPreviewFreshnessPolicy.needsRefresh(
-                        capturedAt: cachedPreviews[key]?.capturedAt,
-                        now: now
-                    )
-            }.sorted(by: Self.previewKeyIsOrderedBefore)
-            let requestCount = MissionControlPreviewWorkPolicy
-                .periodicRequestCount(
-                    staleCount: staleKeys.count,
-                    outstandingCount: previewRequestsByKey.count
-                )
-            let requestIndices = MissionControlPreviewWorkPolicy
-                .periodicRequestIndices(
-                    staleCount: staleKeys.count,
-                    cursor: periodicPreviewRefreshCursor,
-                    requestCount: requestCount
-                )
-            if let lastIndex = requestIndices.last, !staleKeys.isEmpty {
-                periodicPreviewRefreshCursor =
-                    (lastIndex + 1) % staleKeys.count
-            }
-            for index in requestIndices {
-                let key = staleKeys[index]
-                schedulePreviewCapture(
-                    key: key,
-                    byteBudget: activePreviewByteBudget,
-                    previewProvider: previewProvider
-                )
-            }
-        }
-        // The resize-settled lane is additive derived work. Existing initial,
-        // COLD-final and HOT-periodic requests keep their established order;
-        // geometry refresh consumes only the remaining global capacity.
-        if allowsSettledGeometryRefresh {
-            scheduleSettledGeometryPreviewCaptures(
-                now: now,
-                previewProvider: previewProvider
-            )
-        }
     }
 
     func hide(groupID: SnapGroupID) {
+        transientPreviewAppliedGroupIDs.remove(groupID)
         if activeSelectionCandidate?.groupID == groupID {
             activeSelectionCandidate = nil
         }
@@ -1036,6 +1736,7 @@ final class MissionControlGroupProxyController {
 
     func cancelSelectionTransition(for groupID: SnapGroupID) {
         windowsByGroupID[groupID]?.cancelSelectionTransition()
+        transientPreviewAppliedGroupIDs.remove(groupID)
     }
 
     private func beginSelectionConfirmation(
@@ -1101,9 +1802,11 @@ final class MissionControlGroupProxyController {
 
     private static func previewCacheKey(
         for window: ManagedWindow,
-        windowID: CGWindowID
+        windowID: CGWindowID,
+        displayID: CGDirectDisplayID
     ) -> MissionControlPreviewCacheKey {
         MissionControlPreviewCacheKey(
+            displayID: displayID,
             pid: window.pid,
             windowID: windowID,
             stableIdentity: window.stableIdentity,
@@ -1123,37 +1826,36 @@ final class MissionControlGroupProxyController {
             && lhs.stableIdentity == rhs.stableIdentity
     }
 
+    private static func canReuseCapturedPixels(
+        from source: MissionControlPreviewCacheKey,
+        for destination: MissionControlPreviewCacheKey
+    ) -> Bool {
+        MissionControlPreviewTriggerPolicy.canReuseCapturedPixels(
+            representsSamePhysicalWindow:
+                representsSamePhysicalWindow(source, destination),
+            displayMatches: source.displayID == destination.displayID,
+            pixelSizeMatches:
+                source.frameWidth == destination.frameWidth
+                    && source.frameHeight == destination.frameHeight
+        )
+    }
+
     private func previewImage(
         for window: ManagedWindow,
-        byteBudget: Int,
-        previewProvider: @escaping (CGWindowID?) -> CGImage?
+        displayID: CGDirectDisplayID
     ) -> NSImage? {
         guard let windowID = window.cgWindowID else { return nil }
         let key = Self.previewCacheKey(
             for: window,
-            windowID: windowID
+            windowID: windowID,
+            displayID: displayID
         )
         previewAccessEpoch &+= 1
         if var cached = cachedPreviews[key] {
             cached.accessEpoch = previewAccessEpoch
             cachedPreviews[key] = cached
-            if cached.byteCost > byteBudget,
-               (hotPreviewKeys.contains(key)
-                    || immediatePreviewKeys.contains(key)
-                    || coolingPreviewDeadlines[key] != nil) {
-                // Keep the old image visible until the smaller encoding is
-                // ready. A budget change must not create an icon-only gap.
-                schedulePreviewCapture(
-                    key: key,
-                    byteBudget: byteBudget,
-                    previewProvider: previewProvider,
-                    retryRemaining: true
-                )
-            }
-            // Stale-while-revalidate remains visible, but periodic capture is
-            // admitted only by refreshStalePreviewCacheIfNeeded(). Calling
-            // update for one completed image must not cascade into captures
-            // for every other stale group.
+            // Stale-while-revalidate remains visible while a trigger-owned
+            // replacement is admitted through the shared queue.
             return cached.image
         }
 
@@ -1161,55 +1863,74 @@ final class MissionControlGroupProxyController {
         // Screen sharing can make Window Server capture slow enough to stall
         // snapping, foregrounding and unrelated groups. Return the icon-backed
         // placeholder immediately and populate this bounded cache off-main.
-        guard settledGeometryPreviewDeadlines[key] == nil else { return nil }
-        guard hotPreviewKeys.contains(key)
-                || immediatePreviewKeys.contains(key)
-                || coolingPreviewDeadlines[key] != nil
-                || previewRequestsByKey[key] != nil else {
-            return nil
-        }
-        schedulePreviewCapture(
-            key: key,
-            byteBudget: byteBudget,
-            previewProvider: previewProvider
-        )
         return nil
     }
 
     @discardableResult
     private func schedulePreviewCapture(
         key: MissionControlPreviewCacheKey,
+        reason: MissionControlPreviewTriggerReason,
         byteBudget: Int,
-        previewProvider: @escaping (CGWindowID?) -> CGImage?,
-        retryRemaining: Bool = false,
-        allowsPendingGeometryRefresh: Bool = false
+        previewProvider: @escaping PreviewProvider,
+        retryRemaining: Bool = false
     ) -> Bool {
-        if var existing = previewRequestsByKey[key] {
-            if retryRemaining && !existing.retryRemaining {
-                existing.retryRemaining = true
-                previewRequestsByKey[key] = existing
-            }
-            return true
+        if previewRequestsByKey[key] != nil {
+            // A capture admitted before a later trigger cannot satisfy that
+            // trigger merely because its key is unchanged. Retain one merged
+            // follow-up demand; completion will reopen capacity.
+            enqueueCapture(key: key, reason: reason)
+            return false
         }
-        guard previewsAreEnabled,
-              byteBudget > 0,
-              !previewCaptureIsSuspended,
-              allowsPendingGeometryRefresh
-                || settledGeometryPreviewDeadlines[key] == nil,
-              previewRequestsByKey.count
-                < MissionControlPreviewWorkPolicy
-                    .maximumOutstandingCaptureCount,
-              activePreviewKeys.contains(key) else { return false }
+        if previewRequestsByKey.keys.contains(where: {
+            Self.representsSamePhysicalWindow($0, key)
+        }) {
+            enqueueCapture(key: key, reason: reason)
+            return false
+        }
+        if pendingPreviewResults.keys.contains(where: {
+            Self.representsSamePhysicalWindow($0, key)
+        }) {
+            enqueueCapture(key: key, reason: reason)
+            return false
+        }
+        guard MissionControlPreviewAdmissionPolicy.allowsCapture(
+            previewsEnabled: previewsAreEnabled,
+            captureSuspended: previewCaptureIsSuspended,
+            desktopPresentationIsStable: desktopPresentationIsStable,
+            byteBudget: byteBudget,
+            outstandingCount:
+                previewRequestsByKey.count + pendingPreviewResults.count,
+            queuedOperationCount: previewQueue.operationCount,
+            keyIsActive: activePreviewKeys.contains(key)
+        ) else { return false }
         let captureGeneration = previewCaptureGeneration
+        let geometryRevision = geometryRevisionByPhysicalIdentity[
+            key.stableIdentity,
+            default: 0
+        ]
         previewRequestsByKey[key] = MissionControlPreviewRequest(
             generation: captureGeneration,
+            geometryRevision: geometryRevision,
+            reason: reason,
             retryRemaining: retryRemaining
         )
         let operation = BlockOperation()
         operation.addExecutionBlock { [weak self, weak operation] in
             guard let self, let operation,
                   !operation.isCancelled else { return }
-            let rendered: (CGImage, Int)? = previewProvider(key.windowID).flatMap { source in
+            let captureIsAuthorized: PreviewCaptureAuthorization = {
+                [weak operation] in
+                operation?.isCancelled == false
+            }
+            let source = previewProvider(
+                key.windowID,
+                captureIsAuthorized
+            )
+            // The provider may have waited for the shared capture slot. If this
+            // request was cancelled during that wait, do not turn the denied
+            // physical capture into a Preview retry or derived-image task.
+            guard captureIsAuthorized() else { return }
+            let rendered: (CGImage, Int)? = source.flatMap { source in
                 guard let image = Self.makePreviewImage(
                     from: source,
                     byteBudget: byteBudget
@@ -1220,7 +1941,7 @@ final class MissionControlGroupProxyController {
                 )
                 return (image, cost)
             }
-            guard !operation.isCancelled else { return }
+            guard captureIsAuthorized() else { return }
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 let completedRequest = self.previewRequestsByKey[key]
@@ -1229,66 +1950,107 @@ final class MissionControlGroupProxyController {
                 }
                 guard self.previewCaptureGeneration == captureGeneration,
                       self.previewsAreEnabled,
-                      self.activePreviewKeys.contains(key) else { return }
-                guard self.settledGeometryPreviewDeadlines[key] == nil else {
-                    // A request admitted before the latest resize must not
-                    // satisfy that new geometry. Its result is disposable;
-                    // the newest settled deadline retains ownership. This also
-                    // rejects a settled request if resize moved away and back
-                    // to the same rounded frame key while it was running.
+                      self.desktopPresentationIsStable,
+                      self.structuralPreviewMemberIDs.contains(key.stableIdentity)
+                else { return }
+                guard MissionControlPreviewTriggerPolicy
+                    .captureMatchesCurrentGeometry(
+                        admittedRevision: geometryRevision,
+                        currentRevision:
+                            self.geometryRevisionByPhysicalIdentity[
+                                key.stableIdentity,
+                                default: 0
+                            ]
+                    ) else {
+                    // A successful Tabora-owned geometry transaction overtook
+                    // this physical capture. Its newer finite debt is already
+                    // queued; request one bounded Preview-only refresh so that
+                    // queue progress does not wait for the 1 Hz Recovery pass.
+                    self.scheduleConfirmationRefreshIfNeeded()
                     return
                 }
-                guard byteBudget == self.activePreviewByteBudget else {
-                    // The number of active members changed while this capture
-                    // was running. Never insert an image rendered against the
-                    // old larger share; immediately requeue this exact active
-                    // key using the current globally divided budget.
-                    if self.activePreviewByteBudget > 0,
+                let resultKey = self.activePreviewKeys.first(where: {
+                    Self.canReuseCapturedPixels(from: key, for: $0)
+                })
+                guard let (capturedImage, _) = rendered else {
+                    let retryReason = completedRequest?.reason ?? reason
+                    if let resultKey, completedRequest?.retryRemaining == true,
                        let currentProvider = self.latestPreviewProvider {
-                        self.schedulePreviewCapture(
-                            key: key,
-                            byteBudget: self.activePreviewByteBudget,
-                            previewProvider: currentProvider,
-                            retryRemaining:
-                                completedRequest?.retryRemaining ?? false
-                        )
-                    }
-                    return
-                }
-                guard let (image, cost) = rendered else {
-                    if completedRequest?.retryRemaining == true,
-                       let currentProvider = self.latestPreviewProvider {
+                        // Do not turn admission contention into a fresh
+                        // retry budget. This trigger already performed one
+                        // WindowServer attempt; if its single direct retry
+                        // cannot be admitted now, finish the trigger here.
                         _ = self.schedulePreviewCapture(
-                            key: key,
+                            key: resultKey,
+                            reason: retryReason,
                             byteBudget: self.activePreviewByteBudget,
                             previewProvider: currentProvider,
                             retryRemaining: false
                         )
-                    }
-                    // Fill any remaining initial/cooling slots even when this
-                    // provider returned nil. A failed member must not stall all
-                    // later candidate images behind it.
-                    if let currentProvider = self.latestPreviewProvider {
-                        self.schedulePriorityPreviewCaptures(
-                            now: ProcessInfo.processInfo.systemUptime,
-                            previewProvider: currentProvider
+                    } else if MissionControlPreviewTriggerPolicy
+                        .shouldRetainDebtAfterCaptureFailure(
+                            hasReusableActiveKey: resultKey != nil
+                        ) {
+                        // Structural presence survived but the current AX target
+                        // disappeared. Preserve one reason by identity. A second
+                        // actual capture failure at an active geometry is final.
+                        self.deferCaptureReason(
+                            retryReason,
+                            memberID: key.stableIdentity
                         )
                     }
+                    self.scheduleConfirmationRefreshIfNeeded()
                     return
                 }
+                let effectiveBudget = self.activePreviewByteBudget > 0
+                    ? self.activePreviewByteBudget : max(byteBudget, 1)
+                guard let image = byteBudget == effectiveBudget
+                    ? capturedImage
+                    : Self.makePreviewImage(
+                        from: capturedImage,
+                        byteBudget: effectiveBudget
+                    ) else {
+                    // This is local derived-image processing, not a missing AX
+                    // target. Re-capturing WindowServer cannot be assumed to fix
+                    // it, so do not convert the failure into persistent debt.
+                    // One confirmation turn only lets unrelated queued work use
+                    // the slot that just became free.
+                    self.scheduleConfirmationRefreshIfNeeded()
+                    return
+                }
+                let cost = max(
+                    image.bytesPerRow * image.height,
+                    image.width * image.height * 4
+                )
                 self.previewAccessEpoch &+= 1
                 let preview = NSImage(
                     cgImage: image,
                     size: NSSize(width: CGFloat(image.width), height: CGFloat(image.height))
                 )
-                self.cachedPreviews[key] = MissionControlCachedPreview(
+                let cached = MissionControlCachedPreview(
                     image: preview,
                     byteCost: cost,
-                    capturedAt: ProcessInfo.processInfo.systemUptime,
                     accessEpoch: self.previewAccessEpoch
                 )
-                self.trimPreviewCacheIfNeeded()
-                self.hasPendingPreviewCacheApplication = true
+                if let resultKey {
+                    self.pendingPreviewResults[resultKey] =
+                        MissionControlPendingPreviewResult(
+                            preview: cached,
+                            reason: completedRequest?.reason ?? reason,
+                            geometryRevision: geometryRevision
+                        )
+                    self.hasPendingPreviewCacheApplication = true
+                } else {
+                    // The member is structurally live but temporarily absent
+                    // from the AX presentation census. Store completed pixels in
+                    // the bounded cache immediately so they do not occupy one of
+                    // the four execution/result slots. A later matching key may
+                    // reuse them; a geometry revision invalidates them.
+                    self.cachedPreviews[key] = cached
+                    self.lastCaptureAtByPhysicalIdentity[key.stableIdentity] =
+                        ProcessInfo.processInfo.systemUptime
+                    self.trimPreviewCacheIfNeeded()
+                }
                 // Never mutate a managed proxy from an asynchronous capture
                 // completion. Ask the controller for one coalesced normal update
                 // instead. That update revalidates identity/geometry and already
@@ -1300,174 +2062,491 @@ final class MissionControlGroupProxyController {
         return true
     }
 
+    private func commitValidatedPreviewResults(
+        currentPreviewKeys: Set<MissionControlPreviewCacheKey>
+    ) {
+        guard desktopPresentationIsStable else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        for key in Array(pendingPreviewResults.keys) {
+            guard let result = pendingPreviewResults.removeValue(forKey: key),
+                  structuralPreviewMemberIDs.contains(key.stableIdentity),
+                  MissionControlPreviewTriggerPolicy
+                      .captureMatchesCurrentGeometry(
+                        admittedRevision: result.geometryRevision,
+                        currentRevision:
+                            geometryRevisionByPhysicalIdentity[
+                                key.stableIdentity,
+                                default: 0
+                            ]
+                      ) else { continue }
+            previewAccessEpoch &+= 1
+            var validated = result.preview
+            validated.accessEpoch = previewAccessEpoch
+            if let validatedKey = currentPreviewKeys.first(where: {
+                Self.canReuseCapturedPixels(from: key, for: $0)
+            }) {
+                cachedPreviews[validatedKey] = validated
+                lastCaptureAtByPhysicalIdentity[validatedKey.stableIdentity] = now
+            } else {
+                // AX presentation can disappear after capture completed but
+                // before the coalesced application refresh. Structural
+                // membership owns the completed pixels; keep them in the
+                // bounded cache instead of dropping valid finite work. A later
+                // geometry mutation advances the revision and prevents stale
+                // reuse at a changed size.
+                cachedPreviews[key] = validated
+                lastCaptureAtByPhysicalIdentity[key.stableIdentity] = now
+            }
+        }
+        trimPreviewCacheIfNeeded()
+    }
+
+    private func enqueueCapture(
+        keys: Set<MissionControlPreviewCacheKey>,
+        reason: MissionControlPreviewTriggerReason
+    ) {
+        for key in keys {
+            enqueueCapture(key: key, reason: reason)
+        }
+    }
+
+    private func enqueueCapture(
+        key: MissionControlPreviewCacheKey,
+        reason: MissionControlPreviewTriggerReason
+    ) {
+        guard activePreviewKeys.contains(key) else { return }
+        var mergedReason = reason
+        var oldestEnqueueOrder = pendingCaptureEnqueueOrders[key]
+        for previousKey in Array(pendingCaptureReasons.keys) where
+            previousKey != key
+                && Self.representsSamePhysicalWindow(previousKey, key) {
+            mergedReason = MissionControlPreviewTriggerPolicy.merged(
+                pendingCaptureReasons[previousKey],
+                with: mergedReason
+            )
+            if let previousOrder = pendingCaptureEnqueueOrders[previousKey] {
+                oldestEnqueueOrder = min(
+                    oldestEnqueueOrder ?? previousOrder,
+                    previousOrder
+                )
+            }
+            pendingCaptureReasons.removeValue(forKey: previousKey)
+            pendingCaptureEnqueueOrders.removeValue(forKey: previousKey)
+        }
+        pendingCaptureReasons[key] = MissionControlPreviewTriggerPolicy.merged(
+            pendingCaptureReasons[key],
+            with: mergedReason
+        )
+        if pendingCaptureEnqueueOrders[key] == nil {
+            if let oldestEnqueueOrder {
+                pendingCaptureEnqueueOrders[key] = oldestEnqueueOrder
+            } else {
+                nextPendingCaptureEnqueueOrder &+= 1
+                pendingCaptureEnqueueOrders[key] =
+                    nextPendingCaptureEnqueueOrder
+            }
+        }
+    }
+
+    private func scheduleConfirmationRefreshIfNeeded() {
+        guard !confirmationRefreshIsScheduled,
+              previewsAreEnabled,
+              !previewCaptureIsSuspended,
+              desktopPresentationIsStable else { return }
+        confirmationRefreshIsScheduled = true
+        confirmationGeneration &+= 1
+        let generation = confirmationGeneration
+        DispatchQueue.main.asyncAfter(
+            deadline: .now()
+                + MissionControlPreviewWorkPolicy.confirmationInterval
+        ) { [weak self] in
+            guard let self,
+                  self.confirmationGeneration == generation else { return }
+            self.confirmationRefreshIsScheduled = false
+            self.onPreviewConfirmationNeeded?()
+        }
+    }
+
+    private func cancelConfirmationRefresh() {
+        confirmationGeneration &+= 1
+        confirmationRefreshIsScheduled = false
+    }
+
+    private func scheduleCooldownRefreshIfNeeded(after delay: TimeInterval) {
+        guard previewsAreEnabled,
+              !previewCaptureIsSuspended,
+              desktopPresentationIsStable,
+              delay > 0 else { return }
+        let deadline = ProcessInfo.processInfo.systemUptime + delay
+        if cooldownRefreshIsScheduled,
+           let currentDeadline = cooldownRefreshDeadline,
+           currentDeadline <= deadline {
+            return
+        }
+        cooldownRefreshIsScheduled = true
+        cooldownRefreshDeadline = deadline
+        cooldownGeneration &+= 1
+        let generation = cooldownGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self,
+                  self.cooldownGeneration == generation else { return }
+            self.cooldownRefreshIsScheduled = false
+            self.cooldownRefreshDeadline = nil
+            self.onPreviewConfirmationNeeded?()
+        }
+    }
+
+    private func cancelCooldownRefresh() {
+        cooldownGeneration &+= 1
+        cooldownRefreshIsScheduled = false
+        cooldownRefreshDeadline = nil
+    }
+
+    private func previewKeysInFairDisplayOrder(
+        _ keys: [MissionControlPreviewCacheKey]
+    ) -> [MissionControlPreviewCacheKey] {
+        let ordered = keys.sorted(by: Self.previewKeyIsOrderedBefore)
+        let indices = MissionControlPreviewDisplayFairnessPolicy
+            .fairFIFOIndices(
+                displayIDs: ordered.map(\.displayID),
+                enqueueOrders: ordered.map {
+                    pendingCaptureEnqueueOrders[$0] ?? UInt64.max
+                }
+            )
+        return indices.map { ordered[$0] }
+    }
+
     private func updatePreviewActivity(
         currentPreviewKeys: Set<MissionControlPreviewCacheKey>,
         previewKeysByGroupID:
             [SnapGroupID: Set<MissionControlPreviewCacheKey>],
-        exposedMemberIDsByGroupID: [SnapGroupID: Set<String>],
-        now: TimeInterval
+        structuralGroupIDs: Set<SnapGroupID>,
+        frontmostEvaluationByGroupID:
+            [SnapGroupID: GroupFrontmostEvaluation]
     ) {
         let previousKnownMemberIDs = knownPreviewMemberIDs
-        let memberIDsByGroupID = previewKeysByGroupID.mapValues { keys in
-            Set(keys.map(\.stableIdentity))
+        // Group activity is structural state. Temporary AX/CG presentation
+        // loss is indeterminate evidence, not a HOT/COLD transition. Retire
+        // activity only when the explicit Group itself leaves the store.
+        hotPreviewGroupIDs.formIntersection(structuralGroupIDs)
+        coldConfirmationObservationCountByGroupID =
+            coldConfirmationObservationCountByGroupID.filter {
+                structuralGroupIDs.contains($0.key)
+            }
+        coldConfirmationFirstObservedAtByGroupID =
+            coldConfirmationFirstObservedAtByGroupID.filter {
+                structuralGroupIDs.contains($0.key)
+            }
+        // A HOT -> COLD confirmation must be contiguous evidence. If a
+        // structural group is temporarily not presentable, the missing census
+        // is indeterminate and breaks the candidate instead of letting two
+        // separated occlusion samples manufacture a final capture.
+        let currentlyObservedGroupIDs = Set(previewKeysByGroupID.keys)
+        for groupID in Array(coldConfirmationObservationCountByGroupID.keys)
+            where !currentlyObservedGroupIDs.contains(groupID) {
+            coldConfirmationObservationCountByGroupID.removeValue(forKey: groupID)
+            coldConfirmationFirstObservedAtByGroupID.removeValue(forKey: groupID)
         }
-        let desiredHotMemberIDs = MissionControlPreviewActivityPolicy
-            .desiredHotMemberIDs(
-                previousHotMemberIDs: Set(
-                    hotPreviewKeys.map(\.stableIdentity)
-                ),
-                currentMemberIDsByGroupID: memberIDsByGroupID,
-                observedExposedMemberIDsByGroupID:
-                    exposedMemberIDsByGroupID
-            )
-        let desiredHotKeys = Set(currentPreviewKeys.filter {
-            desiredHotMemberIDs.contains($0.stableIdentity)
-        })
-        let previousHotMemberIDs = Set(
-            hotPreviewKeys.map(\.stableIdentity)
-        )
 
         let newKeys = currentPreviewKeys.filter {
             !previousKnownMemberIDs.contains($0.stableIdentity)
         }
-        // Every new member gets one initial image even when it is already
-        // covered. This is finite, presentation-only work.
-        immediatePreviewKeys.formUnion(newKeys)
+        // Only a structurally new member owns initial capture. A temporary AX/CG
+        // absence does not clear known membership, so return from that absence
+        // cannot retrigger .initial.
+        enqueueCapture(keys: newKeys, reason: .initial)
 
-        let newlyHotMemberIDs = desiredHotMemberIDs.subtracting(
-            previousHotMemberIDs
-        )
-        let newlyHot = Set(desiredHotKeys.filter {
-            newlyHotMemberIDs.contains($0.stableIdentity)
-        })
-        immediatePreviewKeys.formUnion(newlyHot)
-        coolingPreviewDeadlines = coolingPreviewDeadlines.filter {
-            !desiredHotMemberIDs.contains($0.key.stableIdentity)
+        for (groupID, keys) in previewKeysByGroupID {
+            let evaluation = frontmostEvaluationByGroupID[groupID]
+                ?? .indeterminate
+            switch evaluation {
+            case .verifiedFrontmost:
+                hotPreviewGroupIDs.insert(groupID)
+                coldConfirmationObservationCountByGroupID.removeValue(
+                    forKey: groupID
+                )
+                coldConfirmationFirstObservedAtByGroupID.removeValue(
+                    forKey: groupID
+                )
+                let memberIDs = Set(keys.map(\.stableIdentity))
+                for key in Array(pendingCaptureReasons.keys) where
+                    pendingCaptureReasons[key] == .coldConfirmed
+                        && memberIDs.contains(key.stableIdentity) {
+                    pendingCaptureReasons.removeValue(forKey: key)
+                    pendingCaptureEnqueueOrders.removeValue(forKey: key)
+                }
+                for memberID in memberIDs where
+                    deferredCaptureReasonsByMemberID[memberID] == .coldConfirmed {
+                    deferredCaptureReasonsByMemberID.removeValue(forKey: memberID)
+                    deferredCaptureEnqueueOrdersByMemberID.removeValue(forKey: memberID)
+                }
+            case .occluded:
+                guard hotPreviewGroupIDs.contains(groupID) else {
+                    // Already COLD (or never observed HOT): no state transition,
+                    // therefore no final-capture trigger.
+                    continue
+                }
+                let now = ProcessInfo.processInfo.systemUptime
+                let firstObservedAt =
+                    coldConfirmationFirstObservedAtByGroupID[groupID] ?? now
+                let count = (coldConfirmationObservationCountByGroupID[groupID]
+                    ?? 0) + 1
+                if MissionControlPreviewTriggerPolicy.isConfirmed(
+                    observationCount: count,
+                    firstObservedAt: firstObservedAt,
+                    now: now,
+                    minimumStableInterval:
+                        MissionControlPreviewWorkPolicy.confirmationInterval
+                ) {
+                    coldConfirmationObservationCountByGroupID.removeValue(
+                        forKey: groupID
+                    )
+                    coldConfirmationFirstObservedAtByGroupID.removeValue(
+                        forKey: groupID
+                    )
+                    hotPreviewGroupIDs.remove(groupID)
+                    enqueueCapture(keys: keys, reason: .coldConfirmed)
+                } else {
+                    coldConfirmationObservationCountByGroupID[groupID] = count
+                    coldConfirmationFirstObservedAtByGroupID[groupID] =
+                        firstObservedAt
+                    scheduleConfirmationRefreshIfNeeded()
+                }
+            case .indeterminate:
+                // Unknown WindowServer evidence preserves the confirmed Group
+                // activity state, but it breaks an in-progress HOT -> COLD
+                // candidate. Two separated occlusion samples may not be joined
+                // across an incomplete census.
+                coldConfirmationObservationCountByGroupID.removeValue(
+                    forKey: groupID
+                )
+                coldConfirmationFirstObservedAtByGroupID.removeValue(
+                    forKey: groupID
+                )
+            }
         }
 
-        let newlyColdMemberIDs = previousHotMemberIDs.subtracting(
-            desiredHotMemberIDs
-        )
-        for key in currentPreviewKeys where
-            newlyColdMemberIDs.contains(key.stableIdentity) {
-            coolingPreviewDeadlines[key] = now
-                + MissionControlPreviewWorkPolicy.coolingFinalCaptureDelay
-        }
-
-        knownPreviewMemberIDs = Set(
+        knownPreviewMemberIDs.formUnion(
             currentPreviewKeys.map(\.stableIdentity)
         )
-        hotPreviewKeys = desiredHotKeys
-        immediatePreviewKeys.formIntersection(currentPreviewKeys)
-        interruptedPreviewKeys.formIntersection(currentPreviewKeys)
-        coolingPreviewDeadlines = coolingPreviewDeadlines.filter {
-            currentPreviewKeys.contains($0.key)
-                && !desiredHotKeys.contains($0.key)
+        knownPreviewMemberIDs.formIntersection(structuralPreviewMemberIDs)
+
+        // Only structural departure may retire finite debt/revision ownership.
+        deferredCaptureReasonsByMemberID = deferredCaptureReasonsByMemberID.filter {
+            structuralPreviewMemberIDs.contains($0.key)
         }
-        settledGeometryPreviewDeadlines =
-            settledGeometryPreviewDeadlines.filter {
-                currentPreviewKeys.contains($0.key)
+        deferredCaptureEnqueueOrdersByMemberID =
+            deferredCaptureEnqueueOrdersByMemberID.filter {
+                deferredCaptureReasonsByMemberID[$0.key] != nil
             }
+        lastCaptureAtByPhysicalIdentity = lastCaptureAtByPhysicalIdentity.filter {
+            structuralPreviewMemberIDs.contains($0.key)
+        }
+        geometryRevisionByPhysicalIdentity =
+            geometryRevisionByPhysicalIdentity.filter {
+                structuralPreviewMemberIDs.contains($0.key)
+            }
+    }
+
+    private func reconcileDeferredPreviewDebt(
+        currentPreviewKeys: Set<MissionControlPreviewCacheKey>
+    ) {
+        let currentByMemberID = Dictionary(
+            uniqueKeysWithValues: currentPreviewKeys.map { ($0.stableIdentity, $0) }
+        )
+
+        for key in Array(pendingCaptureReasons.keys) where
+            !currentPreviewKeys.contains(key) {
+            guard let reason = pendingCaptureReasons.removeValue(forKey: key) else {
+                continue
+            }
+            let order = pendingCaptureEnqueueOrders.removeValue(forKey: key)
+            guard structuralPreviewMemberIDs.contains(key.stableIdentity) else {
+                continue
+            }
+            deferredCaptureReasonsByMemberID[key.stableIdentity] =
+                MissionControlPreviewTriggerPolicy.merged(
+                    deferredCaptureReasonsByMemberID[key.stableIdentity],
+                    with: reason
+                )
+            if let order {
+                deferredCaptureEnqueueOrdersByMemberID[key.stableIdentity] = min(
+                    deferredCaptureEnqueueOrdersByMemberID[key.stableIdentity]
+                        ?? order,
+                    order
+                )
+            }
+        }
+
+        for (memberID, key) in currentByMemberID {
+            guard let reason = deferredCaptureReasonsByMemberID.removeValue(
+                forKey: memberID
+            ) else { continue }
+            let order = deferredCaptureEnqueueOrdersByMemberID.removeValue(
+                forKey: memberID
+            )
+            enqueueCapture(key: key, reason: reason)
+            if let order {
+                pendingCaptureEnqueueOrders[key] = min(
+                    pendingCaptureEnqueueOrders[key] ?? order,
+                    order
+                )
+            }
+        }
     }
 
     private func schedulePriorityPreviewCaptures(
         now: TimeInterval,
-        previewProvider: @escaping (CGWindowID?) -> CGImage?
+        previewProvider: @escaping PreviewProvider,
+        allowsGeometryRefresh: Bool = true
     ) {
-        let immediate = immediatePreviewKeys.sorted(
-            by: Self.previewKeyIsOrderedBefore
+        let orderedKeys = previewKeysInFairDisplayOrder(
+            Array(pendingCaptureReasons.keys)
         )
-        for key in immediate {
-            guard previewRequestsByKey.count
+        var admittedGeometryCount = previewRequestsByKey.values.filter {
+            $0.reason == .geometryConfirmed
+        }.count
+        var shortestCooldown: TimeInterval?
+        for key in orderedKeys {
+            guard previewRequestsByKey.count + pendingPreviewResults.count
                     < MissionControlPreviewWorkPolicy
                         .maximumOutstandingCaptureCount else { break }
-            if schedulePreviewCapture(
-                key: key,
-                byteBudget: activePreviewByteBudget,
-                previewProvider: previewProvider,
-                retryRemaining: true
-            ) {
-                immediatePreviewKeys.remove(key)
+            guard let reason = pendingCaptureReasons[key] else { continue }
+            // Any trigger for this physical member waits behind the newest
+            // unsettled geometry. This prevents COLD/initial work from becoming
+            // a continuous resize capture lane.
+            if geometryConfirmationCandidates[key.stableIdentity] != nil {
+                continue
             }
-        }
-
-        let cooling = coolingPreviewDeadlines.filter {
-            $0.value <= now
-        }.map(\.key).sorted(by: Self.previewKeyIsOrderedBefore)
-        for key in cooling {
-            guard previewRequestsByKey.count
-                    < MissionControlPreviewWorkPolicy
-                        .maximumOutstandingCaptureCount else { break }
-            let geometryDeadline = settledGeometryPreviewDeadlines[key]
-            if let geometryDeadline, geometryDeadline > now { continue }
-            let alsoFulfillsGeometryRefresh = geometryDeadline != nil
-            if alsoFulfillsGeometryRefresh,
-               previewRequestsByKey[key] != nil {
-                // An earlier request cannot satisfy the newer resize. Keep
-                // both owners queued until that request retires.
+            if reason == .geometryConfirmed, !allowsGeometryRefresh {
+                continue
+            }
+            if reason == .geometryConfirmed,
+               admittedGeometryCount >= MissionControlPreviewGeometryRefreshPolicy
+                    .maximumSettledCapturesPerRefresh {
+                continue
+            }
+            let remaining = MissionControlPreviewTriggerPolicy
+                .cooldownRemaining(
+                    reason: reason,
+                    lastCaptureAt:
+                        lastCaptureAtByPhysicalIdentity[key.stableIdentity],
+                    now: now
+                )
+            if remaining > 0 {
+                shortestCooldown = min(shortestCooldown ?? remaining, remaining)
                 continue
             }
             if schedulePreviewCapture(
                 key: key,
+                reason: reason,
                 byteBudget: activePreviewByteBudget,
                 previewProvider: previewProvider,
-                retryRemaining: true,
-                allowsPendingGeometryRefresh:
-                    alsoFulfillsGeometryRefresh
+                retryRemaining: true
             ) {
-                coolingPreviewDeadlines.removeValue(forKey: key)
-                if alsoFulfillsGeometryRefresh {
-                    settledGeometryPreviewDeadlines.removeValue(forKey: key)
-                    immediatePreviewKeys.remove(key)
+                if pendingCaptureReasons[key] == reason {
+                    pendingCaptureReasons.removeValue(forKey: key)
+                    pendingCaptureEnqueueOrders.removeValue(forKey: key)
+                }
+                if reason == .geometryConfirmed {
+                    admittedGeometryCount += 1
                 }
             }
         }
-    }
-
-    private func scheduleSettledGeometryPreviewCaptures(
-        now: TimeInterval,
-        previewProvider: @escaping (CGWindowID?) -> CGImage?
-    ) {
-        let settled = settledGeometryPreviewDeadlines.filter {
-            $0.value <= now
-                && previewRequestsByKey[$0.key] == nil
-                && coolingPreviewDeadlines[$0.key] == nil
-        }.map(\.key).sorted(by: Self.previewKeyIsOrderedBefore)
-        let settledRequestCount = MissionControlPreviewGeometryRefreshPolicy
-            .requestCount(
-                dueCount: settled.count,
-                outstandingCount: previewRequestsByKey.count
-        )
-        for key in settled.prefix(settledRequestCount) {
-            if schedulePreviewCapture(
-                key: key,
-                byteBudget: activePreviewByteBudget,
-                previewProvider: previewProvider,
-                retryRemaining: true,
-                allowsPendingGeometryRefresh: true
-            ) {
-                settledGeometryPreviewDeadlines.removeValue(forKey: key)
-                // One settled capture also satisfies coincident initial,
-                // budget-reencode or COLD-final ownership for this exact key.
-                immediatePreviewKeys.remove(key)
-                coolingPreviewDeadlines.removeValue(forKey: key)
-            }
+        if let shortestCooldown {
+            scheduleCooldownRefreshIfNeeded(after: shortestCooldown)
         }
     }
 
+
+    private func preserveCaptureDebt(
+        key: MissionControlPreviewCacheKey,
+        reason: MissionControlPreviewTriggerReason
+    ) {
+        if activePreviewKeys.contains(key) {
+            enqueueCapture(key: key, reason: reason)
+        } else {
+            deferCaptureReason(reason, memberID: key.stableIdentity)
+        }
+    }
+
+    private func deferCaptureReason(
+        _ reason: MissionControlPreviewTriggerReason,
+        memberID: String
+    ) {
+        guard structuralPreviewMemberIDs.contains(memberID) else { return }
+        deferredCaptureReasonsByMemberID[memberID] =
+            MissionControlPreviewTriggerPolicy.merged(
+                deferredCaptureReasonsByMemberID[memberID],
+                with: reason
+            )
+        if deferredCaptureEnqueueOrdersByMemberID[memberID] == nil {
+            nextPendingCaptureEnqueueOrder &+= 1
+            deferredCaptureEnqueueOrdersByMemberID[memberID] =
+                nextPendingCaptureEnqueueOrder
+        }
+    }
+
+    private func reencodeCachedPreviewsForActiveBudget() {
+        guard activePreviewByteBudget > 0 else { return }
+        for key in Array(cachedPreviews.keys) where
+            activePreviewKeys.contains(key) {
+            guard let cached = cachedPreviews[key],
+                  cached.byteCost > activePreviewByteBudget else { continue }
+            var proposed = NSRect(
+                x: 0, y: 0,
+                width: cached.image.size.width,
+                height: cached.image.size.height
+            )
+            guard let source = cached.image.cgImage(
+                forProposedRect: &proposed,
+                context: nil,
+                hints: nil
+            ),
+            let image = Self.makePreviewImage(
+                from: source,
+                byteBudget: activePreviewByteBudget
+            ) else {
+                cachedPreviews.removeValue(forKey: key)
+                // Local budget adaptation normally requires no WindowServer
+                // work. If local re-encoding itself fails, retain exactly one
+                // finite initial debt so Preview=ON does not silently degrade
+                // to an icon for this live member.
+                enqueueCapture(key: key, reason: .initial)
+                continue
+            }
+            previewAccessEpoch &+= 1
+            cachedPreviews[key] = MissionControlCachedPreview(
+                image: NSImage(
+                    cgImage: image,
+                    size: NSSize(
+                        width: CGFloat(image.width),
+                        height: CGFloat(image.height)
+                    )
+                ),
+                byteCost: max(
+                    image.bytesPerRow * image.height,
+                    image.width * image.height * 4
+                ),
+                accessEpoch: previewAccessEpoch
+            )
+        }
+        trimPreviewCacheIfNeeded()
+    }
 
     private func schedulePreviewCacheRefreshNotification() {
         guard !previewCacheRefreshNotificationScheduled else { return }
         previewCacheRefreshNotificationScheduled = true
         DispatchQueue.main.asyncAfter(
             deadline: .now()
-                + MissionControlPreviewFreshnessPolicy
+                + MissionControlPreviewWorkPolicy
                     .applicationCoalescingInterval
         ) { [weak self] in
             guard let self else { return }
             self.previewCacheRefreshNotificationScheduled = false
             guard self.hasPendingPreviewCacheApplication,
-                  self.previewsAreEnabled else { return }
+                  self.previewsAreEnabled,
+                  self.desktopPresentationIsStable else { return }
             self.onPreviewCacheReady?()
         }
     }
@@ -1490,6 +2569,10 @@ final class MissionControlGroupProxyController {
                 break
             }
             totalCost -= removed.byteCost
+            if structuralPreviewMemberIDs.contains(key.stableIdentity),
+               knownPreviewMemberIDs.contains(key.stableIdentity) {
+                deferCaptureReason(.initial, memberID: key.stableIdentity)
+            }
         }
     }
 
@@ -1497,6 +2580,9 @@ final class MissionControlGroupProxyController {
         _ lhs: MissionControlPreviewCacheKey,
         _ rhs: MissionControlPreviewCacheKey
     ) -> Bool {
+        if lhs.displayID != rhs.displayID {
+            return lhs.displayID < rhs.displayID
+        }
         if lhs.pid != rhs.pid { return lhs.pid < rhs.pid }
         if lhs.windowID != rhs.windowID { return lhs.windowID < rhs.windowID }
         if lhs.stableIdentity != rhs.stableIdentity {
@@ -1630,6 +2716,8 @@ private final class MissionControlGroupProxyWindow: NSWindow, NSWindowDelegate {
     private var hasOrderingValidationDebt = false
     private var orderingValidationIsInFlight = false
     private var transitionToken: MissionControlTransitionToken?
+    private var normalMembersBeforeTransientPreview:
+        [MissionControlGroupProxyMember]?
 
     var isSelectionConfirmationPending: Bool {
         selectionConfirmationIsPending
@@ -1637,6 +2725,12 @@ private final class MissionControlGroupProxyWindow: NSWindow, NSWindowDelegate {
 
     var needsPresentationRecovery: Bool {
         hasOrderingValidationDebt && !selectionWasDelivered
+    }
+
+    var allowsTransientPreviewMutation: Bool {
+        !selectionWasDelivered
+            && !selectionConfirmationIsPending
+            && proxyView.spaceMigrationQueuePosition == nil
     }
 
     var allowsPresentationMutation: Bool {
@@ -1688,6 +2782,9 @@ private final class MissionControlGroupProxyWindow: NSWindow, NSWindowDelegate {
         self.title = title
         normalPresentationTitle = title
         setFrame(frame, display: false)
+        // A normal presentation update re-establishes the canonical Preview
+        // source and terminates any stale Mission Control-only ownership.
+        normalMembersBeforeTransientPreview = nil
         proxyView.members = members.sorted {
             $0.stableIdentity < $1.stableIdentity
         }
@@ -1748,8 +2845,74 @@ private final class MissionControlGroupProxyWindow: NSWindow, NSWindowDelegate {
         )
     }
 
+    func applyTransientPreviews(
+        _ previewsByMemberID: [String: NSImage],
+        expectedFramesByMemberID: [String: CGRect]
+    ) -> Bool {
+        guard allowsTransientPreviewMutation,
+              !previewsByMemberID.isEmpty,
+              previewsByMemberID.count == expectedFramesByMemberID.count else {
+            return false
+        }
+        let currentIDs = Set(proxyView.members.map(\.stableIdentity))
+        let replacementIDs = Set(previewsByMemberID.keys)
+        guard replacementIDs.isSubset(of: currentIDs),
+              replacementIDs == Set(expectedFramesByMemberID.keys) else {
+            return false
+        }
+        var replacement: [MissionControlGroupProxyMember] = []
+        for member in proxyView.members {
+            guard replacementIDs.contains(member.stableIdentity) else {
+                replacement.append(member)
+                continue
+            }
+            guard let preview = previewsByMemberID[member.stableIdentity],
+                  let expectedFrame =
+                    expectedFramesByMemberID[member.stableIdentity],
+                  abs(member.frame.minX - expectedFrame.minX) < 1,
+                  abs(member.frame.minY - expectedFrame.minY) < 1,
+                  abs(member.frame.width - expectedFrame.width) < 1,
+                  abs(member.frame.height - expectedFrame.height) < 1 else {
+                return false
+            }
+            replacement.append(
+                MissionControlGroupProxyMember(
+                    stableIdentity: member.stableIdentity,
+                    frame: member.frame,
+                    preview: preview,
+                    icon: member.icon
+                )
+            )
+        }
+        // Pixel-only mutation. Mission Control continues owning the exact same
+        // managed NSWindow, frame, level, ordering and transform. Keep the
+        // normal members so an unselected/invalidated session can discard the
+        // temporary pixels synchronously without touching the normal cache.
+        if normalMembersBeforeTransientPreview == nil {
+            normalMembersBeforeTransientPreview = proxyView.members
+        }
+        proxyView.members = replacement.sorted {
+            $0.stableIdentity < $1.stableIdentity
+        }
+        proxyView.needsDisplay = true
+        displayIfNeeded()
+        return true
+    }
+
+
+    func discardTransientPreviews() {
+        guard let normalMembersBeforeTransientPreview else { return }
+        proxyView.members = normalMembersBeforeTransientPreview
+        self.normalMembersBeforeTransientPreview = nil
+        // Release transient image ownership immediately, but do not force an
+        // extra Window Server draw during Mission Control exit. A surviving
+        // proxy redraws normally on the next safe presentation update.
+        proxyView.needsDisplay = true
+    }
+
     func retire() {
         presentationGeneration &+= 1
+        normalMembersBeforeTransientPreview = nil
         selectionConfirmationGeneration &+= 1
         selectionWasDelivered = false
         beginSelectionConfirmation = nil
@@ -1923,6 +3086,7 @@ private final class MissionControlGroupProxyWindow: NSWindow, NSWindowDelegate {
 
     func cancelSelectionTransition() {
         presentationGeneration &+= 1
+        discardTransientPreviews()
         selectionConfirmationGeneration &+= 1
         selectionWasDelivered = false
         selectionConfirmationIsPending = false

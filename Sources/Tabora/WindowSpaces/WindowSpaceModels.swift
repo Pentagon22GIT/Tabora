@@ -22,6 +22,31 @@ enum WindowSpaceMembership: Equatable {
     }
 }
 
+
+struct ManagedDisplaySpaceTopology: Equatable {
+    struct Display: Equatable {
+        let managedDisplayIdentifier: String
+        let currentSpaceID: TaboraSpaceID
+        let spaceIDs: Set<TaboraSpaceID>
+    }
+
+    let displays: [Display]
+
+    var visibleSpaceIDs: Set<TaboraSpaceID> {
+        Set(displays.map(\.currentSpaceID))
+    }
+
+    func managedDisplayIdentifiers(for spaceID: TaboraSpaceID) -> Set<String> {
+        Set(
+            displays.compactMap { display in
+                display.spaceIDs.contains(spaceID)
+                    ? display.managedDisplayIdentifier
+                    : nil
+            }
+        )
+    }
+}
+
 struct WindowSpaceSubject {
     let stableIdentity: String
     let element: AXUIElement
@@ -147,6 +172,7 @@ struct SpaceRuntimeCapabilities: OptionSet, Equatable {
     static let readSpaceType = Self(rawValue: 1 << 2)
     static let readSpaceDisplay = Self(rawValue: 1 << 3)
     static let dispatchBridgedMove = Self(rawValue: 1 << 4)
+    static let readManagedDisplaySpaces = Self(rawValue: 1 << 5)
 
     // Detecting where Tabora's own proxy was dropped does not require the
     // member-window or move capabilities. Keep observation alive so a missing
@@ -189,15 +215,6 @@ enum SpaceTransportDispatchResult: Equatable {
 }
 
 enum GroupSpaceProxyMonitoringPolicy {
-    static let maximumDuration: TimeInterval = 120
-
-    static func isWithinLifetime(
-        startedAt: TimeInterval,
-        now: TimeInterval
-    ) -> Bool {
-        now >= startedAt && now - startedAt <= maximumDuration
-    }
-
     static func destinationIsSettled(
         observationCount: Int,
         firstObservedAt: TimeInterval?,
@@ -223,6 +240,7 @@ protocol WindowSpaceObservationPort: AnyObject {
     func membership(forWindowID windowID: CGWindowID) -> WindowSpaceMembership
     func isUserSpace(_ spaceID: TaboraSpaceID) -> Bool?
     func managedDisplayIdentifier(for spaceID: TaboraSpaceID) -> String?
+    func managedDisplaySpaceTopology() -> ManagedDisplaySpaceTopology?
 }
 
 protocol WindowSpaceTransportPort: AnyObject {

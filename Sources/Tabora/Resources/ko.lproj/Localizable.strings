@@ -133,8 +133,8 @@
 "settings.experimental.workspace.status.value" = "현재 지연 시간: %.1f초";
 "settings.experimental.workspace.status.default" = "현재 지연 시간: macOS 기본값";
 "settings.experimental.workspace.status.unavailable" = "현재 값을 확인할 수 없음";
-"settings.experimental.preview.title" = "Mission Control 이미지 메모리";
-"settings.experimental.preview.note" = "윈도우 이미지에 사용할 메모리 한도를 설정합니다. 한도를 높이면 윈도우가 많을 때도 이미지 품질을 유지하기 쉽습니다. 변경 시 기존 캐시만 비우고 안전한 일반 데스크탑에서 이미지를 다시 가져옵니다.";
+"settings.experimental.preview.title" = "Mission Control 이미지 메모리 한도";
+"settings.experimental.preview.note" = "표시되는 값은 일반 캐시와 Mission Control에서만 사용하는 임시 캐시를 합친 전체 한도입니다. 기본값 64 MiB 중 절반인 32 MiB는 일반 사용 중 유지되는 캐시 용량으로, 나머지 절반은 임시 캐시 용량으로 사용됩니다. 임시 이미지는 Mission Control이 종료되면 해제되며, 선택된 이미지만 실제 윈도우로 전환이 완료될 때까지 유지됩니다. 한도를 높이면 창이 많을 때도 이미지 품질을 유지하기 쉽습니다. 변경 시 기존 캐시만 비우고 안전한 일반 데스크탑에서 이미지를 다시 가져옵니다.";
 "settings.experimental.preview.clear_cache" = "이미지 캐시 비우기";
 
 "value.seconds" = "%.1f초";

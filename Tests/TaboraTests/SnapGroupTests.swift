@@ -262,53 +262,27 @@ final class SnapGroupTests: XCTestCase {
         )
     }
 
-    func testPreviewActivityKeepsOnlyExposedMembersHot() {
-        let leftSelection = WindowServerSelectionSnapshot(pid: 100, windowID: 10)
-        let rightSelection = WindowServerSelectionSnapshot(pid: 200, windowID: 20)
-        let members: Set<WindowServerSelectionSnapshot> = [
-            leftSelection, rightSelection
-        ]
-        let left = WindowOcclusionSnapshot(
-            windowID: 10, pid: 100,
-            frame: CGRect(x: 0, y: 0, width: 500, height: 900),
-            zIndex: 0, layer: 0
-        )
-        let cover = WindowOcclusionSnapshot(
-            windowID: 99, pid: 300,
-            frame: CGRect(x: 500, y: 0, width: 500, height: 900),
-            zIndex: 1, layer: 0
-        )
-        let right = WindowOcclusionSnapshot(
-            windowID: 20, pid: 200,
-            frame: CGRect(x: 500, y: 0, width: 500, height: 900),
-            zIndex: 2, layer: 0
-        )
-
-        XCTAssertEqual(
-            GroupPreviewActivityPolicy.evaluate(
-                memberSelections: members,
-                snapshot: [left, cover, right]
-            ),
-            .observed(exposedMembers: [leftSelection])
-        )
-    }
-
-    func testPreviewActivityDoesNotFreezeOnIncompleteEvidence() {
+    func testFrontmostEvaluationIgnoresIntraGroupMemberOrdering() {
         let members: Set<WindowServerSelectionSnapshot> = [
             WindowServerSelectionSnapshot(pid: 100, windowID: 10),
             WindowServerSelectionSnapshot(pid: 200, windowID: 20)
         ]
-        let onlyOne = WindowOcclusionSnapshot(
+        let frontMember = WindowOcclusionSnapshot(
             windowID: 10, pid: 100,
-            frame: CGRect(x: 0, y: 0, width: 500, height: 900),
+            frame: CGRect(x: 0, y: 0, width: 600, height: 900),
             zIndex: 0, layer: 0
         )
+        let rearMember = WindowOcclusionSnapshot(
+            windowID: 20, pid: 200,
+            frame: CGRect(x: 400, y: 0, width: 600, height: 900),
+            zIndex: 1, layer: 0
+        )
         XCTAssertEqual(
-            GroupPreviewActivityPolicy.evaluate(
+            GroupFrontmostEvaluationPolicy.evaluate(
                 memberSelections: members,
-                snapshot: [onlyOne]
+                snapshot: [frontMember, rearMember]
             ),
-            .indeterminate
+            .verifiedFrontmost
         )
     }
 
@@ -1949,4 +1923,40 @@ final class SnapGroupTests: XCTestCase {
             )
         )
     }
+    func testDisplayEnvironmentRebindPreservesSpaceTransitionSuspension() {
+        var store = SnapGroupStore()
+        let group = store.reconcileAfterLayoutMutation(
+            preferredMemberID: "right",
+            displayID: displayID,
+            placements: [left, right],
+            detachedConnections: []
+        )
+        let groupID = try! XCTUnwrap(group?.id)
+        store.suspendForSpaceTransition()
+        let rebound = store.rebindDisplayAfterValidatedEnvironmentTransition(
+            groupID: groupID,
+            displayID: displayID + 1
+        )
+        XCTAssertEqual(rebound?.displayID, displayID + 1)
+        XCTAssertEqual(rebound?.state, .suspendedForSpaceTransition)
+    }
+
+    func testValidatedDisplayEnvironmentRebindClearsStaleDegradedState() {
+        var store = SnapGroupStore()
+        let group = store.reconcileAfterLayoutMutation(
+            preferredMemberID: "right",
+            displayID: displayID,
+            placements: [left, right],
+            detachedConnections: []
+        )
+        let groupID = try! XCTUnwrap(group?.id)
+        store.markDegraded(groupID: groupID, missingMemberIDs: ["left"])
+        let rebound = store.rebindDisplayAfterValidatedEnvironmentTransition(
+            groupID: groupID,
+            displayID: displayID + 1
+        )
+        XCTAssertEqual(rebound?.displayID, displayID + 1)
+        XCTAssertEqual(rebound?.state, .active)
+    }
+
 }

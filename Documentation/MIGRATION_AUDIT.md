@@ -69,13 +69,16 @@ SnapFlow Final Baseline自体は移行前にユーザーが動作確認済みで
 
 ## 後続macOS実機監査の完了
 
-最新適用確認: **2026-09-01 / Tabora v2.1.0 (Build 16) / macOS 26.6.2**
+最新source適用確認: **2026-09-03 / Tabora v2.2.0 (Build 17)**
 
-実機機能監査はv2.0.0 Build 14で完了した記録を基準とします。v2.1.0ではアプリ内localizationと安全な再起動境界だけを追加し、Snap / Group / Resize / Recovery / AX / Mission Control migrationの処理コードに変更がないことをsource差分の始点・終点監査で確認したため、完了状態を継承します。
+最新macOS実機確認: **2026-09-01 / Tabora v2.1.0 (Build 16) / macOS 26.6.2**
+
+実機機能監査はv2.0.0 Build 14で完了した記録を基準とし、v2.1.0まで継承確認済みです。v2.2.0はMission Control previewの取得gateをtransform判定へ接続しましたが、Space observation / transport / FIFO / rollback / AX layout / foreground intentは変更していません。共有transform境界のsource監査は完了し、v2.2.0のmacOS実機再確認は`RELEASE_PROCESS.md`の未完了項目として残します。
 
 上記の移行時監査でLinux環境のため成功扱いしなかったruntime項目は、その後のmacOS実機開発・Release監査で確認を完了しました。移行時点の記録は履歴として維持し、現在の確認状態を次に固定します。
 
-- [x] `swift test`をmacOS環境で完走し、現行test suiteの成功を確認
+- [x] v2.1.0の`swift test`をmacOS環境で完走し、当時のtest suiteの成功を確認
+- [ ] v2.2.0の現行sourceはmacOSで`swift test`を再実行する（この監査環境にはSwift / macOS SDKがないため未確認）
 - [x] build / release経路をmacOS上で実行し、Tabora identityでの成果物生成を確認
 - [x] 2 / 3 / 4 split、shared resize、replacement、Recoveryを実操作で確認
 - [x] Mission Control Proxy選択とconnected foregroundを実操作で確認

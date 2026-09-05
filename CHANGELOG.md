@@ -1,5 +1,32 @@
 # 更新履歴
 
+## 2.2.0 — 2026-09-03
+
+### Mission Control Preview / power efficiency
+
+- Mission Control member previewの15秒定期取得とfreshness判定を撤廃した。画像取得は新規memberの初回、最新geometryが2観測で確定したresize/display移動、完全なWindow Server evidenceでHOTからCOLDへの遷移が2観測で確定した時だけ開始する。独立した定期取得timerや第二global discovery loopは追加しない。
+- resize確定は固定2秒待機ではなく、最後のgeometry変化から0.15秒後の一回再観測へ変更した。連続変化中は候補を物理window単位で最新keyへ置換し、取得は開始しない。COLD待機中にresizeされた場合はgeometry取得へ統合する。
+- COLD/geometry取得へ物理window単位の1秒cooldownを設けた。cooldownは確定済み要求を破棄せず再開時刻まで保持し、初回取得は待たせない。実行中取得より後に成立したトリガーも同じ取得で消費せず、1件の追従要求として保持する。
+- 待機要求はactive windowごとに最大1件へ合流し、実行枠4件・OperationQueue上限8件を超えても要求辞書から除去しない。複数displayをround-robinし、各display内はenqueue順のFIFOとして、多数groupでも新しい要求が古い未取得groupを追い越し続けないようにした。
+- Mission Control / Space / display変形中は単一のdesktop stability gateで新規取得を閉じ、実行中operationを世代失効する。完了画像は通常desktopでidentity・display・geometry・byte budgetを再検証するまでstagingし、変形途中の縮小画像や余白付き画像をcacheへ確定しない。
+- 初回取得中に同一display内で位置だけが変わった場合は、PID + Window ID + stable identityとpixel sizeが一致する最新keyへ結果を継承する。size/display変更や途中geometry revision不一致の結果は採用せず、同じkeyへ戻った場合も確定geometry triggerで撮り直す。
+- cache、staging、実行中要求、確認候補、cooldown履歴を現在の物理window集合へ収束させた。Previewは引き続き派生状態であり、取得失敗や待機はgroup identity、foreground認可、Space移送、Snap/Assist/resize ownershipを変更しない。
+- 通常Preview cacheとは独立したMission Control session限定のtransient previewを追加した。Mission Control突入直前の通常DesktopでcompleteなWindow Server観測によりgroup全体がHOTと証明された場合だけ、その全memberを対象として認可集合をsession開始時に一度固定する。部分遮蔽groupを分割取得・部分差し替えせず、unknownで保持された旧HOTも認可へ使わない。Mission Control内でHOT/COLDを再評価せず、既存Proxyのframe/order/transformは変えずpixelだけ差し替え、結果は通常cacheへ昇格しない。
+- transient previewは2回の同一geometry観測を維持したまま最初の0.08秒再観測で取得を開始する。試験導入したScreenCaptureKit `desktopIndependentWindow`は、Mission Control変形済みsurfaceを元サイズの透明canvas内へ小さく返す実機事象があったため撤回した。通常cacheと同じbounds-onlyの直接window画素を使い、割当がnominal pixel数を超えるmemberだけbest-resolutionを要求する。元windowとの縦横比、PID/window identity、byte budget、開始時に固定したsession planが一致した場合だけ置換する。
+- transient取得は通常cacheと同じbyte上限を独立上限とし、Mission Control中のnormal + transient画像を設定UIに表示する合計上限内へ制限する。表示値の半分を通常cache、残り半分をtransientへ割り当てる。sessionあたりmember取得は最大24件、直接window取得transactionは最大1本とし、通常Preview/Assistと同じglobal capture admissionも通す。MC連続開閉で旧要求が残る場合は新しい取得を重ねず、その回は通常Previewへ安全にfallbackできる。session失効はglobal capture枠取得後にも再確認し、すでに発行済みの同期CG取得が戻った後も縮小・再sample前後でgenerationを再確認して、終了済みsessionの派生処理を継続しない。
+- managed displayごとのCurrent Spaceをread-onlyで観測し、MC transient対象を可視Spaceへ限定した。Display消失時はgroupを即破棄せず、全memberがmacOSによって同一user Spaceかつ同一物理Displayへ移され、既存zone関係のcomplete connected geometryも維持されたことを再観測できた場合だけgroup ID/member/zoneを維持してdisplay ownershipをrebindする。分散・unknownは非破壊で保持する。
+- Display復旧はscreen-change通知所有の0.15/0.35/0.75/1.25秒settlementで解決し、残ったexact candidateだけを最大6秒の期限付きdebtとして既存1 Hz watchdogへ委託する。旧display geometryは現在接続中または未解決debtが参照するIDだけへ収束させる。1 Hzへ画像取得、全Space/全group discovery、恒久的なdisplay recovery pollingは追加しない。
+- 1 Hz watchdogでdisplay rebindが成立した場合は、そのtick後半の既存full presentation refreshへ成功結果を合流し、同じtick内でWindow Server snapshotとhandle/proxy再構築を重ねて実行しない。
+- Group Space Migrationの未確定Proxy観測にあった固定120秒expiryを撤廃した。同じMission Control lifecycleが続く限り既存0.10秒monitorを維持し、通常Desktop復帰、Proxy選択、group退役、機能/controller/session無効化、構造不一致、migration成立という既存終了経路だけで閉じる。監視頻度の変更、新しいtimer/watchdog/pollは追加しない。
+- 通常Mission Control PreviewとAssistで、global capture admission待機中に所有operationがcancelされたrequestを物理CG取得直前で棄却するよう既存`shouldCapture`契約を補完した。HOT/COLD、geometry、Space判定は増やさず、追加Window Server/AX問い合わせも行わない。すでに発行済みの同期CG取得は強制中断せず、従来どおりlogical cancellationで結果を破棄する。
+
+### Audit / documentation
+
+- queue overflow、同一/複数displayの公平性、後着trigger、HOT/COLDのunknown保持、cooldown、Mission Control transform gate、cache上限をsourceとpolicy testで再監査した。
+- 試験的機能のMission Control画像メモリ上限は、通常cacheとtransient cacheを合わせた合計値を表示するようにした。保存値、既存UserDefaults key、各cacheの実上限は変更せず、初期表示64 MiBの半分を通常cache、残り半分をMission Control中だけの一時cacheとして明記した。
+- 2026-09-05の同一R0〜R6形式による再計測へ性能記録を更新し、それ以前のv2.2.0暫定値は比較・結論・基準から除外した。
+- Versionは`2.2.0`、build numberは`17`を維持する。今回のMC transient / Display topology追加は常駐1 Hzへ恒久処理を追加しない境界として文書化し、実機性能値は2026-09-05再計測を現行値とする。
+
 ## 2.1.0 — 2026-09-01
 
 ### Localization

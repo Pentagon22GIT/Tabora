@@ -371,8 +371,9 @@ enum AXMessagingTimeoutPolicy {
 }
 
 enum PreviewCaptureAdmissionPolicy {
-    /// Both preview systems are derived background work. If the other system
-    /// briefly owns both global capture slots, wait off-main for one
+    /// Normal preview, transient preview and Assist are derived background
+    /// work. If another lane briefly owns both global capture slots, wait
+    /// off-main for one
     /// established interactive readiness interval instead of consuming a
     /// finite retry as an immediate contention failure.
     static let maximumCapacityWait: TimeInterval = 0.45
@@ -386,6 +387,11 @@ enum PreviewCaptureAdmissionPolicy {
         guard !isMainThread, requested.isFinite, requested > 0 else { return 0 }
         return min(requested, maximumCapacityWait)
     }
+}
+
+enum PreviewCaptureResolution: Equatable {
+    case nominal
+    case best
 }
 
 final class AXWindowService {
@@ -2672,6 +2678,7 @@ final class AXWindowService {
     func previewCGImage(
         for windowID: CGWindowID?,
         capacityWait requestedCapacityWait: TimeInterval,
+        resolution: PreviewCaptureResolution = .nominal,
         shouldCapture: (() -> Bool)? = nil
     ) -> CGImage? {
         guard let windowID else { return nil }
@@ -2685,14 +2692,22 @@ final class AXWindowService {
         defer { Self.endPreviewCapture() }
         // Authorization may change while this request waits for the shared
         // Mission Control / Assist capture slot. Recheck after admission and
-        // immediately before Window Server capture so an OFF setting cannot
-        // leave an already-reserved request executable.
+        // immediately before Window Server capture so a disabled Preview, a
+        // cancelled Normal/Assist operation, or an invalid transient session
+        // cannot leave an already-reserved request executable.
         guard shouldCapture?() ?? true else { return nil }
+        let resolutionOption: CGWindowImageOption
+        switch resolution {
+        case .nominal:
+            resolutionOption = .nominalResolution
+        case .best:
+            resolutionOption = .bestResolution
+        }
         return CGWindowListCreateImage(
             .null,
             .optionIncludingWindow,
             windowID,
-            [.boundsIgnoreFraming, .nominalResolution]
+            [.boundsIgnoreFraming, resolutionOption]
         )
     }
 

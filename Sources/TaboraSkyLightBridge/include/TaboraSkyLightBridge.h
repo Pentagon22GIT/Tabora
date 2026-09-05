@@ -9,6 +9,7 @@ typedef NS_OPTIONS(NSUInteger, TSLBridgeCapability) {
     TSLBridgeCapabilityReadSpaceType = 1 << 2,
     TSLBridgeCapabilityReadSpaceDisplay = 1 << 3,
     TSLBridgeCapabilityDispatchBridgedMove = 1 << 4,
+    TSLBridgeCapabilityReadManagedDisplaySpaces = 1 << 5,
 };
 
 typedef NS_OPTIONS(NSUInteger, TSLBridgeMoveRuntimeComponent) {
@@ -41,6 +42,11 @@ FOUNDATION_EXPORT BOOL TSLBridgeCopySpaceType(
 
 FOUNDATION_EXPORT NSString * _Nullable
 TSLBridgeCopyManagedDisplayForSpace(uint64_t spaceID);
+
+/// Read-only managed-display/Space topology. The returned dictionaries are
+/// copied from SkyLight and treated as observation evidence only.
+FOUNDATION_EXPORT NSArray<NSDictionary *> * _Nullable
+TSLBridgeCopyManagedDisplaySpaces(void);
 
 /// Returns YES only when the bridged operation was constructed and handed to
 /// WindowServer. Completion must be verified by observing actual membership.

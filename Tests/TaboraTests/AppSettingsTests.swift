@@ -58,6 +58,14 @@ final class AppSettingsTests: XCTestCase {
             AppSettings.missionControlPreviewMemoryByteLimit(32),
             32 * 1024 * 1024
         )
+        XCTAssertEqual(
+            AppSettings.missionControlPreviewTotalMemoryLimitMiB(32),
+            64
+        )
+        XCTAssertEqual(
+            AppSettings.missionControlPreviewTotalMemoryLimitMiB(999),
+            256
+        )
     }
 
     func testAssistLayoutSwitchingIsExperimentalByDefault() {

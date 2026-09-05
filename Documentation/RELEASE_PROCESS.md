@@ -41,9 +41,9 @@ swift test
 - Mission Control group proxyが候補集合から欠落しないこと（2 / 3 / 4、snap直後、rapid enter / exit）
 - cold launch直後の最初のdragでsnap guideを失わないこと
 - resize直後のMission Control Previewがfresh capture完了前も全面を表示し、中央aspect-fill cropで過度に拡大・切り取りされないこと
-- resizeから約2秒の安定後にMission Control Previewが現在内容へ更新されること
+- resize停止後の0.15秒one-shot再観測でMission Control Previewが現在内容へ更新され、連続resize中は取得を開始しないこと
 - Preview ON / OFF
-- Mission Control Previewの16 / 32 / 128 MiB、cache解放、多数windowで15秒を跨ぐstale-while-revalidate
+- Mission Control Previewの合計表示32 / 64 / 256 MiB（各値の半分を通常cache、残り半分をtransientへ割当）、cache解放、多数group/displayでのFIFO完走、HOT/COLD連続往復とresize連打時のcooldown・要求合流
 - Activity Monitorでidle / 複数group / 多数window / Preview ON・OFFのCPUとEnergy Impactを比較し、定常的な異常負荷がないこと
 - settings / shortcuts
 - 5言語の設定、メニュー、Alert、Panel、権限説明を確認し、言語選択時に適用ボタンだけが選択先言語へ即時更新されること
@@ -55,7 +55,22 @@ swift test
 
 期待結果: 意図したrelease差分を除き、既存の安全不変条件と確立済み挙動を維持すること。
 
-### 最新の完了記録
+### 最新の監査記録
+
+**2026-09-05 / source・性能監査対象 v2.2.0 (Build 17)**
+
+v2.2.0ではMission Control previewをtrigger-onlyへ変更した。15秒定期取得とfreshnessを撤廃し、初回・確定resize/display移動・確定COLDだけを取得理由とする。固定実行上限を待機要求の打ち切りへ流用せず、物理window単位の合流、display間round-robin、display内FIFO、後着trigger保持、変形中の共通gate、通常desktopでの結果再検証をsourceとpolicy testで監査した。
+
+- [x] 定期取得/freshness/deadline形式の旧経路がsourceから除去されていることを静的確認
+- [x] queue上限到達時に未投入要求を保持し、完了後に次候補を投入する経路を確認
+- [x] HOT/COLDのunknown保持、resize優先、cooldown、複数display公平順序をpolicy testへ固定
+- [x] Mission Control / Space / display変形中のcapture失効とstaging結果破棄を確認
+- [x] Normal Mission Control Preview / Assistがglobal capture枠待機中にcancelされた場合、既存operation livenessだけで物理CG取得直前に失効し、追加Window Server/AX監視を導入していないことをsource監査
+- [x] Group Space MigrationのProxy観測に固定120秒expiryが残らず、既存Mission Control lifecycle終了経路だけで停止し、新しいtimer/watchdog/pollを追加していないことをsource監査
+- [ ] macOSで`swift test`、Community build、実Mission Control、複数group/display、連続resize/前後移動を確認
+- [x] v2.2.0のBattery / CPU / WindowServer / Wakeup / Memoryを同一R0〜R6形式で実測し、2026-09-04の旧暫定値を破棄して2026-09-05再計測へ置換
+
+v2.2.0の最新実測値と比較条件は`PERFORMANCE_VALIDATION.md`を正本とする。機能の実機回帰確認と現行sourceの`swift test`は、性能計測の完了から推測せず未完了のまま維持する。以下は前Releaseまでの実機完了記録である。
 
 **2026-09-01 / 検証対象 v2.1.0 (Build 16)**
 

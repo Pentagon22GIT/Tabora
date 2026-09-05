@@ -133,8 +133,8 @@
 "settings.experimental.workspace.status.value" = "Current Delay: %.1f seconds";
 "settings.experimental.workspace.status.default" = "Current Delay: macOS Default";
 "settings.experimental.workspace.status.unavailable" = "Current Value Unavailable";
-"settings.experimental.preview.title" = "Mission Control Image Memory";
-"settings.experimental.preview.note" = "Sets the memory limit for window images. A higher limit helps preserve image detail when many windows are open. Changing it clears only the existing cache; images are captured again on a safe, normal desktop.";
+"settings.experimental.preview.title" = "Mission Control Image Memory Limit";
+"settings.experimental.preview.note" = "The displayed value is the combined limit for the normal cache and the Mission Control-only temporary cache. Of the default 64 MiB, half (32 MiB) is available for the cache retained during normal use and the other half for the temporary cache. Temporary images are released when Mission Control closes; only the selected image is retained until the handoff to the real windows completes. A higher limit helps preserve detail with many windows. Changing it clears only the existing cache; images are captured again on a safe, normal desktop.";
 "settings.experimental.preview.clear_cache" = "Clear Image Cache";
 
 "value.seconds" = "%.1f seconds";

@@ -1,188 +1,325 @@
 # 常駐負荷・性能検証記録
 
-この文書は、Taboraの平常時常駐コストを実測し、アプリ自身の直接負荷だけでなく、WindowServerへ委託される表示処理、システム全体、メモリ、Wakeup、Battery、Thermalまで含めて検証した記録です。
+この文書は、Taboraの平常時常駐コストを、アプリ自身の直接CPU、WindowServerへ委託される表示処理、CPU/GPU/ANE電力、GPU稼働、Memory/VM状態まで含めて検証するための継続記録です。
 
-バージョンごとに別ファイルを増やさず、今後の再計測もこの文書へ測定日・対象バージョン・条件を追記します。
+バージョンごとに文書を分割せず、同じR0〜R6構成で再計測し、最新の有効な結果と過去の正式比較基準だけを残します。
 
-## 最新の検証
+---
 
-- 計測日: **2026-09-01**
-- 対象: **Tabora v2.0.0 (Build 14)**
-- 適用確認: **Tabora v2.1.0 (Build 16) — 2026-09-01**
-- Source Revision: `d41b500a2b9f3e94cb067eb517b7dba52e7b526a`
+## 最新の検証 — 2026-09-05
+
+- 対象: **Tabora Community v2.2.0 public candidate**
+- 計測セッション: `2026-09-05_014152`
 - macOS: **26.6.2 (25G83)**
 - CPU: **10コア**
-- 電源: **Battery Power / Low Power Mode OFF**
-- Thermal: 全観測で `nominal`
+- 電源: **Battery Power**
 - 計測時間: 各Phase **120秒**
-- 解析: 開始直後の安定化区間を除外し、平常状態だけを比較
-- Window構成: Chrome 3枚 + Finder 3枚の同一6ウィンドウ
-- Group構成: 3分割Group × 2組
-- Phase間では指定設定だけを変更し、Group構成、上下関係、ウィンドウ構成を維持
-
-v2.1.0はlocalization resource、UI文字列参照、初回言語保存、明示適用時の再起動だけを追加し、平常時のSnap / Group / Resize / Recovery / Preview / Foreground / Migration処理を変更していません。計測値そのものは上記v2.0.0 Build 14の実測を維持し、v2.1.0 Build 16への適用は処理経路の始点・終点を含むsource差分監査によって確認しています。新しい常駐timer、network、画像取得、Window Server pollingは追加していません。
+- 解析対象: 各Phaseの先頭20サンプルを除外した **100サンプル**
+- WindowServer PID: 全Phase **419で固定**
+- R2〜R6 Tabora PID: **11602で固定**
+- `powermetrics_exit=0`
+- `top_exit=0`
+- Window / Group / Phase間操作条件は、過去の正式R0〜R6検証と同じ形式を維持
 
 ### 検証Phase
 
-| Phase | 条件 | 主目的 |
-| --- | --- | --- |
-| R0 | Machine Baseline | OSと観測環境の基礎値 |
-| R1 | 6 Window / Tabora OFF | 同一6ウィンドウ環境の基準 |
-| R2 | Tabora Core / Groupなし | Tabora基本常駐 |
-| R3 | 2 Group維持 | Group保持コスト |
-| R4 | Foreground ON | 最前面連動の常駐増分 |
-| R5 | Preview ON | Previewを含む平常コスト |
-| R6 | Migration + Assist ON | Full Resident |
+| Phase | 条件                    | 主目的                   |
+| ----- | ----------------------- | ------------------------ |
+| R0    | Machine Baseline        | 計測環境の健全性確認のみ |
+| R1    | 6 Window / Tabora OFF   | 6 Window状態の環境確認   |
+| R2    | Tabora Core / Groupなし | **機能増分比較の基準**   |
+| R3    | 2 Group維持             | Group保持コスト          |
+| R4    | Foreground ON           | 最前面連動の常駐増分     |
+| R5    | Preview ON / 32 MiB     | Previewを含む平常コスト  |
+| R6    | Migration + Assist ON   | Full Resident            |
 
-全7 Phaseは有効な計測として完了し、R1〜R6では同じ6 Window IDが計測前後で維持されました。
+R0〜R6は操作中の瞬間性能ではなく、各機能を有効化した**安定した平常状態の常駐コスト**を測定する。R5/R6ではMission Controlを開かず、AssistやMigrationの実操作も発動させない。
 
-## 最終CPU評価
+---
 
-CPU timeは `ms/s`（1秒あたりに消費したCPU時間）で統一します。`10 ms/s = 1コアの1%`です。10コア全体に対する比率は1コア換算値の1/10です。
+# 比較方法
 
-### Tabora自身の直接負荷
+今回から世代間比較の基準を明確にする。
 
-| Phase | CPU ms/s | 1コア換算 | 10コア全体換算 | Wakeup /s |
-| --- | ---: | ---: | ---: | ---: |
-| R2 Core | 0.0587 | 0.00587% | 0.000587% | 1.970 |
-| R3 2 Group | 0.0653 | 0.00653% | 0.000653% | 2.180 |
-| R4 Foreground | 0.1084 | 0.01084% | 0.001084% | 2.230 |
-| R5 Preview | 0.1310 | 0.01310% | 0.001310% | 2.450 |
-| R6 Full Resident | **0.1343** | **0.01343%** | **0.001343%** | **2.460** |
+## 使用する比較
 
-Taboraプロセス自身のFull Resident CPUは **0.1343 ms/s**、1コアの **0.01343%** に留まりました。Migration + Assistまで有効にしてもR5とR6の直接CPUはほぼ同値で、待機中に新しい高頻度pollingを追加していない設計と整合します。
+性能改善の評価では、**同一Campaign内のR2 Tabora Coreを基準にした差分**を主に使用する。
 
-### WindowServer負荷
+- `R3 - R2`: Group保持を加えた差
+- `R4 - R3`: Foregroundを加えた差
+- `R5 - R4`: Previewを加えた差
+- `R6 - R5`: Migration + Assistを加えた差
+- `R5 - R2`: CoreからPreviewまでの累積差
+- `R6 - R2`: CoreからFull Residentまでの累積差
 
-WindowServerは同じ6ウィンドウだけを置いたR1を基準とし、各Phaseとの差をTaboraによる委託増分として評価します。
+世代間では、**各世代の絶対値同士ではなく、同じ基準から計算した差分同士**を比較する。
 
-| Phase | WindowServer CPU ms/s | 1コアCPU | R1比の委託増分 |
-| --- | ---: | ---: | ---: |
-| R0 Machine Baseline | 7.1569 | 0.7157% | — |
-| R1 6 Window / Tabora OFF | **5.7547** | **0.5755%** | 基準 |
-| R2 Core | 7.0476 | 0.7048% | +1.2929 ms/s |
-| R3 2 Group | 16.0748 | 1.6075% | +10.3201 ms/s |
-| R4 Foreground | 17.0093 | 1.7009% | +11.2546 ms/s |
-| R5 Preview | 47.0755 | 4.7075% | +41.3208 ms/s |
-| R6 Full Resident | **44.0187** | **4.4019%** | **+38.2640 ms/s** |
+## 使用しない比較
 
-R5/R6では中央値に対して短いCPUピークが現れ、Preview更新を含む表示処理が連続した一定負荷ではなく、周期的なWindowServer処理として現れることを確認しました。R5のWindowServer CPU中央値は約1.3%、95 percentileは約24%、R6は中央値約0.6%、95 percentile約24%でした。
+以下はコード改善率の根拠として使用しない。
 
-### Tabora + WindowServerの総合常駐コスト
+- R0絶対値の世代間比較
+- R1絶対値の世代間比較
+- R2絶対値の世代間比較
+- 異なるCampaignの素のSystem Power / Battery値の比較
+- 異なるcollectorで取得したTabora直接CPUの絶対値比較
 
-`総合負荷 = Tabora直接CPU + (WindowServer各Phase - WindowServer R1)` とします。
+同じMac・OS・Window構成でも、CPU温度、OSバックグラウンド処理、WindowServerの一時的状態などにより基礎値は変動する。このため、**基準値そのものではなく、同じCampaign内で基準から何が増えたか**を比較する。
 
-| Phase | Tabora直接 | WindowServer委託増分 | 総合 ms/s | 1コア換算 | 10コア全体換算 |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| R2 Core | 0.0587 | 1.2929 | **1.3516** | **0.1352%** | **0.0135%** |
-| R3 2 Group | 0.0653 | 10.3201 | **10.3853** | **1.0385%** | **0.1039%** |
-| R4 Foreground | 0.1084 | 11.2546 | **11.3630** | **1.1363%** | **0.1136%** |
-| R5 Preview | 0.1310 | 41.3208 | **41.4518** | **4.1452%** | **0.4145%** |
-| R6 Full Resident | 0.1343 | 38.2640 | **38.3983** | **3.8398%** | **0.3840%** |
+R0/R1は計測環境の破綻検出には使用するが、性能改善率の計算には使用しない。
 
-通常のFull Resident状態では、Taboraがシステムへ発生させるCPU workは **約38.4 ms/s**、すなわち **1コアの約3.84% / 10コア全体の約0.384%** です。
+---
 
-R5/R6を合わせると、Previewを含む通常常駐状態は **約38.4〜41.5 ms/s**、1コア換算 **約3.84〜4.15%**、10コア全体では **約0.384〜0.415%** の範囲に収まります。
+# データ品質
 
-R6では総合CPUの約 **99.65%** がWindowServer側の委託増分で、Taboraプロセス自身は約 **0.35%** です。このため、Tabora自身のCPUだけを見ると極端に小さく、実際の平常コストは主にmacOSへ委託した表示処理として現れます。
+今回の7 Phaseは、常駐比較用データとして有効と判断する。
 
-## 機能別の増分
+- R0〜R6すべてWindowServer `top` **120サンプル**
+- 各Phaseの先頭20を除外し **100サンプル**を解析
+- `powermetrics`も全Phase **120サンプル**、解析対象100サンプル
+- CPU Power / GPU Power / ANE Power / Combined Power / GPU active residencyは全Phaseで解析可能
+- R2〜R6でTabora process-energy行を継続取得
+- WindowServer PIDは全Phase419で不変
+- R2〜R6 Tabora PIDは11602で不変
+- 各Phase内 Pageout増分 **0**
+- 各Phase内 Swapin / Swapout増分 **0**
+- Battery Powerを維持
 
-R2〜R5の連続した構成差から、常駐CPU増分を分解すると次の通りです。
+`powermetrics.stderr`には `Second underflow occured.` が記録されているが、対象100サンプルのCPU/GPU/ANE/Combined PowerおよびGPU residencyは欠損していない。
 
-| 追加条件 | 総合CPU増分 | 1コア換算 | 10コア全体換算 | 評価 |
-| --- | ---: | ---: | ---: | --- |
-| Tabora Core: R1→R2 | +1.3516 ms/s | +0.1352% | +0.0135% | 非常に小さい |
-| 2 Group維持: R2→R3 | +9.0337 ms/s | +0.9034% | +0.0903% | 小さい固定コスト |
-| Foreground: R3→R4 | **+0.9777 ms/s** | **+0.0978%** | **+0.0098%** | 極めて小さい |
-| Preview: R4→R5 | **+30.0888 ms/s** | **+3.0089%** | **+0.3009%** | 最大の常駐増分 |
+また、WindowServer CPUは`top`と`powermetrics`の2系列で取得できており、主要なR2基準差がほぼ一致している。これは今回のWindowServer評価を補強する独立クロスチェックとして扱う。
 
-ForegroundはTabora側の監視経路を含めても10コア全体の約 **0.0098%** の追加に留まります。独立10 Hz pollingを廃止し、event-driven + 1 Hz Recovery fallbackへ移した設計の効果と整合します。
+---
 
-最大の増分はPreviewです。ただしWindowServerの中央値と上位percentileの差から、常時CPUを占有する形ではなく、画像更新・compositor処理時の短い山として平均値へ反映されています。
+# WindowServer — 現行Campaign
 
-## Memory
+`top` の `%CPU` は1コア基準であり、`1% = 10 ms/s`としてCPU timeへ換算する。
 
-### Tabora Physical Footprint
+以下の絶対値は**今回Campaign内部の記録**であり、過去バージョンの素の値とは比較しない。
 
-| Phase | 平均 | 最大 |
-| --- | ---: | ---: |
-| R2 Core | 48.3 MiB | 48.3 MiB |
-| R3 2 Group | 146.2 MiB | 146.2 MiB |
-| R4 Foreground | 141.8 MiB | 141.8 MiB |
-| R5 Preview | 199.9 MiB | 242.3 MiB |
-| R6 Full Resident | **203.5 MiB** | **247.8 MiB** |
+| Phase            | WindowServer平均 | 1コアCPU | 中央値 |    p95 |  最大 | Memory平均 |    最大 |
+| ---------------- | ---------------: | -------: | -----: | -----: | ----: | ---------: | ------: |
+| R2 Core          |        5.70 ms/s |   0.570% |   0.3% |  0.50% | 20.5% |  370.4 MiB | 422 MiB |
+| R3 2 Group       |        6.41 ms/s |   0.641% |   0.5% | 0.605% |  8.0% |  388.4 MiB | 415 MiB |
+| R4 Foreground    |        6.22 ms/s |   0.622% |   0.5% | 0.605% |  8.2% |  387.1 MiB | 416 MiB |
+| R5 Preview       |        6.98 ms/s |   0.698% |   0.5% |  1.31% |  6.0% |  387.1 MiB | 411 MiB |
+| R6 Full Resident |        6.15 ms/s |   0.615% |   0.5% |  0.70% |  5.7% |  382.4 MiB | 415 MiB |
 
-Preview有効時は画像cacheによりメモリが増えますが、更新ピーク後に低下し、計測中に単調増加するリーク形状は確認されませんでした。R5/R6の最大値も設定されたbounded cacheを含む一時的な増加として収まっています。
+単発最大値は背景処理の影響を強く受けるため、評価では平均・中央値・p95とPhase差を優先する。特にR2には20.5%の単発サンプルがあるが、後続Phaseへ継続していない。
 
-WindowServerの観測メモリ平均はR1約409.7 MiB、R5約495.5 MiB、R6約458.5 MiBでした。ただしWindowServerはTabora以外の画面合成も共有するため、この絶対差をTabora専用メモリとしては扱いません。
+## R2 Core基準のWindowServer増分
 
-## System / Battery / Thermal
+| Phase            |   R2からの増分 | 1コア換算 | `powermetrics`でのR2差 | 評価                  |
+| ---------------- | -------------: | --------: | ---------------------: | --------------------- |
+| R3 2 Group       | **+0.71 ms/s** |   +0.071% |            +0.632 ms/s | 小さい増分            |
+| R4 Foreground    | **+0.52 ms/s** |   +0.052% |            +0.479 ms/s | Core基準で小さい      |
+| R5 Preview       | **+1.28 ms/s** |   +0.128% |            +1.247 ms/s | Preview込みでも小さい |
+| R6 Full Resident | **+0.45 ms/s** |   +0.045% |            +0.428 ms/s | Coreと実質近い        |
 
-### System CPU
+`top`と`powermetrics`のR2基準差が非常に近く、R5/R6の小さい増分が単一collector固有の計算結果ではないことを確認できる。
 
-| Phase | System CPU平均 |
-| --- | ---: |
-| R0 | 1.974% |
-| R1 | 2.277% |
-| R2 | 1.958% |
-| R3 | 2.219% |
-| R4 | 2.170% |
-| R5 | 2.566% |
-| R6 | 2.833% |
+## Phaseごとの追加コスト
 
-System CPUは他のmacOS processを含むため、機能差の直接値には使用しません。重要なのは、Tabora自身とWindowServerを分離した値で常駐コストを説明でき、System全体にも異常な持続上昇が現れていないことです。
+| 比較    | 追加機能           | WindowServer差 |   1コア換算 | 判断                 |
+| ------- | ------------------ | -------------: | ----------: | -------------------- |
+| R3 − R2 | 2 Group            |     +0.71 ms/s |     +0.071% | 小さい               |
+| R4 − R3 | Foreground         |     −0.19 ms/s |     −0.019% | 正の増分を検出しない |
+| R5 − R4 | Preview            | **+0.76 ms/s** | **+0.076%** | 非常に小さい         |
+| R6 − R5 | Migration + Assist |     −0.83 ms/s |     −0.083% | 正の増分を検出しない |
 
-### Battery
+負値は性能改善量として解釈しない。背景変動が対象機能の小さい常駐差を上回ったことを示す値として、そのまま保持する。
 
-Battery sensorは更新が段階的なため、短いPhase間の平均差より中央値を重視します。
+---
 
-| Phase | 放電平均 | 放電中央値 |
-| --- | ---: | ---: |
-| R0 | 2.905 W | 2.477 W |
-| R1 | 2.392 W | 2.378 W |
-| R2 | 2.710 W | 2.937 W |
-| R3 | 2.538 W | 2.643 W |
-| R4 | 2.484 W | 2.411 W |
-| R5 | 2.477 W | 2.349 W |
-| R6 | 3.826 W | **2.470 W** |
+# v2.0.0との正規化比較
 
-R1〜R6の中央値は **約2.35〜2.94 W** の範囲で、機能追加に合わせた単調増加はありません。Full Resident R6の中央値は2.470 Wで、6 Window baseline R1の2.378 Wとの差は約 **+0.092 W** です。この差は短時間Battery sensorの粒度と背景変動の範囲を含むため、特定機能の消費電力として直接帰属しません。
+正式な過去比較点として、2026-09-01の **Tabora v2.0.0** R0〜R6検証を使用する。
 
-Battery残量は各Phase内で安定し、Low Power ModeはOFFでした。温度は約30.24℃から30.12℃の範囲で推移し、全サンプルでthermal stateは`nominal`、page-outは0でした。
+比較するのは各Phaseの素のWindowServer値ではなく、**それぞれのCampaignのR2 Coreからの増分**である。
 
-## 総合判定
+## Core基準からの委託増分
 
-- **Tabora直接CPU:** Full Residentで1コア0.01343%。極めて小さい。
-- **WindowServer委託CPU:** Full ResidentのR1基準増分は1コア3.8264%。総合負荷の大部分を占める。
-- **総合CPU:** Full Residentで1コア約3.84%、10コア全体約0.384%。通常常駐アプリとしてシステム処理を強制的に低下させる水準ではない。
-- **Foreground:** 追加コストは10コア全体約0.0098%。最適化後の常駐監視は十分低コスト。
-- **Preview:** 最大のCPU増分。主にWindowServer側の周期的な短時間処理として現れる。
-- **Migration + Assist idle:** Tabora直接CPU・WakeupともPreview状態から実質的な増加を示さず、休眠設計を支持する。
-- **Memory:** Full Resident平均約203.5 MiB、最大約247.8 MiB。リーク形状なし。
-- **Battery / Thermal:** Battery中央値に単調な悪化なし。thermalは全観測nominal、page-out 0。
+| 到達状態         | v2.0.0: R2基準差 | v2.2.0: R2基準差 |        差分縮小 |
+| ---------------- | ---------------: | ---------------: | --------------: |
+| R3 2 Group       |     +9.0272 ms/s |   **+0.71 ms/s** | **約92.1%縮小** |
+| R4 Foreground    |     +9.9617 ms/s |   **+0.52 ms/s** | **約94.8%縮小** |
+| R5 Preview       |    +40.0279 ms/s |   **+1.28 ms/s** | **約96.8%縮小** |
+| R6 Full Resident |    +36.9711 ms/s |   **+0.45 ms/s** | **約98.8%縮小** |
 
-したがって、**Taboraは平常状態で十分低い常駐CPUコストを維持しており、アプリ自身の処理は極めて小さい。表示系の主要コストはWindowServerへ委託されるPreview関連処理だが、それを含めても10コア全体の通常負荷は約0.4%前後に収まる**、というのが2026-09-01時点の最終実測結果です。
+この比較はR2そのものの絶対値を比較していない。各Campaign内でCoreを0として、追加機能によってWindowServer側へどれだけ負荷が増えたかを比較している。
 
-## 最終監査チェック
+特に重要なのはR5/R6である。v2.0.0ではCoreからPreviewまで約40.0 ms/s、Full Residentまで約37.0 ms/sのWindowServer増分が観測されていたが、今回v2.2.0ではそれぞれ**1.28 ms/s / 0.45 ms/s**に留まる。
 
-計測時点の対象バージョンに対して、次を完了済みとします。
+改善率は単一測定からコード効率を小数点単位で断定するための値ではないが、**委託常駐負荷の桁が変わった**ことを示すには十分大きい差である。
 
-- [x] R0〜R6の全Phaseを同一基準で完了
-- [x] 6 Windowのidentityと構成をPhase前後で確認
-- [x] 3分割Group × 2組の安定状態を維持
-- [x] Tabora直接CPU / Wakeup / Memoryを確認
-- [x] WindowServer CPU / Memoryを確認
-- [x] Tabora + WindowServerの総合CPUを1コア・10コア換算で検証
-- [x] Group / Foreground / Preview / Full Residentの差分を比較
-- [x] System CPUを比較し、異常な持続負荷がないことを確認
-- [x] Battery放電、温度、Low Power Mode、Thermal stateを確認
-- [x] page-out 0とメモリの非単調増加を確認
-- [x] Migration + Assist有効時に新しいidle polling増加がないことを確認
-- [x] Foreground監視の低頻度fallback設計と実測値の整合を確認
-- [x] 既存Architecture / Security Invariants / Foreground / Migration文書との整合を確認
-- [x] 設定画面の2 / 3 / 4分割Assist表記を現在仕様へ統一
-- [x] v2.1.0の変更がlocalization / resource / relaunch境界に限定され、計測対象の常駐処理経路を変更していないことを差分監査
-- [x] README / CHANGELOG / Privacy / Third-party notice / Version / Build Numberのv2.1.0整合を確認
+## Preview固有差 — R4 → R5
 
-この記録は性能の最新確認点です。今後、常駐監視方式、Preview更新方式、WindowServerへの継続的な表示処理を変更した場合は、同じPhase構成で再計測し、この文書へ新しい検証記録を追記します。
+Preview追加直前のR4を基準にすると、比較はさらに直接的になる。
+
+| Version | R4 → R5 WindowServer増分 |   1コア換算 |
+| ------- | -----------------------: | ----------: |
+| v2.0.0  |            +30.0662 ms/s |    +3.0066% |
+| v2.2.0  |           **+0.76 ms/s** | **+0.076%** |
+
+Previewを有効にしたことによる同一Campaign内増分は、v2.0.0からv2.2.0で**約97.5%縮小**した。
+
+これは周期的freshness取得を常用せず、初回・Resize・HOT/COLD確定・必要イベントを中心に取得する現在のPreview設計と整合する。
+
+## WindowServer spike形状
+
+v2.0.0のR5/R6ではWindowServer p95が約24%で、Preview更新に対応する大きな周期的spikeが確認されていた。
+
+今回のv2.2.0では、
+
+- R5 p95: **1.31%**
+- R6 p95: **0.70%**
+- R5最大: 6.0%
+- R6最大: 5.7%
+
+となった。
+
+今回も短いWindowServer spike自体は存在するが、同様の短い山はR2〜R4にも存在し、v2.0.0で見られたPreview固有の約47秒周期・約24% p95級の形状は確認されない。
+
+したがって、平均差だけでなく**spike形状の観点でもPreview常駐取得の負担は大幅に縮小している**と評価する。
+
+---
+
+# Taboraプロセス直接負荷 — 今回Campaign内のみ
+
+今回の`powermetrics`ではR2〜R6のTabora process-energy行を100サンプルずつ取得できた。
+
+ただし、2026-09-01 v2.0.0のTabora直接CPUは専用Benchmark Appによる累積CPU timeから算出しており、collectorと定義が異なる。そのため**v2.0.0との絶対値比較・改善率計算には使用しない**。
+
+今回Campaign内のPhase差を見るためには使用できる。
+
+| Phase            | Tabora CPU平均 | 1コアCPU | R2からの増分 | 増分の1コア換算 | Interrupt Wakeups平均 |
+| ---------------- | -------------: | -------: | -----------: | --------------: | --------------------: |
+| R2 Core          |    2.2479 ms/s |  0.2248% |            — |               — |               0.992/s |
+| R3 2 Group       |    2.5480 ms/s |  0.2548% | +0.3001 ms/s |        +0.0300% |               1.003/s |
+| R4 Foreground    |    3.9112 ms/s |  0.3911% | +1.6633 ms/s |        +0.1663% |               1.022/s |
+| R5 Preview       |    4.0865 ms/s |  0.4087% | +1.8386 ms/s |        +0.1839% |               1.322/s |
+| R6 Full Resident |    4.1133 ms/s |  0.4113% | +1.8654 ms/s |        +0.1865% |               1.331/s |
+
+## 追加機能ごとの差
+
+- Group: R2→R3 **+0.3001 ms/s**
+- Foreground: R3→R4 **+1.3632 ms/s**
+- Preview: R4→R5 **+0.1753 ms/s**
+- Migration + Assist idle: R5→R6 **+0.0268 ms/s**
+
+Migration + Assistを有効にしただけのR5→R6は、Tabora自身で**1コア+0.00268%**に相当する差しかなく、Interrupt Wakeupも約+0.0085/sである。平常状態で追加監視が大きく積み上がっている形は見られない。
+
+Foregroundは今回CampaignのTabora直接差では最も大きいが、R3→R4でも1コア約+0.136%に留まり、R4以降でさらに同程度の増分が段階的に積み上がる形ではない。
+
+---
+
+# CPU / GPU / ANE / SoC Power
+
+電力値も同一Campaign内の差を中心に解釈する。絶対値を過去Campaignと比較して改善率にはしない。
+
+| Phase            | CPU Power平均 | GPU Power平均 | ANE Power平均 | Combined平均 | GPU active平均 | 中央値 |    p95 |
+| ---------------- | ------------: | ------------: | ------------: | -----------: | -------------: | -----: | -----: |
+| R2 Core          |     185.47 mW |       0.50 mW |          0 mW |    185.96 mW |         0.189% |     0% |     0% |
+| R3 2 Group       |     156.31 mW |       0.16 mW |          0 mW |    156.47 mW |         0.197% |     0% | 0.012% |
+| R4 Foreground    |     152.72 mW |       0.07 mW |          0 mW |    152.79 mW |         0.099% |     0% |     0% |
+| R5 Preview       |     154.30 mW |       0.15 mW |          0 mW |    154.43 mW |         0.209% |     0% |  0.25% |
+| R6 Full Resident |     150.91 mW |       0.07 mW |          0 mW |    150.98 mW |         0.104% |     0% |     0% |
+
+R2から後続PhaseへCombined Powerが低下していることを、Taboraが電力を削減した証拠とは扱わない。System側の背景変動を含むためである。
+
+意味があるのは、機能追加による**持続的な正方向の増加が観測されるか**である。
+
+- R4→R5 Preview: Combined **+1.64 mW**
+- R5→R6 Migration + Assist: Combined **−3.45 mW**
+- GPU Power中央値: 全Phase **0 mW**
+- GPU active中央値: 全Phase **0%**
+- ANE Power: 全Phase **0 mW**
+
+したがって今回の平常状態では、PreviewやFull ResidentによってGPU/ANEが継続稼働したり、SoC電力が段階的に増加し続けたりする形は確認されない。
+
+R5のGPU active平均0.209%は少数の短いGPU活動で上がっているが、中央値0%、p95 0.25%であり、常時GPU稼働とは異なる。
+
+---
+
+# Memory / VM
+
+今回のTerminal BenchmarkではTabora自身のPhysical Footprintをv2.0.0と同じ定義では取得していないため、Preview cache 32 MiBやMission Control transient cacheの実RAM増分を世代間比較しない。
+
+WindowServer MemoryはR2〜R6で平均約370〜388 MiBの範囲にあり、R3以降で単調増加していない。WindowServerはTabora以外の画面合成資源も共有するため、この値をTabora専用Memoryとして扱わない。
+
+各Phase内では、
+
+- Pageout増分: **0**
+- Swapin増分: **0**
+- Swapout増分: **0**
+
+であり、今回の120秒安定計測中にメモリ逼迫を示す挙動は確認されない。
+
+---
+
+# 最新評価
+
+| 評価対象                   | 2026-09-05判断                                                         |
+| -------------------------- | ---------------------------------------------------------------------- |
+| 比較方式                   | **R2 Core基準差を世代間比較に使用。R0/R1/R2の素の値比較は行わない**    |
+| 2 Group WindowServer       | R2差 +0.71 ms/s。v2.0.0の+9.0272から約92.1%縮小                        |
+| Foreground WindowServer    | R3→R4で正の増分を検出しない                                            |
+| Preview WindowServer       | **R4→R5 +0.76 ms/s / 1コア+0.076%**                                    |
+| Preview normalized         | **R2→R5 +1.28 ms/s。v2.0.0の+40.0279から約96.8%縮小**                  |
+| Full Resident normalized   | **R2→R6 +0.45 ms/s / 1コア+0.045%。v2.0.0の+36.9711から約98.8%縮小**   |
+| WindowServer cross-check   | `top`と`powermetrics`のR2差がほぼ一致                                  |
+| Preview p95                | **1.31%**。v2.0.0の約24%級spikeから大幅縮小                            |
+| Full Resident p95          | **0.70%**。高い周期的spikeなし                                         |
+| Tabora直接 Full Resident   | 4.1133 ms/s、1コア0.4113%。過去とはcollectorが異なるため絶対比較しない |
+| Tabora直接 R2→R6増分       | +1.8654 ms/s、1コア+0.1865%                                            |
+| Migration + Assist直接増分 | R5→R6 +0.0268 ms/s、1コア+0.00268%                                     |
+| GPU                        | R5/R6中央値0%。継続稼働なし                                            |
+| ANE                        | 全Phase 0 mW                                                           |
+| Combined SoC Power         | 機能追加に伴う持続的・単調な増加なし                                   |
+| Pageout / Swap             | 全Phase増分0                                                           |
+
+---
+
+# 結論
+
+2026-09-05の **Tabora Community v2.2.0 public candidate**は、過去の正式検証と同じR0〜R6形式・安定状態で再計測した結果、平常時の常駐コストが非常に安定している。
+
+最も重要なのは絶対値ではなく、**同じCampaign内のR2 Coreを0とした追加コスト**である。
+
+WindowServerでは、
+
+- Core → Preview: **+1.28 ms/s / 1コア+0.128%**
+- Core → Full Resident: **+0.45 ms/s / 1コア+0.045%**
+
+に留まった。
+
+v2.0.0の同じR2基準差はそれぞれ+40.0279 ms/s、+36.9711 ms/sであり、基礎値の違いを相殺した比較でも、Preview込み委託増分は約96.8%、Full Resident委託増分は約98.8%縮小している。
+
+Preview固有のR4→R5も、v2.0.0の+30.0662 ms/sから今回+0.76 ms/sへ縮小した。さらにR5 p95は1.31%、R6 p95は0.70%で、以前の約24%級の周期的WindowServer spikeは確認されない。
+
+Tabora自身についても、今回同一collector内ではR5→R6のMigration + Assist追加差が+0.0268 ms/s、1コア+0.00268%であり、Full Resident化によって新たな高頻度常駐処理が積み上がっている証拠はない。
+
+GPU active中央値は全Phase0%、ANE Powerも全Phase0 mW、Pageout/Swapも全Phase0である。
+
+以上から、今回の正式候補コードは、**Preview取得方式の変更によってWindowServerへ委託する平常コストを大幅に縮小しつつ、Group / Foreground / Migration / Assistを含むFull Resident状態でも常駐負荷を小さい範囲に維持している**と評価する。
+
+この結果は「PCやOSの素の負荷が低かったから」という絶対値比較ではなく、**各Campaign自身のCore基準からの差分比較**によって確認したものである。
+
+---
+
+## 今後の再計測ルール
+
+常駐監視方式、Preview更新方式、WindowServerへの継続表示処理を変更した場合は、同じR0〜R6構成で再計測する。
+
+比較時は以下を守る。
+
+1. R0は環境監査に使用し、世代間性能比較に使用しない。
+2. R1は6 Window環境監査に使用し、コード改善率の基準に使用しない。
+3. **R2 Coreを機能追加前の基準として、R3〜R6との差を比較する。**
+4. 世代間比較は同じPhase差・同じcollectorの組み合わせだけで行う。
+5. Tabora直接CPUはcollectorが異なるCampaign間で絶対比較しない。
+6. WindowServerは同じ`top`定義のPhase差を主要な世代間比較値とする。
+7. 平均だけでなく中央値・p95・spike形状を確認する。
+8. 負のPhase差は0へ丸めず、背景変動として保持する。
+9. System Power / Batteryの負値を「Taboraが省電力化した」と解釈しない。
+10. 暫定Campaignを正式再計測で置き換えた場合、旧暫定値は比較系列から完全に除外する。

@@ -447,6 +447,9 @@ extension SnapController {
     ) -> Bool {
         guard missionControlGroupPresentationIsEnabled,
               !explicitGroupStore.groups.isEmpty else {
+            missionControlGroupProxyController.endTransientPreviewSession()
+            missionControlGroupProxyController
+                .setDesktopPresentationStable(true)
             groupSpaceMigrationReservationShadowObserver
                 .suppressPresentationImmediately()
             resetGroupPresentationTransitionRecovery()
@@ -520,6 +523,21 @@ extension SnapController {
         )
 
         if !transformedGroupIDs.isEmpty {
+            missionControlGroupProxyController
+                .setDesktopPresentationStable(false)
+            // Mission Control-only Preview refresh is event-owned. Resolve the
+            // entry topology once, then reuse this already-bounded transform
+            // observation schedule until the scene is stably open.
+            beginMissionControlTransientPreviewSessionIfNeeded()
+            missionControlGroupProxyController
+                .noteTransientMissionControlTransformObservation(
+                    windowServerSnapshot: snapshot,
+                    now: now
+                )
+            if missionControlGroupProxyController
+                .transientPreviewSessionNeedsStabilityObservation {
+                scheduleGroupPresentationRecoveryChecksIfNeeded()
+            }
             // Mission Control is a global Window Server transform, but the
             // evidence authorizing it is group-local. One unrelated group with
             // incomplete AX/CG evidence must not erase a transition already
@@ -562,8 +580,13 @@ extension SnapController {
                 // an isotropically scaled group, but it cannot start a global
                 // Mission Control preservation transaction on its own.
                 resetGroupPresentationTransitionRecovery()
+                missionControlGroupProxyController.endTransientPreviewSession()
+                missionControlGroupProxyController
+                    .setDesktopPresentationStable(true)
                 return false
             }
+            missionControlGroupProxyController
+                .setDesktopPresentationStable(false)
             scheduleGroupPresentationRecoveryChecksIfNeeded()
             return true
         }
@@ -584,6 +607,7 @@ extension SnapController {
             groupIDs: normalGroupIDs,
             groupsWithNormalMembers: groupsWithNormalMembers
         )
+        missionControlGroupProxyController.endTransientPreviewSession()
         if presentationNeedsOrderingRevalidation, !normalGroupIDs.isEmpty {
             // Revalidate only groups whose own normal desktop evidence is back.
             // An unrelated unavailable group must not demote a valid proxy.
@@ -591,6 +615,8 @@ extension SnapController {
                 groupIDs: normalGroupIDs
             )
         }
+        missionControlGroupProxyController
+            .setDesktopPresentationStable(true)
         resetGroupPresentationTransitionRecovery()
         if groupSpaceMigrationLine.hasPendingPresentationRearmEvidence
             || groupSpaceMigrationLine.awaitsNormalDesktopDispatch {
@@ -1577,6 +1603,21 @@ extension SnapController {
                                 SplitConnectionKey(first, second)
                             )
                         }
+                    }
+                    let previewGeometryMutationIDs = Set(
+                        acceptedWindows.compactMap { identity, accepted -> String? in
+                            guard let original = session.participants[identity]?.window.frame
+                            else { return nil }
+                            let sizeChanged = abs(original.width - accepted.frame.width) > 0.5
+                                || abs(original.height - accepted.frame.height) > 0.5
+                            return sizeChanged ? identity : nil
+                        }
+                    )
+                    if !previewGeometryMutationIDs.isEmpty {
+                        self.missionControlGroupProxyController
+                            .notePreviewGeometryMutation(
+                                memberIDs: previewGeometryMutationIDs
+                            )
                     }
                     if let main = acceptedWindows[session.mainIdentity] {
                         self.restoreResizeGroupForeground(

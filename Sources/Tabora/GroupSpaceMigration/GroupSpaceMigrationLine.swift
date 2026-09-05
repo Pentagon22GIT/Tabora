@@ -601,14 +601,6 @@ final class GroupSpaceMigrationLine {
 
         for groupID in Array(proxySessions.keys) {
             guard var session = proxySessions[groupID] else { continue }
-            guard GroupSpaceProxyMonitoringPolicy.isWithinLifetime(
-                startedAt: session.startedAt,
-                now: now
-            ) else {
-                requireNormalDesktopRearm(groupID: groupID)
-                proxySessions.removeValue(forKey: groupID)
-                continue
-            }
             guard let currentDescriptor = host.groupSpaceProxyDescriptor(
                 groupID: groupID
             ),

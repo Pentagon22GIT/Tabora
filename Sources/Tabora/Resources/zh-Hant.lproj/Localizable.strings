@@ -133,8 +133,8 @@
 "settings.experimental.workspace.status.value" = "目前延遲：%.1f 秒";
 "settings.experimental.workspace.status.default" = "目前延遲：macOS 預設值";
 "settings.experimental.workspace.status.unavailable" = "無法取得目前值";
-"settings.experimental.preview.title" = "指揮中心影像記憶體";
-"settings.experimental.preview.note" = "設定視窗影像的記憶體上限。提高上限有助於在視窗較多時保持影像清晰度。更改時只會清除現有快取，並在安全的一般桌面重新擷取影像。";
+"settings.experimental.preview.title" = "指揮中心影像記憶體上限";
+"settings.experimental.preview.note" = "顯示的數值是一般快取與僅在指揮中心中使用的暫存快取合計上限。預設64 MiB中，一半（32 MiB）用於一般使用期間保留的快取，另一半用於暫存快取。離開指揮中心時會釋放暫存影像；只有已選取的影像會保留到實際視窗接手完成。提高上限有助於在視窗較多時保持影像清晰度。更改時只會清除現有快取，並在安全的一般桌面重新擷取影像。";
 "settings.experimental.preview.clear_cache" = "清除影像快取";
 
 "value.seconds" = "%.1f 秒";

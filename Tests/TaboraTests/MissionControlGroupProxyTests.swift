@@ -265,6 +265,221 @@ final class MissionControlGroupProxyTests: XCTestCase {
         )
     }
 
+    func testQualifiedOccluderContinuityBelongsToTheGroupState() throws {
+        let first = try XCTUnwrap(
+            MissionControlPreviewColdConfirmationPolicy.observe(
+                previous: nil,
+                candidate: .init(pid: 90, windowID: 9),
+                semantic: .qualified,
+                now: 10
+            )
+        )
+        XCTAssertFalse(first.isConfirmed)
+
+        // A different positively classified normal window still represents
+        // continuous qualified Group occlusion.
+        let second = try XCTUnwrap(
+            MissionControlPreviewColdConfirmationPolicy.observe(
+                previous: first.evidence,
+                candidate: .init(pid: 91, windowID: 10),
+                semantic: .qualified,
+                now: 10.2
+            )
+        )
+        XCTAssertTrue(second.isConfirmed)
+        XCTAssertEqual(second.evidence.observationCount, 2)
+        XCTAssertEqual(second.evidence.fingerprint, .qualifiedOcclusion)
+    }
+
+    func testUnknownSemanticEvidenceRemainsExactCandidateScoped() throws {
+        let candidate = WindowServerSelectionSnapshot(pid: 90, windowID: 9)
+        let first = try XCTUnwrap(
+            MissionControlPreviewColdConfirmationPolicy.observe(
+                previous: nil,
+                candidate: candidate,
+                semantic: .unknown,
+                now: 10
+            )
+        )
+        let matching = try XCTUnwrap(
+            MissionControlPreviewColdConfirmationPolicy.observe(
+                previous: first.evidence,
+                candidate: candidate,
+                semantic: .unknown,
+                now: 10.2
+            )
+        )
+        XCTAssertTrue(matching.isConfirmed)
+        XCTAssertEqual(matching.evidence.observationCount, 2)
+
+        let replacement = WindowServerSelectionSnapshot(pid: 91, windowID: 10)
+        let restartedBeforeBudget = try XCTUnwrap(
+            MissionControlPreviewColdConfirmationPolicy.observe(
+                previous: first.evidence,
+                candidate: replacement,
+                semantic: .unknown,
+                now: 10.05
+            )
+        )
+        XCTAssertFalse(restartedBeforeBudget.isConfirmed)
+        XCTAssertEqual(restartedBeforeBudget.evidence.observationCount, 1)
+        XCTAssertEqual(
+            restartedBeforeBudget.evidence.fingerprint,
+            .unknown(replacement)
+        )
+        XCTAssertEqual(
+            restartedBeforeBudget.evidence.continuousOcclusionObservationCount,
+            2
+        )
+    }
+
+    func testUnknownCandidateChurnCannotRestartConfirmationForever() throws {
+        let first = try XCTUnwrap(
+            MissionControlPreviewColdConfirmationPolicy.observe(
+                previous: nil,
+                candidate: .init(pid: 90, windowID: 9),
+                semantic: .unknown,
+                now: 10
+            )
+        )
+        let second = try XCTUnwrap(
+            MissionControlPreviewColdConfirmationPolicy.observe(
+                previous: first.evidence,
+                candidate: .init(pid: 91, windowID: 10),
+                semantic: .unknown,
+                now: 10.08
+            )
+        )
+        XCTAssertFalse(second.isConfirmed)
+        XCTAssertEqual(second.evidence.observationCount, 1)
+        XCTAssertEqual(second.evidence.continuousOcclusionObservationCount, 2)
+
+        let third = try XCTUnwrap(
+            MissionControlPreviewColdConfirmationPolicy.observe(
+                previous: second.evidence,
+                candidate: .init(pid: 92, windowID: 11),
+                semantic: .unknown,
+                now: 10.16
+            )
+        )
+        XCTAssertTrue(third.isConfirmed)
+        XCTAssertEqual(third.evidence.observationCount, 1)
+        XCTAssertEqual(third.evidence.continuousOcclusionObservationCount, 3)
+    }
+
+    func testContinuousPhysicalOcclusionSurvivesSemanticUpgrade() throws {
+        let first = try XCTUnwrap(
+            MissionControlPreviewColdConfirmationPolicy.observe(
+                previous: nil,
+                candidate: .init(pid: 90, windowID: 9),
+                semantic: .unknown,
+                now: 10
+            )
+        )
+        let upgraded = try XCTUnwrap(
+            MissionControlPreviewColdConfirmationPolicy.observe(
+                previous: first.evidence,
+                candidate: .init(pid: 91, windowID: 10),
+                semantic: .qualified,
+                now: 10.16
+            )
+        )
+        XCTAssertTrue(upgraded.isConfirmed)
+        XCTAssertEqual(upgraded.evidence.observationCount, 1)
+        XCTAssertEqual(
+            upgraded.evidence.continuousOcclusionObservationCount,
+            2
+        )
+    }
+
+    func testPreviewOccluderSubrolePolicyDoesNotGuessCustomWindowsAuxiliary() {
+        XCTAssertEqual(
+            PreviewOccluderAXSubrolePolicy.classification(
+                for: "AXStandardWindow"
+            ),
+            .qualified
+        )
+        XCTAssertEqual(
+            PreviewOccluderAXSubrolePolicy.classification(for: "AXDialog"),
+            .auxiliary
+        )
+        XCTAssertEqual(
+            PreviewOccluderAXSubrolePolicy.classification(
+                for: "AXSystemDialog"
+            ),
+            .auxiliary
+        )
+        XCTAssertEqual(
+            PreviewOccluderAXSubrolePolicy.classification(
+                for: "AXVendorSpecificContentWindow"
+            ),
+            .unknown
+        )
+    }
+
+    func testAuxiliaryOrTopObservationCannotContinueColdEvidence() throws {
+        let first = try XCTUnwrap(
+            MissionControlPreviewColdConfirmationPolicy.observe(
+                previous: nil,
+                candidate: .init(pid: 90, windowID: 9),
+                semantic: .qualified,
+                now: 10
+            )
+        )
+        XCTAssertNil(
+            MissionControlPreviewColdConfirmationPolicy.observe(
+                previous: first.evidence,
+                candidate: .init(pid: 91, windowID: 10),
+                semantic: .auxiliary,
+                now: 10.2
+            )
+        )
+
+        // HOT/top clears controller evidence; the next occlusion therefore
+        // starts from nil and cannot inherit the prior observation.
+        let afterTop = try XCTUnwrap(
+            MissionControlPreviewColdConfirmationPolicy.observe(
+                previous: nil,
+                candidate: .init(pid: 90, windowID: 9),
+                semantic: .qualified,
+                now: 10.4
+            )
+        )
+        XCTAssertFalse(afterTop.isConfirmed)
+        XCTAssertEqual(afterTop.evidence.observationCount, 1)
+    }
+
+    func testColdCommitAuthorizationDoesNotInvalidateOtherReasons() {
+        XCTAssertTrue(
+            MissionControlPreviewColdCaptureAuthorizationPolicy.allowsCommit(
+                reason: .coldConfirmed,
+                admittedRevision: 3,
+                currentRevision: 3
+            )
+        )
+        XCTAssertFalse(
+            MissionControlPreviewColdCaptureAuthorizationPolicy.allowsCommit(
+                reason: .coldConfirmed,
+                admittedRevision: 3,
+                currentRevision: 4
+            )
+        )
+        XCTAssertTrue(
+            MissionControlPreviewColdCaptureAuthorizationPolicy.allowsCommit(
+                reason: .initial,
+                admittedRevision: nil,
+                currentRevision: 4
+            )
+        )
+        XCTAssertTrue(
+            MissionControlPreviewColdCaptureAuthorizationPolicy.allowsCommit(
+                reason: .geometryConfirmed,
+                admittedRevision: nil,
+                currentRevision: 4
+            )
+        )
+    }
+
     func testPreviewQueueInterleavesDisplaysDeterministically() {
         XCTAssertEqual(
             MissionControlPreviewDisplayFairnessPolicy.interleavedIndices(
@@ -391,12 +606,12 @@ final class MissionControlGroupProxyTests: XCTestCase {
 
     func testTransientCaptureAuthorizationIsGroupAtomicAndCurrentOnly() {
         let current: Set<String> = ["primary", "secondary", "third"]
-        let evaluations: [String: GroupFrontmostEvaluation] = [
-            "primary": .verifiedFrontmost,
+        let evaluations: [String: PreviewGroupVisibilityEvaluation] = [
+            "primary": .hot,
             "secondary": .indeterminate,
-            "third": .occluded,
+            "third": .coldNotVisible,
             // A retired group must not survive merely because old evidence was HOT.
-            "retired": .verifiedFrontmost
+            "retired": .hot
         ]
         XCTAssertEqual(
             MissionControlTransientPreviewEligibilityPolicy
@@ -412,11 +627,177 @@ final class MissionControlGroupProxyTests: XCTestCase {
                     currentGroupIDs: current,
                     currentEvaluationByGroupID: [
                         "primary": .indeterminate,
-                        "secondary": .occluded,
+                        "secondary": .coldNotVisible,
                         "third": .indeterminate
                     ]
                 ),
             []
+        )
+    }
+
+    func testPreviewVisibilityUsesIntersectedMemberRelativeZOrder() {
+        let memberA = PreviewGroupVisibilityMember(
+            selection: .init(pid: 10, windowID: 1),
+            frame: CGRect(x: 0, y: 0, width: 500, height: 800)
+        )
+        let memberB = PreviewGroupVisibilityMember(
+            selection: .init(pid: 20, windowID: 2),
+            frame: CGRect(x: 500, y: 0, width: 500, height: 800)
+        )
+        let surfaces = [
+            WindowOcclusionSnapshot(
+                windowID: 1, pid: 10,
+                frame: memberA.frame, zIndex: 1, layer: 0
+            ),
+            // This window is ahead of B but behind the only member it
+            // intersects. Group-wide rearmost comparison would be wrong.
+            WindowOcclusionSnapshot(
+                windowID: 9, pid: 90,
+                frame: CGRect(x: 100, y: 100, width: 200, height: 200),
+                zIndex: 2, layer: 0
+            ),
+            WindowOcclusionSnapshot(
+                windowID: 2, pid: 20,
+                frame: memberB.frame, zIndex: 3, layer: 0
+            )
+        ]
+        XCTAssertEqual(
+            PreviewGroupVisibilityPolicy.physicalEvaluation(
+                members: [memberA, memberB],
+                displayFrame: CGRect(x: 0, y: 0, width: 1_000, height: 800),
+                snapshot: surfaces,
+                completeness: .complete
+            ),
+            .visibleTop
+        )
+    }
+
+    func testPreviewVisibilityIgnoresUnionGapAndAdjacentDisplayTolerance() {
+        let left = PreviewGroupVisibilityMember(
+            selection: .init(pid: 10, windowID: 1),
+            frame: CGRect(x: 0, y: 0, width: 400, height: 800)
+        )
+        let right = PreviewGroupVisibilityMember(
+            selection: .init(pid: 20, windowID: 2),
+            frame: CGRect(x: 600, y: 0, width: 400, height: 800)
+        )
+        let snapshot = [
+            WindowOcclusionSnapshot(
+                windowID: 8, pid: 80,
+                frame: CGRect(x: 450, y: 100, width: 100, height: 200),
+                zIndex: 0, layer: 0
+            ),
+            WindowOcclusionSnapshot(
+                windowID: 7, pid: 70,
+                frame: CGRect(x: 999, y: 0, width: 302, height: 800),
+                zIndex: 1, layer: 0
+            ),
+            WindowOcclusionSnapshot(
+                windowID: 1, pid: 10,
+                frame: left.frame, zIndex: 2, layer: 0
+            ),
+            WindowOcclusionSnapshot(
+                windowID: 2, pid: 20,
+                frame: right.frame, zIndex: 3, layer: 0
+            )
+        ]
+        XCTAssertEqual(
+            PreviewGroupVisibilityPolicy.physicalEvaluation(
+                members: [left, right],
+                displayFrame: CGRect(x: 0, y: 0, width: 1_000, height: 800),
+                snapshot: snapshot,
+                completeness: .complete
+            ),
+            .visibleTop
+        )
+    }
+
+    func testPreviewVisibilitySeparatesNotVisibleFromIncompleteEvidence() {
+        let member = PreviewGroupVisibilityMember(
+            selection: .init(pid: 10, windowID: 1),
+            frame: CGRect(x: 0, y: 0, width: 500, height: 800)
+        )
+        let display = CGRect(x: 0, y: 0, width: 1_000, height: 800)
+        XCTAssertEqual(
+            PreviewGroupVisibilityPolicy.physicalEvaluation(
+                members: [member], displayFrame: display,
+                snapshot: [], completeness: .complete
+            ),
+            .notVisible
+        )
+        XCTAssertEqual(
+            PreviewGroupVisibilityPolicy.physicalEvaluation(
+                members: [member], displayFrame: display,
+                snapshot: [], completeness: .unknown
+            ),
+            .indeterminate
+        )
+    }
+
+    func testPreviewVisibilityFindsRealCrossDisplayAndPartialOcclusion() {
+        let member = PreviewGroupVisibilityMember(
+            selection: .init(pid: 10, windowID: 1),
+            frame: CGRect(x: 600, y: 0, width: 400, height: 800)
+        )
+        let candidate = WindowServerSelectionSnapshot(pid: 90, windowID: 9)
+        XCTAssertEqual(
+            PreviewGroupVisibilityPolicy.physicalEvaluation(
+                members: [member],
+                displayFrame: CGRect(x: 0, y: 0, width: 1_000, height: 800),
+                snapshot: [
+                    WindowOcclusionSnapshot(
+                        windowID: 9, pid: 90,
+                        frame: CGRect(x: 950, y: 100, width: 300, height: 200),
+                        zIndex: 0, layer: 0
+                    ),
+                    WindowOcclusionSnapshot(
+                        windowID: 1, pid: 10,
+                        frame: member.frame, zIndex: 1, layer: 0
+                    )
+                ],
+                completeness: .complete
+            ),
+            .occluded(candidates: [candidate])
+        )
+
+        let second = PreviewGroupVisibilityMember(
+            selection: .init(pid: 20, windowID: 2),
+            frame: CGRect(x: 0, y: 0, width: 500, height: 800)
+        )
+        XCTAssertEqual(
+            PreviewGroupVisibilityPolicy.physicalEvaluation(
+                members: [member, second],
+                displayFrame: CGRect(x: 0, y: 0, width: 1_000, height: 800),
+                snapshot: [
+                    WindowOcclusionSnapshot(
+                        windowID: 1, pid: 10,
+                        frame: member.frame, zIndex: 0, layer: 0
+                    )
+                ],
+                completeness: .complete
+            ),
+            .indeterminate
+        )
+    }
+
+    func testPreviewVisibilityExcludesAuxiliaryButPreservesUnknownCandidate() {
+        let candidate = WindowServerSelectionSnapshot(pid: 90, windowID: 9)
+        let physical = PreviewGroupPhysicalVisibilityEvaluation.occluded(
+            candidates: [candidate]
+        )
+        XCTAssertEqual(
+            PreviewGroupVisibilityPolicy.evaluation(
+                physical: physical,
+                classification: { _ in .auxiliary }
+            ),
+            .hot
+        )
+        XCTAssertEqual(
+            PreviewGroupVisibilityPolicy.evaluation(
+                physical: physical,
+                classification: { _ in .unknown }
+            ),
+            .occluded(candidate: candidate, semantic: .unknown)
         )
     }
 

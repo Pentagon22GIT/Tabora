@@ -26,7 +26,8 @@ connected groupの最前面保証を維持しながら、常駐中の独立10 Hz
 6. system selectionでgroup全体が未前面または不明なら`soloPresented`へ移るが、companionをraiseしない。
 7. Mission Controlでの個別選択やCommand-Tabの結果として全memberが既に前面であることをWindow Serverが証明した場合、そのgroupだけを`automatic`へ再開放する。この経路自身はAXRaiseを発行しない。
 8. exact Mission Control proxy選択または明示的group操作だけがwhole-group mutationを認可する。
-9. 全memberのfrontmost、geometry、occlusionがそれぞれ確認できた場合だけhandleを再表示する。
+9. whole-group mutation直前のfrontmost判定はGroupのstrict orderingを維持しつつ、対象Groupの物理Display frame内へgeometryをscopeする。隣接Display側の1 pt境界許容だけではoccludedとせず、同一Displayの外部windowまたは実際にDisplayを跨いだwindowは従来どおりraise対象とする。
+10. 全memberのfrontmost、geometry、occlusionがそれぞれ確認できた場合だけhandleを再表示する。
 
 ## 取りこぼしライン
 
@@ -35,7 +36,7 @@ connected groupの最前面保証を維持しながら、常駐中の独立10 Hz
 ## 性能境界
 
 - 旧独立monitorは待機中も毎秒10回selectionを取得した。新構成は通常時event-drivenで、取りこぼし確認も既存Recoveryに相乗りする毎秒最大1回である。したがってselection query上限は約90%削減、foreground専用timer wakeupは100%削除される。
-- 通常eventは既存の有限settlementへ直行する。初期exact snapshotがある場合は通常約60 ms、AX / workspace通知からは2回の安定観測を含め通常約120 msで分類する。今回のautomatic再開放は同じfrontmost評価結果を使うため、追加poll、追加delay、追加AXRaiseを持たない。
+- 通常eventは既存の有限settlementへ直行する。初期exact snapshotがある場合は通常約60 ms、AX / workspace通知からは2回の安定観測を含め通常約120 msで分類する。automatic再開放は同じfrontmost評価結果を使い、追加poll、追加delay、追加AXRaiseを持たない。
 - OS event取りこぼし時だけ既存Recovery tickまで最大約1秒を要する。これは高頻度loopを復活させないための意図したfallback latencyである。
 - whole-app CPU低下率はPreview、handle occlusion、Recovery等の残存負荷に依存するためコードだけでは確定しない。比較計測では同じgroup数、同じPreview状態、無操作60秒を揃え、selection query回数とCPU timeを別々に測る。
 
@@ -62,11 +63,21 @@ mouse-downのevent-routing情報とWindow Server sceneからPID + CGWindowIDを�
 
 Space移送では各memberのAX stable identityから解決したWindowIDが全件存在し、かつ相互に一意であることをcapture条件にする。同一アプリであることは拒否理由にしないが、一つのphysical surfaceを複数memberまたは複数の待機transactionが要求する曖昧なcaptureはdispatch前に停止する。captureからterminalまでは通常foreground fallbackを停止し、明示的なProxy選択認可だけを独立して扱う。
 
+## Multi-display foreground境界
+
+foregroundはDisplayのactive / inactive状態ではなく、対象Groupと競合可能なphysical surfaceを基準にします。別の可視Displayを操作中でも、対象GroupがそのDisplay上でstrict frontmostならクリック時に不要なwhole-group `AXRaise`を発行しません。別Displayにしか存在しないsurfaceはGroupのDisplay内へ実面積を持たない限り競合しません。
+
+このscopeは最前面条件を緩めるものではありません。対象Display内でGroupより前に通常windowが存在する場合、Group member間へ外部surfaceが挟まる場合、または外部windowがDisplay境界を越えてGroup側へ実際に侵入する場合は、従来どおりconnected raiseを認可します。
+
+同じdisplay-scoped strict evaluationは、explicit Groupになる前のprovisional Snap peerの前面確認にも使用します。これにより隣接Display境界の共有1 pt許容だけで正当なpeerを除外せず、本物のocclusion時はfail closedを維持します。
+
 ## 互換性監査表
 
-| シナリオ | 必須結果 | 2026-09-01実機監査 |
+| シナリオ | 必須結果 | 2026-09-01実機確認 |
 | --- | --- | --- |
 | group memberを通常クリック | 既存のexact click認可を維持し、必要ならgroupを前面化 | ✓ |
+| 別の可視Display上ですでにtopのgroupを直接クリック | 不要なwhole-group `AXRaise`を発行せず、実windowを再orderingしない | ✓ (2026-09-05) |
+| 別の可視Display上でgroupの前に実windowがある状態からクリック | display scopeに関係なく本物のocclusionを検出し、従来どおりwhole-group raise | ✓ (2026-09-05) |
 | Mission Controlでgroup proxy選択 | exact captured groupだけを有限raiseし、成功後automatic | ✓ |
 | Mission Controlで実windowを1枚選択 | companionをraiseせずsolo、group構造は維持 | ✓ |
 | Mission Controlでmemberを順番に選択 | 途中はsoloのまま。全member前面を証明した最後の選択で、そのgroupだけautomaticへ移る | ✓ |

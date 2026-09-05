@@ -62,12 +62,23 @@ enum GroupFrontmostEvaluation: Equatable {
 enum GroupFrontmostEvaluationPolicy {
     static func evaluate(
         memberSelections: Set<WindowServerSelectionSnapshot>,
-        snapshot: [WindowOcclusionSnapshot]
+        snapshot: [WindowOcclusionSnapshot],
+        displayFrame: CGRect? = nil
     ) -> GroupFrontmostEvaluation {
         guard !memberSelections.isEmpty, !snapshot.isEmpty else {
             return .indeterminate
         }
-        let members = snapshot.filter { surface in
+
+        func scopedFrame(_ frame: CGRect) -> CGRect? {
+            guard let displayFrame else { return frame }
+            let clipped = frame.intersection(displayFrame)
+            guard !clipped.isNull,
+                  clipped.width > 1,
+                  clipped.height > 1 else { return nil }
+            return clipped
+        }
+
+        let memberSurfaces = snapshot.filter { surface in
             surface.layer == 0
                 && memberSelections.contains(
                     WindowServerSelectionSnapshot(
@@ -76,13 +87,17 @@ enum GroupFrontmostEvaluationPolicy {
                     )
                 )
         }
-        guard members.count == memberSelections.count,
-              let first = members.first,
-              let rearmostIndex = members.map(\.zIndex).max() else {
+        guard memberSurfaces.count == memberSelections.count,
+              let rearmostIndex = memberSurfaces.map(\.zIndex).max() else {
             return .indeterminate
         }
-        let groupBounds = members.dropFirst().reduce(first.frame) {
-            $0.union($1.frame)
+        let memberFrames = memberSurfaces.compactMap { scopedFrame($0.frame) }
+        guard memberFrames.count == memberSurfaces.count,
+              let firstFrame = memberFrames.first else {
+            return .indeterminate
+        }
+        let groupBounds = memberFrames.dropFirst().reduce(firstFrame) {
+            $0.union($1)
         }
         let hasOccluder = snapshot.contains { surface in
             let surfaceSelection = WindowServerSelectionSnapshot(
@@ -91,8 +106,11 @@ enum GroupFrontmostEvaluationPolicy {
             )
             guard surface.layer == 0,
                   surface.zIndex < rearmostIndex,
-                  !memberSelections.contains(surfaceSelection) else { return false }
-            let intersection = groupBounds.intersection(surface.frame)
+                  !memberSelections.contains(surfaceSelection),
+                  let candidateFrame = scopedFrame(surface.frame) else {
+                return false
+            }
+            let intersection = groupBounds.intersection(candidateFrame)
             return !intersection.isNull
                 && intersection.width > 1
                 && intersection.height > 1

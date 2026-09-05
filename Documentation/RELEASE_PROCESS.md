@@ -55,39 +55,33 @@ swift test
 
 期待結果: 意図したrelease差分を除き、既存の安全不変条件と確立済み挙動を維持すること。
 
-### 最新の監査記録
+### 現行Release状態
 
-**2026-09-05 / source・性能監査対象 v2.2.0 (Build 17)**
+**Tabora v2.2.1 (Build 18) / 2026-09-05**
 
-v2.2.0ではMission Control previewをtrigger-onlyへ変更した。15秒定期取得とfreshnessを撤廃し、初回・確定resize/display移動・確定COLDだけを取得理由とする。固定実行上限を待機要求の打ち切りへ流用せず、物理window単位の合流、display間round-robin、display内FIFO、後着trigger保持、変形中の共通gate、通常desktopでの結果再検証をsourceとpolicy testで監査した。
+v2.2.1は、v2.2.0で確立したtrigger-only Previewとevent-driven foregroundを維持したまま、HOT/COLDのvisibility境界とmulti-displayのphysical scopeを修正するReleaseです。新しい常駐polling、画像取得timer、Space polling、全Desktop AX censusは追加しません。
 
-- [x] 定期取得/freshness/deadline形式の旧経路がsourceから除去されていることを静的確認
-- [x] queue上限到達時に未投入要求を保持し、完了後に次候補を投入する経路を確認
-- [x] HOT/COLDのunknown保持、resize優先、cooldown、複数display公平順序をpolicy testへ固定
-- [x] Mission Control / Space / display変形中のcapture失効とstaging結果破棄を確認
-- [x] Normal Mission Control Preview / Assistがglobal capture枠待機中にcancelされた場合、既存operation livenessだけで物理CG取得直前に失効し、追加Window Server/AX監視を導入していないことをsource監査
-- [x] Group Space MigrationのProxy観測に固定120秒expiryが残らず、既存Mission Control lifecycle終了経路だけで停止し、新しいtimer/watchdog/pollを追加していないことをsource監査
-- [ ] macOSで`swift test`、Community build、実Mission Control、複数group/display、連続resize/前後移動を確認
-- [x] v2.2.0のBattery / CPU / WindowServer / Wakeup / Memoryを同一R0〜R6形式で実測し、2026-09-04の旧暫定値を破棄して2026-09-05再計測へ置換
+- [x] Preview HOT/COLDをGroup-level state + member-relative physical observationへ整理し、`COLD-visible`と`COLD-not-visible`を分離
+- [x] dialog / system dialog / modal / exact sheetだけを明示的auxiliaryとして除外し、未知/custom subroleは`UNKNOWN`へ保持
+- [x] UNKNOWN candidateが入れ替わってもGroup-level physical occlusion confirmationを無期限に再開しない有限budgetを実装
+- [x] not-visible境界で旧`coldConfirmed` commit authorizationだけを失効し、`geometryConfirmed`を独立維持
+- [x] Preview OFF時にPreview専用visibility / semantic classificationを上流から停止
+- [x] off-Space Groupをgeneric presentation failure debtへ積まず、復帰時は既存Space reconciliationから再構築
+- [x] multi-display foregroundのstrict判定を対象Groupのphysical Displayへscopeし、隣接Displayの共有1 pt境界spillによる不要なwhole-group raiseを除去
+- [x] 同じdisplay-scoped strict判定をprovisional Snap peerへ適用し、Snap成立条件を緩めずcross-display誤除外を防止
+- [x] 可視な別Display上ですでにtopのGroupを直接操作した場合、foreground ONのまま不要な実window再orderingが発生しないことを実操作で確認
+- [x] Group上に実際のoccluderが存在する場合は従来どおりevent-driven whole-group raiseが成立することを実操作で確認
+- [x] 可視Display間の移動で余分なPreview画像取得が発生しないことを実操作で確認
+- [ ] final sourceで`swift test`とCommunity buildをmacOS上で完走
+- [ ] Release asset生成前に2 / 3 / 4 split、shared resize、Mission Control、Space migration、Preview ON/OFFの最終functional suiteを完走
 
-v2.2.0の最新実測値と比較条件は`PERFORMANCE_VALIDATION.md`を正本とする。機能の実機回帰確認と現行sourceの`swift test`は、性能計測の完了から推測せず未完了のまま維持する。以下は前Releaseまでの実機完了記録である。
+### 常駐性能
 
-**2026-09-01 / 検証対象 v2.1.0 (Build 16)**
+常駐性能の正式基準は **v2.2.0 Build 17 / 2026-09-05** のR0〜R6計測を維持します。v2.2.1で変更した経路はwindow click、foreground transition、occlusion、Space/display遷移、Snap操作などのイベント発生時に動作し、無操作の常駐計測では変更箇所を直接評価しません。
 
-v2.1.0ではアプリ内UIとresource packagingだけが変更対象です。下記の処理系項目はv2.0.0の実機完了記録を基準に、v2.1.0差分がSnap / Group / Resize / Recovery / AX / Mission Controlの実行経路を変更していないことを始点・終点のsource差分監査で確認して継承します。言語適用と再起動はv2.1.0で別途確認済みです。
+v2.2.1では常駐timer / polling / capture triggerを追加していないため、同じ無操作計測を新しい性能値として重複記録しません。既存値をv2.2.1で計測した値として読み替えることも行いません。正式な常駐比較値は[PERFORMANCE_VALIDATION.md](PERFORMANCE_VALIDATION.md)を正本とします。
 
-- [x] 2 / 3 / 4 split、shared resize、replacement、Recoveryを実機確認
-- [x] Mission Control Proxy選択、Foreground、Desktop間group migrationを実機確認
-- [x] Preview / Assist / App Constraint / Space移送の相互境界を監査
-- [x] Private API runtime capabilityと実Window→Space membershipをmacOS 26.6.2で確認
-- [x] 平常時のTabora直接CPUとWindowServer委託CPUを統合し、Full Residentを1コア約3.84% / 10コア全体約0.384%と確認
-- [x] Memory / Wakeup / System CPU / Battery / Thermalを確認し、常駐上の異常増加がないことを確認
-- [x] Architecture / Security Invariants / Foreground / Migration / Privacy / README / CHANGELOGの整合を確認
-- [x] Fast CI / Tabora Safety Invariants / CodeQLのRelease監査状態を確認
-- [x] dependency / secret alertとrelease差分のprivate data混入がないことを確認
-- [x] 5言語の全resource、権限説明、key / placeholder一致、アプリ内表示、適用ボタンの即時翻訳、再起動後の全体反映を確認
-
-性能検証の詳細は[PERFORMANCE_VALIDATION.md](PERFORMANCE_VALIDATION.md)に記録する。将来のReleaseではこの完了記録を根拠に手順自体を省略せず、変更範囲に応じて再確認する。
+過去Releaseの実機確認履歴はCHANGELOGと各機能文書に保持し、現行Releaseではこの手順を省略せず変更範囲に応じて再確認します。
 
 ## 3. Security確認
 

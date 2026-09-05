@@ -1,5 +1,28 @@
 # 更新履歴
 
+## 2.2.1 — 2026-09-05
+
+### Mission Control Preview / HOT・COLD
+
+- PreviewのHOT/COLD判定をGroup単位のまま再整理し、可視状態はcompleteなWindow Server observationとexact member identityから判定する。全memberが現在のon-screen censusから外れた場合は`COLD-not-visible`としてHOT leaseを終了し、この不可視化だけではCOLD画像を取得しない。部分観測・取得不能は`indeterminate`として直前状態を破壊しない。
+- 可視Groupの前面判定はmemberごとの実frameとz-orderを基準にし、Group unionの空白や別memberのrearmost順序だけで外部windowをoccluderにしない。共有Window Server snapshotの既存1 pt境界許容は変更せず、Preview側で物理Display内へscopeする。
+- layer-0の外部surfaceは、物理的にmemberを覆う候補だけをAXで限定分類する。`AXStandardWindow`のnon-modal contentは通常occluder、`AXDialog` / `AXSystemDialog` / modal / exact attached sheetはauxiliaryとして扱う。未知または独自subroleはauxiliaryと断定せず`UNKNOWN`へ残す。
+- `UNKNOWN`はexact candidate単位のsemantic evidenceを維持しつつ、Group全体の連続physical occlusionへ有限confirmation budgetを持たせる。候補window IDが入れ替わり続けても0.15秒確認を無期限に再生成せず、明示的なauxiliary証拠がない連続occlusionはbounded physical fallbackでCOLDへ収束する。
+- HOT→`COLD-visible`だけを`coldConfirmed`取得理由とし、`COLD-not-visible`へ移った時点で旧visible epochのCOLD取得authorizationを失効する。すでに開始済みの同期CG取得は物理中断せず、completion / staging commit時のrevision確認で旧結果を採用しない。`geometryConfirmed`は独立して維持する。
+- Preview OFFではPreview専用visibility / semantic classificationを上流から実行せず、HOT/COLD state、待機要求、cache、transient authorizationを失効する。Foreground / Resize / Space structural logicはPreview設定から分離したまま維持する。
+- Space切替後も構造上保持されるoff-Space Groupをgeneric handle/proxy failure debtへ積まない。復帰時は既存Space reconciliationでactiveへ戻してから通常presentationを再構築する。
+
+### Foreground / Multi-display
+
+- connected Groupの最前面条件は従来どおりstrictなまま維持し、可視な別Displayにしか存在しないwindowが共有1 pt境界許容によってGroupをoccludeしたように見えるcross-display誤判定だけを除去した。frontmost evaluationでは対象Groupの物理Display `screen.frame`へgeometryをclipし、同一Displayの本物のoccluderと実際にDisplayを跨ぐwindowは引き続きraise対象とする。
+- この修正により、別の可視Display上ですでにtopの非active Groupをクリックした時に不要な`AXRaise`が発生して実windowが一度再orderingされる表示揺れを解消した。foregroundは引き続きevent-drivenで、Groupが本当にoccludedなら従来どおりwhole-group raiseを実行する。
+- explicit Groupになる前のprovisional Snap peer判定にも同じDisplay scopeを適用し、隣接Display境界のsynthetic overlapだけで正当なpeerを除外しない。Snap成立条件とstrict frontmost条件は変更しない。
+
+### Documentation / performance
+
+- Architecture、Security Invariants、Foreground、Release、Migration、Privacy、Performance記録をv2.2.1の実装境界へ同期した。active documentationは一時的な検証環境やcollector固有diagnosticではなく、再現可能な仕様、検証条件、実測値を正本とする構成へ整理した。
+- 常駐性能の最終計測基準は**v2.2.0 Build 17 / 2026-09-05**を維持する。v2.2.1の変更はwindow click、foreground transition、occlusion、Space/display遷移、Snap操作で発火するevent-driven経路であり、無操作R0〜R6計測では変更箇所を直接評価しないため再計測しない。v2.2.1について新しい常駐性能値や改善率は主張しない。
+
 ## 2.2.0 — 2026-09-03
 
 ### Mission Control Preview / power efficiency
@@ -25,7 +48,7 @@
 - queue overflow、同一/複数displayの公平性、後着trigger、HOT/COLDのunknown保持、cooldown、Mission Control transform gate、cache上限をsourceとpolicy testで再監査した。
 - 試験的機能のMission Control画像メモリ上限は、通常cacheとtransient cacheを合わせた合計値を表示するようにした。保存値、既存UserDefaults key、各cacheの実上限は変更せず、初期表示64 MiBの半分を通常cache、残り半分をMission Control中だけの一時cacheとして明記した。
 - 2026-09-05の同一R0〜R6形式による再計測へ性能記録を更新し、それ以前のv2.2.0暫定値は比較・結論・基準から除外した。
-- Versionは`2.2.0`、build numberは`17`を維持する。今回のMC transient / Display topology追加は常駐1 Hzへ恒久処理を追加しない境界として文書化し、実機性能値は2026-09-05再計測を現行値とする。
+- Versionは`2.2.0`、build numberは`17`。MC transient / Display topology追加は常駐1 Hzへ恒久処理を追加しない境界として文書化し、常駐性能基準は2026-09-05再計測を使用する。
 
 ## 2.1.0 — 2026-09-01
 
@@ -174,7 +197,7 @@
 - first-callback-wins型selection claim、終了後250 ms quarantine、Recoveryからのactivation再始動を撤去。排他は最新proxy候補とcontrollerのactive exact-group transactionが所有する。
 - 成功・失敗・stale構造拒否・外部中断のすべてで、Mission Control遷移中に保留されたfocus/click通知を通常desktop selectionへ再生しない。失敗時はgroup membership、placement lock、従来foreground modeを保持する。
 
-#### 今回担保する範囲
+#### 保証範囲
 
 - 選択時に表示されていた同一group ID・同一member集合だけを前面化対象にする。
 - 2 / 3 / 4 memberを同じ全体passで処理し、Group 2失敗を下のGroup 1へfallbackさせない。
@@ -182,11 +205,10 @@
 - 選択済みcomposite画像をdesktop背景へ残さない。
 - 成功確認前にforeground modeを変更せず、失敗時にもgroup構造を破壊しない。
 
-#### 今回担保しない範囲
+#### 対象外
 
 - AccessibilityまたはWindow Serverが全20回の観測中ずっと応答不能な場合の強制成功。
 - macOS private Mission Control動作のOS version横断保証。
-- このLinux監査環境でのmacOS実機動作確認。`swift test`と実操作確認はmacOS側で必要。
 - display境界を越えた直後にdrag callbackなしでmouse-upした場合もdrop時点でdisplay transitionを再評価し、底面を揃えたSidecar等の境界で1pxの越境が外部display snapへ化ける経路を修正。
 
 ### 共有リサイズ境界 / UI
@@ -216,7 +238,7 @@
 
 ### Snap / Assist
 
-- Assist候補をキャンセルした後、同じスナップ済みwindowを画面上端へドラッグすると、provisional peer探索がincoming window自身を既存peerとして採用し、重複Dictionary keyのSwift trapで強制終了する問題を修正。3件のcrash reportはいずれも同一stackであることを確認。
+- Assist候補をキャンセルした後、同じスナップ済みwindowを画面上端へドラッグすると、provisional peer探索がincoming window自身を既存peerとして採用し、重複Dictionary keyのSwift trapで強制終了する経路を修正。
 - Assist panelが消費したmouse-downに対応するmouse-upをdesktop clickとして再処理しないよう、pointer sequence ownershipを分離。
 
 ### Mission Control Preview

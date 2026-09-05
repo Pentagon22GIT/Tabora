@@ -5,7 +5,9 @@ extension SnapController {
         using providedVisibleWindows: [ManagedWindow]? = nil,
         deferOcclusionRefresh: Bool = false,
         windowServerSnapshot providedWindowServerSnapshot:
-            [WindowOcclusionSnapshot]? = nil
+            [WindowOcclusionSnapshot]? = nil,
+        windowServerSnapshotCompleteness providedSnapshotCompleteness:
+            WindowDiscoveryCompleteness? = nil
     ) {
         let canMaintainGroupPresentation = isEnabled
             && settings.linkedResizeEnabled
@@ -79,8 +81,17 @@ extension SnapController {
         }
 
         let visibleWindows = providedVisibleWindows ?? managedExplicitGroupWindows()
-        let windowServerSnapshot = providedWindowServerSnapshot
-            ?? windowService.windowOcclusionSnapshot()
+        let windowServerObservation: WindowOcclusionSnapshotObservation
+        if let providedWindowServerSnapshot {
+            windowServerObservation = WindowOcclusionSnapshotObservation(
+                snapshot: providedWindowServerSnapshot,
+                completeness: providedSnapshotCompleteness ?? .unknown
+            )
+        } else {
+            windowServerObservation = windowService
+                .windowOcclusionSnapshotObservation()
+        }
+        let windowServerSnapshot = windowServerObservation.snapshot
         updateGroupWindowServerEvidence(
             using: visibleWindows,
             windowServerSnapshot: windowServerSnapshot
@@ -143,6 +154,26 @@ extension SnapController {
                     // on an inactive destination Desktop; suppress only its
                     // stale controls so unrelated groups remain interactive.
                     continue
+                }
+                if case .suspendedForSpaceTransition = group.state,
+                   windowServerObservation.completeness == .complete {
+                    let hasOnScreenMember = group.memberIDs.contains {
+                        memberID in
+                        guard let placement = lockedPlacements[memberID],
+                              let windowID = placement.cgWindowID else {
+                            return false
+                        }
+                        return windowServerSnapshot.contains { surface in
+                            surface.pid == placement.pid
+                                && surface.windowID == windowID
+                                && surface.layer == 0
+                        }
+                    }
+                    if !hasOnScreenMember {
+                        // A whole Group on another Space has no active desktop
+                        // resize boundary and creates no Recovery debt.
+                        continue
+                    }
                 }
                 guard !spaceSeparationPendingGroupIDs.contains(group.id) else {
                     // A split-across-Space group has no complete active-desktop
@@ -268,7 +299,9 @@ extension SnapController {
         }
         refreshMissionControlGroupProxies(
             using: visibleWindows,
-            windowServerSnapshot: windowServerSnapshot
+            windowServerSnapshot: windowServerSnapshot,
+            windowServerSnapshotCompleteness:
+                windowServerObservation.completeness
         )
         guard !deferOcclusionRefresh else { return }
         refreshResizeHandleOcclusion(

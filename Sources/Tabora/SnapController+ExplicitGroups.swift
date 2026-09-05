@@ -632,7 +632,9 @@ extension SnapController {
     func refreshMissionControlGroupProxies(
         using providedVisibleWindows: [ManagedWindow]? = nil,
         windowServerSnapshot providedWindowServerSnapshot:
-            [WindowOcclusionSnapshot]? = nil
+            [WindowOcclusionSnapshot]? = nil,
+        windowServerSnapshotCompleteness providedSnapshotCompleteness:
+            WindowDiscoveryCompleteness? = nil
     ) {
         guard missionControlGroupPresentationIsEnabled,
               isEnabled,
@@ -671,8 +673,17 @@ extension SnapController {
             return
         }
         let visibleWindows = providedVisibleWindows ?? managedExplicitGroupWindows()
-        let windowServerSnapshot = providedWindowServerSnapshot
-            ?? windowService.windowOcclusionSnapshot()
+        let windowServerObservation: WindowOcclusionSnapshotObservation
+        if let providedWindowServerSnapshot {
+            windowServerObservation = WindowOcclusionSnapshotObservation(
+                snapshot: providedWindowServerSnapshot,
+                completeness: providedSnapshotCompleteness ?? .unknown
+            )
+        } else {
+            windowServerObservation = windowService
+                .windowOcclusionSnapshotObservation()
+        }
+        let windowServerSnapshot = windowServerObservation.snapshot
         groupDegradationObservationEpoch &+= 1
         let observationEpoch = groupDegradationObservationEpoch
         let observationTime = ProcessInfo.processInfo.systemUptime
@@ -753,6 +764,33 @@ extension SnapController {
                 // presentation-recovery work.
                 presentationSuppressedGroupIDs.insert(group.id)
                 missionControlGroupProxyController.hide(groupID: group.id)
+                groupDegradationEvidenceByGroupID.removeValue(forKey: group.id)
+                groupSpaceSeparationEvidenceByGroupID.removeValue(
+                    forKey: group.id
+                )
+                continue
+            }
+
+            let exactOnScreenMemberCount = group.memberIDs.reduce(into: 0) {
+                count, memberID in
+                guard let placement = lockedPlacements[memberID],
+                      let windowID = placement.cgWindowID,
+                      windowServerSnapshot.contains(where: {
+                        $0.pid == placement.pid
+                            && $0.windowID == windowID
+                            && $0.layer == 0
+                      }) else { return }
+                count += 1
+            }
+            if case .suspendedForSpaceTransition = group.state,
+               windowServerObservation.completeness == .complete,
+               exactOnScreenMemberCount == 0 {
+                // A whole Group on another Space is a normal visibility state,
+                // not presentation failure. Preserve its last validated proxy
+                // and let the ordinary Space reconciliation reactivate it when
+                // every exact member returns at normal desktop geometry.
+                presentationSuppressedGroupIDs.insert(group.id)
+                preservedPresentationGroupIDs.insert(group.id)
                 groupDegradationEvidenceByGroupID.removeValue(forKey: group.id)
                 groupSpaceSeparationEvidenceByGroupID.removeValue(
                     forKey: group.id
@@ -975,43 +1013,91 @@ extension SnapController {
             if case .suspendedForSpaceTransition = $0.state { return false }
             return true
         }
-        var previewFrontmostEvaluationByGroupID:
-            [SnapGroupID: GroupFrontmostEvaluation] = [:]
+        let previewsEnabled = settings.windowPreviewsEnabled
+        var previewVisibilityEvaluationByGroupID:
+            [SnapGroupID: PreviewGroupVisibilityEvaluation] = [:]
         let foregroundPresentationIsSettling =
             pendingSelectionRaiseWorkItem != nil
                 || pendingGroupRaiseWorkItem != nil
                 || ownedForegroundMutation != nil
-        for group in presentableGroups {
+        if previewsEnabled {
+            windowService.synchronizePreviewOccluderSemanticCache(
+                with: windowServerSnapshot,
+                completeness: windowServerObservation.completeness
+            )
+        } else {
+            windowService.clearPreviewOccluderSemanticCache()
+        }
+        let knownManagedSelections = Set(lockedPlacements.values.compactMap {
+            placement -> WindowServerSelectionSnapshot? in
+            guard let windowID = placement.cgWindowID else { return nil }
+            return WindowServerSelectionSnapshot(
+                pid: placement.pid,
+                windowID: windowID
+            )
+        })
+        for group in explicitGroupStore.groups where previewsEnabled {
             if foregroundPresentationIsSettling {
                 // A foreground transaction raises members sequentially. Its
                 // intermediate WindowServer ordering is not evidence that the
                 // structural group became COLD. Preserve prior normal HOT/COLD
                 // state and, because transient capture is stricter, fail closed
                 // for Mission Control-only replacement until settlement.
-                previewFrontmostEvaluationByGroupID[group.id] = .indeterminate
+                previewVisibilityEvaluationByGroupID[group.id] = .indeterminate
                 continue
             }
-            let selections = Set(group.memberIDs.compactMap { memberID in
-                windowsByIdentity[memberID].flatMap { window
-                    -> WindowServerSelectionSnapshot? in
-                    guard let windowID = window.cgWindowID else { return nil }
-                    return WindowServerSelectionSnapshot(
-                        pid: window.pid,
+            guard let displayFrame = screen(withDisplayID: group.displayID)?.frame
+            else {
+                previewVisibilityEvaluationByGroupID[group.id] = .indeterminate
+                continue
+            }
+            let members = group.memberIDs.compactMap { memberID
+                -> PreviewGroupVisibilityMember? in
+                guard let placement = lockedPlacements[memberID],
+                      let windowID = placement.cgWindowID else { return nil }
+                return PreviewGroupVisibilityMember(
+                    selection: WindowServerSelectionSnapshot(
+                        pid: placement.pid,
                         windowID: windowID
-                    )
-                }
-            })
-            guard selections.count == group.memberIDs.count else {
-                previewFrontmostEvaluationByGroupID[group.id] = .indeterminate
+                    ),
+                    frame: windowsByIdentity[memberID]?.frame
+                        ?? placement.appliedFrame
+                )
+            }
+            guard members.count == group.memberIDs.count else {
+                previewVisibilityEvaluationByGroupID[group.id] = .indeterminate
                 continue
             }
-            previewFrontmostEvaluationByGroupID[group.id] =
-                GroupFrontmostEvaluationPolicy.evaluate(
-                    memberSelections: selections,
-                    snapshot: windowServerSnapshot
+            let physical = PreviewGroupVisibilityPolicy.physicalEvaluation(
+                members: members,
+                displayFrame: displayFrame,
+                snapshot: windowServerSnapshot,
+                completeness: windowServerObservation.completeness
+            )
+            previewVisibilityEvaluationByGroupID[group.id] =
+                PreviewGroupVisibilityPolicy.evaluation(
+                    physical: physical,
+                    classification: { candidate in
+                        if knownManagedSelections.contains(candidate) {
+                            return .qualified
+                        }
+                        guard missionControlGroupProxyController
+                            .previewOccluderClassificationIsNeeded(
+                                for: group.id,
+                                candidate: candidate
+                            ) else {
+                            return .qualified
+                        }
+                        return windowService
+                            .previewOccluderSemanticClassification(candidate)
+                    }
                 )
         }
-        let previewsEnabled = settings.windowPreviewsEnabled
+        let structuralMemberIDsByGroupID = Dictionary(
+            uniqueKeysWithValues: explicitGroupStore.groups.map {
+                ($0.id, $0.memberIDs)
+            }
+        )
         missionControlGroupProxyController.update(
             groups: presentableGroups,
             visibleWindowsByIdentity: windowsByIdentity,
@@ -1022,8 +1108,9 @@ extension SnapController {
             structuralMemberIDs: explicitGroupStore.groups.reduce(
                 into: Set<String>()
             ) { $0.formUnion($1.memberIDs) },
-            previewFrontmostEvaluationByGroupID:
-                previewFrontmostEvaluationByGroupID,
+            structuralMemberIDsByGroupID: structuralMemberIDsByGroupID,
+            previewVisibilityEvaluationByGroupID:
+                previewVisibilityEvaluationByGroupID,
             previewsEnabled: previewsEnabled,
             previewCacheByteLimit: AppSettings
                 .missionControlPreviewMemoryByteLimit(

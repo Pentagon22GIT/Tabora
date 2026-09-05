@@ -449,6 +449,261 @@ enum MissionControlPreviewTriggerPolicy {
     }
 }
 
+enum MissionControlPreviewColdCaptureAuthorizationPolicy {
+    static func allowsCommit(
+        reason: MissionControlPreviewTriggerReason,
+        admittedRevision: UInt64?,
+        currentRevision: UInt64
+    ) -> Bool {
+        reason != .coldConfirmed || admittedRevision == currentRevision
+    }
+}
+
+enum MissionControlPreviewColdConfirmationFingerprint: Equatable {
+    /// Once AX has positively identified normal content, continuity belongs to
+    /// the Group's qualified occlusion state rather than one window ID.
+    case qualifiedOcclusion
+    /// Semantic evidence remains exact-surface-specific. Group-level physical
+    /// continuity is tracked separately so unrelated UNKNOWN identities are
+    /// never treated as the same AX classification while fallback stays finite.
+    case unknown(WindowServerSelectionSnapshot)
+}
+
+struct MissionControlPreviewColdConfirmationEvidence: Equatable {
+    let fingerprint: MissionControlPreviewColdConfirmationFingerprint
+    let observationCount: Int
+    let firstObservedAt: TimeInterval
+    /// Candidate semantics stay exact, but physical Group occlusion has its
+    /// own bounded continuity. This prevents UNKNOWN candidates that churn
+    /// between Window Server identities from restarting the 0.15 s passive
+    /// confirmation forever while the Group never becomes top again.
+    let continuousOcclusionObservationCount: Int
+    let continuousOcclusionFirstObservedAt: TimeInterval
+}
+
+struct MissionControlPreviewColdConfirmationObservation: Equatable {
+    let evidence: MissionControlPreviewColdConfirmationEvidence
+    let isConfirmed: Bool
+}
+
+enum MissionControlPreviewColdConfirmationPolicy {
+    static func observe(
+        previous: MissionControlPreviewColdConfirmationEvidence?,
+        candidate: WindowServerSelectionSnapshot,
+        semantic: PreviewOccluderSemanticClassification,
+        now: TimeInterval,
+        minimumStableInterval: TimeInterval =
+            MissionControlPreviewWorkPolicy.confirmationInterval
+    ) -> MissionControlPreviewColdConfirmationObservation? {
+        let fingerprint: MissionControlPreviewColdConfirmationFingerprint
+        switch semantic {
+        case .qualified:
+            fingerprint = .qualifiedOcclusion
+        case .unknown:
+            fingerprint = .unknown(candidate)
+        case .auxiliary:
+            return nil
+        }
+        let continuesPrevious = previous?.fingerprint == fingerprint
+        let firstObservedAt = continuesPrevious
+            ? (previous?.firstObservedAt ?? now)
+            : now
+        let count = MissionControlPreviewTriggerPolicy
+            .nextStableObservationCount(
+                previousCount: previous?.observationCount,
+                representsSameCandidate: continuesPrevious
+            )
+
+        // Reaching this policy means the Group is still physically occluded
+        // and no candidate has been positively excluded as AUXILIARY. Keep a
+        // second, Group-level continuity budget that is intentionally
+        // independent of exact UNKNOWN identity. HOT / AUXILIARY / incomplete
+        // observations clear the controller evidence before the next call.
+        let continuesPhysicalOcclusion = previous != nil
+        let continuousOcclusionFirstObservedAt = continuesPhysicalOcclusion
+            ? (previous?.continuousOcclusionFirstObservedAt ?? now)
+            : now
+        let continuousOcclusionObservationCount =
+            MissionControlPreviewTriggerPolicy.nextStableObservationCount(
+                previousCount:
+                    previous?.continuousOcclusionObservationCount,
+                representsSameCandidate: continuesPhysicalOcclusion
+            )
+
+        let evidence = MissionControlPreviewColdConfirmationEvidence(
+            fingerprint: fingerprint,
+            observationCount: count,
+            firstObservedAt: firstObservedAt,
+            continuousOcclusionObservationCount:
+                continuousOcclusionObservationCount,
+            continuousOcclusionFirstObservedAt:
+                continuousOcclusionFirstObservedAt
+        )
+        let semanticConfirmation =
+            MissionControlPreviewTriggerPolicy.isConfirmed(
+                observationCount: count,
+                firstObservedAt: firstObservedAt,
+                now: now,
+                minimumStableInterval: minimumStableInterval
+            )
+        // The Group-level budget confirms only continuous physical occlusion;
+        // it never combines candidate semantics. AUXILIARY never reaches this
+        // point, so a positively excluded surface still breaks the sequence.
+        let continuousOcclusionConfirmation =
+            MissionControlPreviewTriggerPolicy.isConfirmed(
+                observationCount: continuousOcclusionObservationCount,
+                firstObservedAt: continuousOcclusionFirstObservedAt,
+                now: now,
+                minimumStableInterval: minimumStableInterval
+            )
+        return MissionControlPreviewColdConfirmationObservation(
+            evidence: evidence,
+            isConfirmed: semanticConfirmation || continuousOcclusionConfirmation
+        )
+    }
+}
+
+enum PreviewOccluderSemanticClassification: Equatable {
+    case qualified
+    case auxiliary
+    case unknown
+}
+
+struct PreviewGroupVisibilityMember: Equatable {
+    let selection: WindowServerSelectionSnapshot
+    /// Unexpanded normal-desktop geometry. The shared Window Server snapshot
+    /// intentionally retains its historical 1 pt tolerance; Preview uses the
+    /// managed member frame to avoid turning that shared tolerance into a
+    /// cross-display occlusion.
+    let frame: CGRect
+}
+
+enum PreviewGroupPhysicalVisibilityEvaluation: Equatable {
+    case visibleTop
+    case occluded(candidates: [WindowServerSelectionSnapshot])
+    case notVisible
+    case indeterminate
+}
+
+enum PreviewGroupVisibilityEvaluation: Equatable {
+    case hot
+    case occluded(
+        candidate: WindowServerSelectionSnapshot,
+        semantic: PreviewOccluderSemanticClassification
+    )
+    case coldNotVisible
+    case indeterminate
+}
+
+enum PreviewGroupVisibilityPolicy {
+    /// Preview alone needs member-relative z-order. Foreground, raise and
+    /// resize safety continue to use GroupFrontmostEvaluationPolicy.
+    static func physicalEvaluation(
+        members: [PreviewGroupVisibilityMember],
+        displayFrame: CGRect,
+        snapshot: [WindowOcclusionSnapshot],
+        completeness: WindowDiscoveryCompleteness
+    ) -> PreviewGroupPhysicalVisibilityEvaluation {
+        guard completeness == .complete,
+              !members.isEmpty,
+              displayFrame.width > 1,
+              displayFrame.height > 1 else {
+            return .indeterminate
+        }
+
+        let memberSelections = members.map(\.selection)
+        guard Set(memberSelections).count == members.count else {
+            return .indeterminate
+        }
+        let memberBySelection = Dictionary(
+            uniqueKeysWithValues: zip(memberSelections, members)
+        )
+        let physicalMembers = snapshot.filter { surface in
+            surface.layer == 0
+                && memberBySelection[selection(for: surface)] != nil
+        }
+        guard !physicalMembers.isEmpty else { return .notVisible }
+        guard physicalMembers.count == members.count else {
+            return .indeterminate
+        }
+
+        let memberSelectionSet = Set(memberBySelection.keys)
+        let candidates = snapshot.compactMap { surface
+            -> WindowServerSelectionSnapshot? in
+            let surfaceSelection = selection(for: surface)
+            guard surface.layer == 0,
+                  !memberSelectionSet.contains(surfaceSelection) else {
+                return nil
+            }
+            let clippedCandidate = surface.frame.intersection(displayFrame)
+            guard !clippedCandidate.isNull,
+                  clippedCandidate.width > 1,
+                  clippedCandidate.height > 1 else { return nil }
+
+            let occludesMember = physicalMembers.contains { physicalMember in
+                guard surface.zIndex < physicalMember.zIndex,
+                      let member = memberBySelection[
+                        selection(for: physicalMember)
+                      ] else { return false }
+                let clippedMember = member.frame.intersection(displayFrame)
+                guard !clippedMember.isNull else { return false }
+                let intersection = clippedMember.intersection(clippedCandidate)
+                return !intersection.isNull
+                    && intersection.width > 1
+                    && intersection.height > 1
+            }
+            return occludesMember ? surfaceSelection : nil
+        }
+        return candidates.isEmpty ? .visibleTop : .occluded(candidates: candidates)
+    }
+
+    static func evaluation(
+        physical: PreviewGroupPhysicalVisibilityEvaluation,
+        classification: (WindowServerSelectionSnapshot)
+            -> PreviewOccluderSemanticClassification
+    ) -> PreviewGroupVisibilityEvaluation {
+        switch physical {
+        case .visibleTop:
+            return .hot
+        case .notVisible:
+            return .coldNotVisible
+        case .indeterminate:
+            return .indeterminate
+        case .occluded(let candidates):
+            var firstUnknown: WindowServerSelectionSnapshot?
+            for candidate in candidates {
+                switch classification(candidate) {
+                case .qualified:
+                    return .occluded(
+                        candidate: candidate,
+                        semantic: .qualified
+                    )
+                case .auxiliary:
+                    continue
+                case .unknown:
+                    if firstUnknown == nil { firstUnknown = candidate }
+                }
+            }
+            if let firstUnknown {
+                return .occluded(
+                    candidate: firstUnknown,
+                    semantic: .unknown
+                )
+            }
+            return .hot
+        }
+    }
+
+    private static func selection(
+        for surface: WindowOcclusionSnapshot
+    ) -> WindowServerSelectionSnapshot {
+        WindowServerSelectionSnapshot(
+            pid: surface.pid,
+            windowID: surface.windowID
+        )
+    }
+}
+
 enum MissionControlPreviewDisplayFairnessPolicy {
     /// Interleave displays while preserving deterministic order inside each.
     /// This prevents one busy display from occupying all four global slots.
@@ -575,6 +830,7 @@ private struct MissionControlCachedPreview {
 private struct MissionControlPreviewRequest {
     let generation: UInt64
     let geometryRevision: UInt64
+    let coldAuthorizationRevision: UInt64?
     let reason: MissionControlPreviewTriggerReason
     var retryRemaining: Bool
 }
@@ -583,6 +839,7 @@ private struct MissionControlPendingPreviewResult {
     let preview: MissionControlCachedPreview
     let reason: MissionControlPreviewTriggerReason
     let geometryRevision: UInt64
+    let coldAuthorizationRevision: UInt64?
 }
 
 private struct MissionControlPreviewGeometryConfirmationCandidate {
@@ -638,9 +895,12 @@ final class MissionControlGroupProxyController {
     private var structuralPreviewMemberIDs = Set<String>()
     private var knownPreviewMemberIDs = Set<String>()
     private var hotPreviewGroupIDs = Set<SnapGroupID>()
-    private var coldConfirmationObservationCountByGroupID: [SnapGroupID: Int] = [:]
-    private var coldConfirmationFirstObservedAtByGroupID:
-        [SnapGroupID: TimeInterval] = [:]
+    private var coldVisiblePreviewGroupIDs = Set<SnapGroupID>()
+    private var coldNotVisiblePreviewGroupIDs = Set<SnapGroupID>()
+    private var coldConfirmationEvidenceByGroupID:
+        [SnapGroupID: MissionControlPreviewColdConfirmationEvidence] = [:]
+    private var physicalFallbackCandidateByGroupID:
+        [SnapGroupID: WindowServerSelectionSnapshot] = [:]
     private var pendingCaptureReasons:
         [MissionControlPreviewCacheKey: MissionControlPreviewTriggerReason] = [:]
     private var pendingCaptureEnqueueOrders:
@@ -656,6 +916,10 @@ final class MissionControlGroupProxyController {
         [String: MissionControlPreviewGeometryConfirmationCandidate] = [:]
     private var lastCaptureAtByPhysicalIdentity: [String: TimeInterval] = [:]
     private var geometryRevisionByPhysicalIdentity: [String: UInt64] = [:]
+    // Unlike generation cancellation, this revokes only obsolete COLD work for
+    // one structural member. Initial and geometry-triggered captures remain
+    // valid when a Group becomes HOT or leaves the visible desktop.
+    private var coldCaptureAuthorizationRevisionByMemberID: [String: UInt64] = [:]
     private var confirmationGeneration: UInt64 = 0
     private var confirmationRefreshIsScheduled = false
     private var cooldownGeneration: UInt64 = 0
@@ -698,6 +962,16 @@ final class MissionControlGroupProxyController {
         activeSelectionCandidate?.groupID
     }
 
+    /// Once the bounded UNKNOWN fallback has accepted one exact physical
+    /// candidate, repeated Recovery ticks need not repeat the same failed AX
+    /// query. A different candidate is always classified normally.
+    func previewOccluderClassificationIsNeeded(
+        for groupID: SnapGroupID,
+        candidate: WindowServerSelectionSnapshot
+    ) -> Bool {
+        physicalFallbackCandidateByGroupID[groupID] != candidate
+    }
+
     func update(
         groups: [SnapGroup],
         visibleWindowsByIdentity: [String: ManagedWindow],
@@ -705,8 +979,9 @@ final class MissionControlGroupProxyController {
         preservedGroupIDs: Set<SnapGroupID> = [],
         structuralGroupIDs: Set<SnapGroupID>,
         structuralMemberIDs: Set<String>,
-        previewFrontmostEvaluationByGroupID:
-            [SnapGroupID: GroupFrontmostEvaluation] = [:],
+        structuralMemberIDsByGroupID: [SnapGroupID: Set<String>],
+        previewVisibilityEvaluationByGroupID:
+            [SnapGroupID: PreviewGroupVisibilityEvaluation] = [:],
         previewsEnabled: Bool,
         previewCacheByteLimit: Int,
         previewProvider: @escaping PreviewProvider,
@@ -779,9 +1054,6 @@ final class MissionControlGroupProxyController {
             activePreviewByteBudget = previewByteBudget
             latestPreviewProvider = previewProvider
             latestTransientPreviewProvider = transientPreviewProvider
-            commitValidatedPreviewResults(
-                currentPreviewKeys: currentPreviewKeys
-            )
             // A frame-only key change must not turn a structurally known member
             // into a new member and start an unbounded sequence of captures. Carry
             // its derived image to the new key; committed size/display mutations
@@ -851,8 +1123,16 @@ final class MissionControlGroupProxyController {
                 currentPreviewKeys: currentPreviewKeys,
                 previewKeysByGroupID: previewKeysByGroupID,
                 structuralGroupIDs: structuralGroupIDs,
-                frontmostEvaluationByGroupID:
-                    previewFrontmostEvaluationByGroupID
+                structuralMemberIDsByGroupID: structuralMemberIDsByGroupID,
+                visibilityEvaluationByGroupID:
+                    previewVisibilityEvaluationByGroupID
+            )
+            // Activity must revoke an old visible epoch before completed COLD
+            // pixels are validated. Otherwise a not-visible/HOT observation
+            // and an already-finished capture could race within this main-thread
+            // update and commit in the wrong order.
+            commitValidatedPreviewResults(
+                currentPreviewKeys: currentPreviewKeys
             )
             if desktopPresentationIsStable {
                 transientAuthorizedHotGroupIDs =
@@ -860,7 +1140,7 @@ final class MissionControlGroupProxyController {
                         .authorizedHotGroupIDs(
                             currentGroupIDs: Set(previewKeysByGroupID.keys),
                             currentEvaluationByGroupID:
-                                previewFrontmostEvaluationByGroupID
+                                previewVisibilityEvaluationByGroupID
                         )
             }
             if perImageBudgetBecameSmaller {
@@ -1398,8 +1678,10 @@ final class MissionControlGroupProxyController {
         structuralPreviewMemberIDs.removeAll()
         knownPreviewMemberIDs.removeAll()
         hotPreviewGroupIDs.removeAll()
-        coldConfirmationObservationCountByGroupID.removeAll()
-        coldConfirmationFirstObservedAtByGroupID.removeAll()
+        coldVisiblePreviewGroupIDs.removeAll()
+        coldNotVisiblePreviewGroupIDs.removeAll()
+        coldConfirmationEvidenceByGroupID.removeAll()
+        physicalFallbackCandidateByGroupID.removeAll()
         geometryConfirmationCandidates.removeAll()
         transientAuthorizedHotGroupIDs.removeAll()
         pendingCaptureReasons.removeAll()
@@ -1408,6 +1690,7 @@ final class MissionControlGroupProxyController {
         deferredCaptureEnqueueOrdersByMemberID.removeAll()
         lastCaptureAtByPhysicalIdentity.removeAll()
         geometryRevisionByPhysicalIdentity.removeAll()
+        coldCaptureAuthorizationRevisionByMemberID.removeAll()
         cancelConfirmationRefresh()
         cancelCooldownRefresh()
         activePreviewByteBudget = 0
@@ -1429,8 +1712,7 @@ final class MissionControlGroupProxyController {
         previewRequestsByKey.removeAll()
         transientAuthorizedHotGroupIDs.removeAll()
         hasPendingPreviewCacheApplication = false
-        coldConfirmationObservationCountByGroupID.removeAll()
-        coldConfirmationFirstObservedAtByGroupID.removeAll()
+        coldConfirmationEvidenceByGroupID.removeAll()
         pendingCaptureReasons.removeAll()
         pendingCaptureEnqueueOrders.removeAll()
         deferredCaptureReasonsByMemberID.removeAll()
@@ -1458,6 +1740,8 @@ final class MissionControlGroupProxyController {
             endTransientPreviewSession()
             transientAuthorizedHotGroupIDs.removeAll()
             preserveGeometryCandidatesAsDebt()
+            // A login/session boundary breaks contiguous visual evidence.
+            coldConfirmationEvidenceByGroupID.removeAll()
         }
         previewCaptureIsSuspended = suspended
         previewCaptureGeneration &+= 1
@@ -1478,7 +1762,7 @@ final class MissionControlGroupProxyController {
             hasPendingPreviewCacheApplication = false
             cancelConfirmationRefresh()
             cancelCooldownRefresh()
-        } else if !coldConfirmationObservationCountByGroupID.isEmpty {
+        } else if !coldConfirmationEvidenceByGroupID.isEmpty {
             scheduleConfirmationRefreshIfNeeded()
         }
     }
@@ -1487,6 +1771,10 @@ final class MissionControlGroupProxyController {
         guard desktopPresentationIsStable != stable else { return }
         if !stable {
             preserveGeometryCandidatesAsDebt()
+            // Mission Control and Space transforms may reorder and rescale
+            // surfaces. No pre-transform COLD candidate may be joined to a
+            // post-transform observation.
+            coldConfirmationEvidenceByGroupID.removeAll()
         }
         desktopPresentationIsStable = stable
         previewCaptureGeneration &+= 1
@@ -1498,7 +1786,7 @@ final class MissionControlGroupProxyController {
             for (key, request) in interrupted {
                 preserveCaptureDebt(key: key, reason: request.reason)
             }
-            if !coldConfirmationObservationCountByGroupID.isEmpty {
+            if !coldConfirmationEvidenceByGroupID.isEmpty {
                 scheduleConfirmationRefreshIfNeeded()
             }
         } else {
@@ -1618,7 +1906,7 @@ final class MissionControlGroupProxyController {
         // the justified earlier turn run; the time gate will request one final
         // geometry pass only if the newest sample has not settled yet.
         if alreadyAwaitingGeometry,
-           coldConfirmationObservationCountByGroupID.isEmpty,
+           coldConfirmationEvidenceByGroupID.isEmpty,
            pendingCaptureReasons.isEmpty {
             cancelConfirmationRefresh()
         }
@@ -1908,9 +2196,16 @@ final class MissionControlGroupProxyController {
             key.stableIdentity,
             default: 0
         ]
+        let coldAuthorizationRevision = reason == .coldConfirmed
+            ? coldCaptureAuthorizationRevisionByMemberID[
+                key.stableIdentity,
+                default: 0
+            ]
+            : nil
         previewRequestsByKey[key] = MissionControlPreviewRequest(
             generation: captureGeneration,
             geometryRevision: geometryRevision,
+            coldAuthorizationRevision: coldAuthorizationRevision,
             reason: reason,
             retryRemaining: retryRemaining
         )
@@ -1953,6 +2248,25 @@ final class MissionControlGroupProxyController {
                       self.desktopPresentationIsStable,
                       self.structuralPreviewMemberIDs.contains(key.stableIdentity)
                 else { return }
+                let completedReason = completedRequest?.reason ?? reason
+                let completedColdAuthorizationRevision = completedRequest?
+                    .coldAuthorizationRevision ?? coldAuthorizationRevision
+                guard MissionControlPreviewColdCaptureAuthorizationPolicy
+                    .allowsCommit(
+                        reason: completedReason,
+                        admittedRevision: completedColdAuthorizationRevision,
+                        currentRevision:
+                            self.coldCaptureAuthorizationRevisionByMemberID[
+                                key.stableIdentity,
+                                default: 0
+                            ]
+                    ) else {
+                    // The Group became HOT or left the visible desktop after
+                    // this COLD capture was admitted. Drop its pixels and retry
+                    // budget without cancelling unrelated queue work.
+                    self.scheduleConfirmationRefreshIfNeeded()
+                    return
+                }
                 guard MissionControlPreviewTriggerPolicy
                     .captureMatchesCurrentGeometry(
                         admittedRevision: geometryRevision,
@@ -1973,7 +2287,7 @@ final class MissionControlGroupProxyController {
                     Self.canReuseCapturedPixels(from: key, for: $0)
                 })
                 guard let (capturedImage, _) = rendered else {
-                    let retryReason = completedRequest?.reason ?? reason
+                    let retryReason = completedReason
                     if let resultKey, completedRequest?.retryRemaining == true,
                        let currentProvider = self.latestPreviewProvider {
                         // Do not turn admission contention into a fresh
@@ -2036,8 +2350,10 @@ final class MissionControlGroupProxyController {
                     self.pendingPreviewResults[resultKey] =
                         MissionControlPendingPreviewResult(
                             preview: cached,
-                            reason: completedRequest?.reason ?? reason,
-                            geometryRevision: geometryRevision
+                            reason: completedReason,
+                            geometryRevision: geometryRevision,
+                            coldAuthorizationRevision:
+                                completedColdAuthorizationRevision
                         )
                     self.hasPendingPreviewCacheApplication = true
                 } else {
@@ -2070,6 +2386,16 @@ final class MissionControlGroupProxyController {
         for key in Array(pendingPreviewResults.keys) {
             guard let result = pendingPreviewResults.removeValue(forKey: key),
                   structuralPreviewMemberIDs.contains(key.stableIdentity),
+                  MissionControlPreviewColdCaptureAuthorizationPolicy
+                      .allowsCommit(
+                        reason: result.reason,
+                        admittedRevision: result.coldAuthorizationRevision,
+                        currentRevision:
+                            coldCaptureAuthorizationRevisionByMemberID[
+                                key.stableIdentity,
+                                default: 0
+                            ]
+                      ),
                   MissionControlPreviewTriggerPolicy
                       .captureMatchesCurrentGeometry(
                         admittedRevision: result.geometryRevision,
@@ -2221,32 +2547,25 @@ final class MissionControlGroupProxyController {
         previewKeysByGroupID:
             [SnapGroupID: Set<MissionControlPreviewCacheKey>],
         structuralGroupIDs: Set<SnapGroupID>,
-        frontmostEvaluationByGroupID:
-            [SnapGroupID: GroupFrontmostEvaluation]
+        structuralMemberIDsByGroupID: [SnapGroupID: Set<String>],
+        visibilityEvaluationByGroupID:
+            [SnapGroupID: PreviewGroupVisibilityEvaluation]
     ) {
         let previousKnownMemberIDs = knownPreviewMemberIDs
         // Group activity is structural state. Temporary AX/CG presentation
         // loss is indeterminate evidence, not a HOT/COLD transition. Retire
         // activity only when the explicit Group itself leaves the store.
         hotPreviewGroupIDs.formIntersection(structuralGroupIDs)
-        coldConfirmationObservationCountByGroupID =
-            coldConfirmationObservationCountByGroupID.filter {
+        coldVisiblePreviewGroupIDs.formIntersection(structuralGroupIDs)
+        coldNotVisiblePreviewGroupIDs.formIntersection(structuralGroupIDs)
+        coldConfirmationEvidenceByGroupID =
+            coldConfirmationEvidenceByGroupID.filter {
                 structuralGroupIDs.contains($0.key)
             }
-        coldConfirmationFirstObservedAtByGroupID =
-            coldConfirmationFirstObservedAtByGroupID.filter {
+        physicalFallbackCandidateByGroupID =
+            physicalFallbackCandidateByGroupID.filter {
                 structuralGroupIDs.contains($0.key)
             }
-        // A HOT -> COLD confirmation must be contiguous evidence. If a
-        // structural group is temporarily not presentable, the missing census
-        // is indeterminate and breaks the candidate instead of letting two
-        // separated occlusion samples manufacture a final capture.
-        let currentlyObservedGroupIDs = Set(previewKeysByGroupID.keys)
-        for groupID in Array(coldConfirmationObservationCountByGroupID.keys)
-            where !currentlyObservedGroupIDs.contains(groupID) {
-            coldConfirmationObservationCountByGroupID.removeValue(forKey: groupID)
-            coldConfirmationFirstObservedAtByGroupID.removeValue(forKey: groupID)
-        }
 
         let newKeys = currentPreviewKeys.filter {
             !previousKnownMemberIDs.contains($0.stableIdentity)
@@ -2256,73 +2575,82 @@ final class MissionControlGroupProxyController {
         // cannot retrigger .initial.
         enqueueCapture(keys: newKeys, reason: .initial)
 
-        for (groupID, keys) in previewKeysByGroupID {
-            let evaluation = frontmostEvaluationByGroupID[groupID]
+        for groupID in structuralGroupIDs {
+            let keys = previewKeysByGroupID[groupID] ?? []
+            let memberIDs = structuralMemberIDsByGroupID[groupID] ?? []
+            let evaluation = visibilityEvaluationByGroupID[groupID]
                 ?? .indeterminate
             switch evaluation {
-            case .verifiedFrontmost:
+            case .hot:
                 hotPreviewGroupIDs.insert(groupID)
-                coldConfirmationObservationCountByGroupID.removeValue(
+                coldVisiblePreviewGroupIDs.remove(groupID)
+                coldNotVisiblePreviewGroupIDs.remove(groupID)
+                physicalFallbackCandidateByGroupID.removeValue(
                     forKey: groupID
                 )
-                coldConfirmationFirstObservedAtByGroupID.removeValue(
-                    forKey: groupID
-                )
-                let memberIDs = Set(keys.map(\.stableIdentity))
-                for key in Array(pendingCaptureReasons.keys) where
-                    pendingCaptureReasons[key] == .coldConfirmed
-                        && memberIDs.contains(key.stableIdentity) {
-                    pendingCaptureReasons.removeValue(forKey: key)
-                    pendingCaptureEnqueueOrders.removeValue(forKey: key)
-                }
-                for memberID in memberIDs where
-                    deferredCaptureReasonsByMemberID[memberID] == .coldConfirmed {
-                    deferredCaptureReasonsByMemberID.removeValue(forKey: memberID)
-                    deferredCaptureEnqueueOrdersByMemberID.removeValue(forKey: memberID)
-                }
-            case .occluded:
+                clearColdConfirmation(for: groupID)
+                clearColdConfirmedDebt(memberIDs: memberIDs)
+            case .occluded(let candidate, let semantic):
+                coldNotVisiblePreviewGroupIDs.remove(groupID)
                 guard hotPreviewGroupIDs.contains(groupID) else {
-                    // Already COLD (or never observed HOT): no state transition,
-                    // therefore no final-capture trigger.
+                    coldVisiblePreviewGroupIDs.insert(groupID)
+                    if semantic == .unknown {
+                        physicalFallbackCandidateByGroupID[groupID] = candidate
+                    } else {
+                        physicalFallbackCandidateByGroupID.removeValue(
+                            forKey: groupID
+                        )
+                    }
+                    clearColdConfirmation(for: groupID)
+                    // Already COLD, newly visible while occluded, or never
+                    // observed HOT: no HOT -> COLD-visible transition exists.
                     continue
                 }
                 let now = ProcessInfo.processInfo.systemUptime
-                let firstObservedAt =
-                    coldConfirmationFirstObservedAtByGroupID[groupID] ?? now
-                let count = (coldConfirmationObservationCountByGroupID[groupID]
-                    ?? 0) + 1
-                if MissionControlPreviewTriggerPolicy.isConfirmed(
-                    observationCount: count,
-                    firstObservedAt: firstObservedAt,
-                    now: now,
-                    minimumStableInterval:
-                        MissionControlPreviewWorkPolicy.confirmationInterval
-                ) {
-                    coldConfirmationObservationCountByGroupID.removeValue(
-                        forKey: groupID
-                    )
-                    coldConfirmationFirstObservedAtByGroupID.removeValue(
-                        forKey: groupID
-                    )
+                guard let observation =
+                    MissionControlPreviewColdConfirmationPolicy.observe(
+                        previous: coldConfirmationEvidenceByGroupID[groupID],
+                        candidate: candidate,
+                        semantic: semantic,
+                        now: now
+                    ) else {
+                    clearColdConfirmation(for: groupID)
+                    continue
+                }
+                if observation.isConfirmed {
+                    clearColdConfirmation(for: groupID)
                     hotPreviewGroupIDs.remove(groupID)
+                    coldVisiblePreviewGroupIDs.insert(groupID)
+                    if semantic == .unknown {
+                        physicalFallbackCandidateByGroupID[groupID] = candidate
+                    } else {
+                        physicalFallbackCandidateByGroupID.removeValue(
+                            forKey: groupID
+                        )
+                    }
                     enqueueCapture(keys: keys, reason: .coldConfirmed)
                 } else {
-                    coldConfirmationObservationCountByGroupID[groupID] = count
-                    coldConfirmationFirstObservedAtByGroupID[groupID] =
-                        firstObservedAt
+                    coldConfirmationEvidenceByGroupID[groupID] =
+                        observation.evidence
                     scheduleConfirmationRefreshIfNeeded()
                 }
+            case .coldNotVisible:
+                // End the old visible epoch without a final capture. A later
+                // occluded return therefore cannot inherit stale HOT or debt.
+                hotPreviewGroupIDs.remove(groupID)
+                coldVisiblePreviewGroupIDs.remove(groupID)
+                coldNotVisiblePreviewGroupIDs.insert(groupID)
+                physicalFallbackCandidateByGroupID.removeValue(
+                    forKey: groupID
+                )
+                clearColdConfirmation(for: groupID)
+                clearColdConfirmedDebt(memberIDs: memberIDs)
             case .indeterminate:
                 // Unknown WindowServer evidence preserves the confirmed Group
                 // activity state, but it breaks an in-progress HOT -> COLD
                 // candidate. Two separated occlusion samples may not be joined
                 // across an incomplete census.
-                coldConfirmationObservationCountByGroupID.removeValue(
-                    forKey: groupID
-                )
-                coldConfirmationFirstObservedAtByGroupID.removeValue(
-                    forKey: groupID
-                )
+                clearColdConfirmation(for: groupID)
             }
         }
 
@@ -2344,8 +2672,67 @@ final class MissionControlGroupProxyController {
         }
         geometryRevisionByPhysicalIdentity =
             geometryRevisionByPhysicalIdentity.filter {
+            structuralPreviewMemberIDs.contains($0.key)
+        }
+        coldCaptureAuthorizationRevisionByMemberID =
+            coldCaptureAuthorizationRevisionByMemberID.filter {
                 structuralPreviewMemberIDs.contains($0.key)
             }
+    }
+
+    private func clearColdConfirmation(for groupID: SnapGroupID) {
+        coldConfirmationEvidenceByGroupID.removeValue(forKey: groupID)
+    }
+
+    private func clearColdConfirmedDebt(memberIDs: Set<String>) {
+        guard !memberIDs.isEmpty else { return }
+        // A running capture cannot be cancelled without also disturbing shared
+        // queue behavior. Advance only the affected members' authorization so
+        // an old COLD result is rejected both on completion and at commit.
+        let admittedColdMemberIDs = Set(
+            previewRequestsByKey.compactMap { key, request in
+                request.reason == .coldConfirmed
+                    && memberIDs.contains(key.stableIdentity)
+                    && request.coldAuthorizationRevision
+                        == coldCaptureAuthorizationRevisionByMemberID[
+                            key.stableIdentity,
+                            default: 0
+                        ]
+                    ? key.stableIdentity : nil
+            }
+        ).union(
+            pendingPreviewResults.compactMap { key, result in
+                result.reason == .coldConfirmed
+                    && memberIDs.contains(key.stableIdentity)
+                    && result.coldAuthorizationRevision
+                        == coldCaptureAuthorizationRevisionByMemberID[
+                            key.stableIdentity,
+                            default: 0
+                        ]
+                    ? key.stableIdentity : nil
+            }
+        )
+        for memberID in admittedColdMemberIDs {
+            coldCaptureAuthorizationRevisionByMemberID[memberID, default: 0]
+                &+= 1
+        }
+        for key in Array(pendingCaptureReasons.keys) where
+            pendingCaptureReasons[key] == .coldConfirmed
+                && memberIDs.contains(key.stableIdentity) {
+            pendingCaptureReasons.removeValue(forKey: key)
+            pendingCaptureEnqueueOrders.removeValue(forKey: key)
+        }
+        for key in Array(pendingPreviewResults.keys) where
+            pendingPreviewResults[key]?.reason == .coldConfirmed
+                && memberIDs.contains(key.stableIdentity) {
+            pendingPreviewResults.removeValue(forKey: key)
+        }
+        for memberID in memberIDs where
+            deferredCaptureReasonsByMemberID[memberID] == .coldConfirmed {
+            deferredCaptureReasonsByMemberID.removeValue(forKey: memberID)
+            deferredCaptureEnqueueOrdersByMemberID.removeValue(forKey: memberID)
+        }
+        hasPendingPreviewCacheApplication = !pendingPreviewResults.isEmpty
     }
 
     private func reconcileDeferredPreviewDebt(

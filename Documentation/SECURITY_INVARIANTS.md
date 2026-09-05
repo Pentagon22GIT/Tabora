@@ -20,8 +20,10 @@
 ## 派生処理とライフサイクル
 
 - 通常Mission Control Previewのgroup数・member数が増えても、実行中CG capture数とOperationQueueは固定上限を超えない。上限到達はactiveな待機要求を破棄する根拠にせず、物理window単位の合流とdisplay間round-robin・display内FIFOで全候補へ有限の実行機会を与える。MC transientは別のsingle-flight / byte / work gateを持つ。
-- groupのHOT/COLDは全memberを含む完全なWindow Server evidenceだけで更新し、group内member同士のorderingは外部occlusionとして扱わない。一部memberだけの露出または判定不能をCOLDとして扱わない。HOT→COLDはgroupのoccluded状態を2観測して確定し、COLD→HOTは未確定および未投入のCOLD要求だけを取消す。
-- 通常Mission Control Preview cacheは初回、確定resize/display移動、確定COLD以外の理由で取得しない。Recovery tick、cache age、proxy再描画から通常cache用画像要求を生成しない。Mission Control開始は通常cacheとは独立したsession限定transient laneだけを起動できる。
+- PreviewのGroup HOT/COLDはcompleteなWindow Server evidenceだけで更新する。全exact memberが現在のon-screen censusに存在する場合だけmember-relativeな外部occlusionを評価し、Group内member ordering、unionの空白、隣接Displayの共有1 pt境界spillをCOLD根拠にしない。全memberがcomplete censusから外れた場合は`COLD-not-visible`としてHOT leaseを閉じるが画像取得は行わない。partial / incomplete / transform中は`indeterminate`として直前状態を破壊しない。
+- PreviewのCOLD-visible候補はphysical occlusionを先に証明し、そのcandidateだけをAX意味分類する。明示的な`AXDialog` / `AXSystemDialog` / modal / exact attached sheetだけをauxiliaryとしてCOLD根拠から除外し、未知・独自subrole・一時的な解決失敗をauxiliaryへ昇格しない。UNKNOWNのsemantic evidenceはexact candidate単位に保ちつつ、Group-level physical occlusionには有限confirmation budgetを持たせ、candidate churnで0.15秒再観測を無期限化してはいけない。
+- HOT→`COLD-visible`だけを2観測・0.15秒以上で確定して`coldConfirmed`取得へ接続する。`COLD-not-visible`へ移った時は旧visible epochのCOLD authorizationを失効し、admit済み同期CG取得もcompletion / staging commitで旧revisionを拒否する。`geometryConfirmed`や他Groupの取得authorizationを巻き込んではならない。
+- 通常Mission Control Preview cacheは初回、確定resize/display移動、確定HOT→COLD-visible以外の理由で取得しない。Recovery tick、cache age、proxy再描画から通常cache用画像要求を生成しない。Mission Control開始は通常cacheとは独立したsession限定transient laneだけを起動できる。
 - MC transient laneは通常Desktopのcomplete exposure evidenceでgroup全体がHOTと証明された場合だけ、その全member集合を開始時の可視Space + exact group/member identityへ一度固定する。通常HOT stateのunknown保持をtransient認可へ流用しない。部分遮蔽groupを分割取得・部分適用せず、認可済みgroupをatomicに取得・適用する。Mission Control内と結果適用時にHOT/COLDを再評価せず、transform geometryが連続安定するまで取得せず、通常cacheへcommitしない。session/generation不一致、選択開始後のlate result、budget超過、取得失敗は棄却する。
 - MC transientは通常cache limitと同額の独立byte budget、固定済みHOT group plan単位のadmission、session member上限、物理transaction最大1本を必須とする。設定UIはnormal + transientの合計上限を表示し、各laneへ表示値の半分ずつを割り当てる。通常Preview/Assistと同じglobal CG capture gateも通し、旧sessionの物理requestが収束する前に次sessionのrequestを重ねない。global gate待機後およびCG取得後の派生画像処理でもsession generationを再確認し、失効済みsessionへ新規Window Server取得・縮小・再sampleを継続してはいけない。
 - previewは派生表示であり、取得失敗・上限超過・cancelによってgroup identity、foreground認可、placement、resize ownershipを変更しない。
@@ -58,6 +60,7 @@
 
 ## Group integrity
 
+- connected Groupのforeground判定はstrict orderingを維持し、同一Displayの外部surfaceまたは実際にDisplayを跨いで競合するsurfaceをraise根拠から除外してはいけない。一方、共有Window Server geometryの1 pt境界許容だけで隣接Displayのsurfaceをoccluderにしてはいけない。対象Groupのphysical display frameへscopeした同じ判定をplain-click foregroundとprovisional Snap peerへ適用し、cross-display誤mutationを防ぎながら既存raise条件を維持する。
 1. unknown observation stateだけでgroupをretireしてはいけない。
 2. 正当なnative resize、正当なdrag departure、confirmed member closureは有効なdeparture pathとして維持する。
 3. passive geometry mismatchだけからuser departureを捏造してはいけない。
@@ -162,7 +165,7 @@
 2. Preview cache pressure / failureでplacement correctnessを変えてはいけない。
 3. optional candidate discoveryをstructural authorityにしてはいけない。
 4. Preview resolutionは2 / 3 / 4 layoutおよびmultiple group全体でmemory-boundedに保ち、quality変更のためidentity / ordering authorizationを弱めてはいけない。
-5. Mission Control previewはactive memberの初回・確定resize/display移動・確定COLDだけをbounded concurrencyで非同期実行する。cache ageやRecovery tickから取得を生成しない。capture completionは次の要求を直接admitせず、selection / snap / resize / measurement / restore transactionを横切ってproxy構造を変更してはいけない。
+5. Mission Control previewはactive memberの初回・確定resize/display移動・確定HOT→COLD-visibleだけをbounded concurrencyで非同期実行する。cache ageやRecovery tickから取得を生成しない。capture completionは次の要求を直接admitせず、selection / snap / resize / measurement / restore transactionを横切ってproxy構造を変更してはいけない。
 6. Preview imageをディスクへ永続化せず、cache refreshをdirectory / file scanとして実装しない。
 
 ## Release trust

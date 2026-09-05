@@ -1,7 +1,7 @@
 # 非公開APIを用いたグループのDesktop間移送
 
 **最終更新:** 2026-09-05
-**動作確認済み環境:** macOS 26.5.2 / 26.6.2  
+**動作確認済み環境:** macOS 26.5.2 / 26.6.2
 **対象:** Mission Control上のグループProxy移送、Window→Space観測、将来のABI保守
 
 ## 目的
@@ -189,11 +189,11 @@ destination drop直後にもmember SpaceまたはAX elementが一時的に`unkno
 
 ## Release確認表
 
-最新source適用確認: **2026-09-03 / Tabora v2.2.0 (Build 17)**
+最新source適用確認: **2026-09-05 / Tabora v2.2.1 (Build 18)**
 
 最新macOS実機確認: **2026-09-01 / Tabora v2.1.0 (Build 16) / macOS 26.6.2**
 
-実機確認内容はv2.0.0 Build 14で完了した記録を基準とし、v2.1.0まで継承確認済みです。v2.2.0は共有するMission Control transform判定からpreview取得gateを閉じる接続だけを追加し、この文書が対象とするObservation / Transport / migration FIFO / rollback / AX layout / foreground intentは変更していません。source境界監査は完了し、v2.2.0の実機再確認はRelease前の未完了項目として維持します。
+実機確認内容はv2.0.0 Build 14以降の確認履歴を継承します。v2.2.1はPreview HOT/COLD、multi-display foreground、provisional Snap peerの判定境界を更新しますが、この文書が対象とするObservation / Transport / migration FIFO / rollback / AX layout / post-migration foreground intentの契約は変更しません。現行Releaseでは下記の移送確認表を通常のfunctional suiteとして維持します。
 
 - [x] 2/3/4 member、同一/異なるアプリ。
 - [x] 同一アプリ複数memberで各AX elementが別Window IDへ解決され、重複ID captureがdispatch前に拒否されること。

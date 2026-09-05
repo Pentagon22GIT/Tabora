@@ -3,6 +3,21 @@ import ApplicationServices
 import CoreGraphics
 
 
+enum PreviewOccluderAXSubrolePolicy {
+    /// This is only the subrole stage. A standard window must still pass the
+    /// AXModal check before the caller treats it as normal content.
+    static func classification(
+        for subrole: String
+    ) -> PreviewOccluderSemanticClassification {
+        if subrole == "AXDialog" || subrole == "AXSystemDialog" {
+            return .auxiliary
+        }
+        if subrole == kAXStandardWindowSubrole {
+            return .qualified
+        }
+        return .unknown
+    }
+}
 
 struct AXFrameSizeAxes: OptionSet {
     let rawValue: Int
@@ -424,6 +439,9 @@ final class AXWindowService {
     private var frameAnimationTimers: [String: Timer] = [:]
     private var nextFrameOperationGeneration = 0
     private let runtimeWindowIDResolver = RuntimeWindowIDResolver()
+    private var previewOccluderSemanticCache:
+        [WindowServerSelectionSnapshot: PreviewOccluderSemanticClassification]
+        = [:]
 
     var isTrusted: Bool { AXIsProcessTrusted() }
 
@@ -1129,6 +1147,10 @@ final class AXWindowService {
             return WindowOcclusionSnapshot(
                 windowID: CGWindowID(id.uint32Value),
                 pid: pid.int32Value,
+                // This shared 1 pt tolerance is part of the original Window
+                // Server geometry contract and has multiple occlusion
+                // consumers. Preview-specific display/member scoping is
+                // applied by PreviewGroupVisibilityPolicy instead.
                 frame: cgBoundsToCocoa(bounds).insetBy(dx: -1, dy: -1),
                 zIndex: index,
                 layer: layer
@@ -1142,6 +1164,78 @@ final class AXWindowService {
 
     func windowOcclusionSnapshot() -> [WindowOcclusionSnapshot] {
         windowOcclusionSnapshotObservation().snapshot
+    }
+
+    /// Keep classifications only while the exact physical surface remains in
+    /// a complete on-screen census. UNKNOWN is deliberately never cached so
+    /// the existing bounded confirmation pass can retry transient AX failures.
+    func synchronizePreviewOccluderSemanticCache(
+        with snapshot: [WindowOcclusionSnapshot],
+        completeness: WindowDiscoveryCompleteness
+    ) {
+        guard completeness == .complete else {
+            previewOccluderSemanticCache.removeAll()
+            return
+        }
+        let currentSelections = Set(snapshot.map {
+            WindowServerSelectionSnapshot(pid: $0.pid, windowID: $0.windowID)
+        })
+        previewOccluderSemanticCache = previewOccluderSemanticCache.filter {
+            currentSelections.contains($0.key)
+        }
+    }
+
+    func clearPreviewOccluderSemanticCache() {
+        previewOccluderSemanticCache.removeAll()
+    }
+
+    /// Classify only one Window Server candidate and only within its owning
+    /// application. This is never a whole-desktop AX census.
+    func previewOccluderSemanticClassification(
+        _ selection: WindowServerSelectionSnapshot
+    ) -> PreviewOccluderSemanticClassification {
+        if let cached = previewOccluderSemanticCache[selection] {
+            return cached
+        }
+        // Without the exact AX -> CGWindowID bridge, geometry/title matching
+        // would rebuild every AX window in the candidate app on the main
+        // thread. UNKNOWN is cheaper and still converges through the existing
+        // bounded physical fallback.
+        guard runtimeWindowIDResolver.isAvailable,
+              isTrusted,
+              let app = NSRunningApplication(
+                processIdentifier: selection.pid
+              ), !app.isTerminated else { return .unknown }
+
+        let appElement = AXUIElementCreateApplication(selection.pid)
+        guard let elements: [AXUIElement] = copyAttribute(
+            appElement,
+            kAXWindowsAttribute as CFString,
+            messagingTimeout: AXMessagingTimeoutPolicy.passiveObservation
+        ) else { return .unknown }
+        let resolvedIDs = elements.map(runtimeWindowIDResolver.resolve)
+        let result: PreviewOccluderSemanticClassification
+        if let index = ExactWindowIdentityPolicy.matchingIndex(
+            targetWindowID: selection.windowID,
+            candidateWindowIDs: resolvedIDs
+        ) {
+            result = previewSemanticClassification(of: elements[index])
+        } else if exactAttachedSheetMatches(
+            windowID: selection.windowID,
+            parentWindows: elements
+        ) {
+            // Parent -> AXSheets relationship is exact semantic evidence even
+            // when the sheet is omitted from the app-level AXWindows array.
+            result = .auxiliary
+        } else {
+            // activationPolicy is diagnostic context only. Resolution failure
+            // is never sufficient to create a cached AUXILIARY result.
+            return .unknown
+        }
+        if result != .unknown {
+            previewOccluderSemanticCache[selection] = result
+        }
+        return result
     }
 
     /// Return the currently *on-screen* Window Server presentation for only
@@ -2593,6 +2687,114 @@ final class AXWindowService {
             messagingTimeout: AXMessagingTimeoutPolicy.passiveObservation
         ) ?? []
         return !sheets.isEmpty
+    }
+
+    private func previewSemanticClassification(
+        of element: AXUIElement
+    ) -> PreviewOccluderSemanticClassification {
+        let role = attributeValueObservation(
+            kAXRoleAttribute as CFString,
+            on: element,
+            messagingTimeout: AXMessagingTimeoutPolicy.passiveObservation
+        )
+        switch role.error {
+        case .success:
+            guard let value = role.value as? String else { return .unknown }
+            // Sheets, menus, popovers and other definite non-window AX roles
+            // are auxiliary even when Window Server publishes layer zero.
+            guard value == kAXWindowRole else { return .auxiliary }
+        case .attributeUnsupported, .invalidUIElement:
+            return .unknown
+        default:
+            return .unknown
+        }
+
+        let subrole = attributeValueObservation(
+            kAXSubroleAttribute as CFString,
+            on: element,
+            messagingTimeout: AXMessagingTimeoutPolicy.passiveObservation
+        )
+        switch subrole.error {
+        case .success:
+            guard let value = subrole.value as? String else { return .unknown }
+            switch PreviewOccluderAXSubrolePolicy.classification(for: value) {
+            case .auxiliary:
+                return .auxiliary
+            case .unknown:
+                // Only positively identified auxiliary semantics may suppress
+                // a physical occluder. A custom/future subrole is not proof
+                // that the surface is decorative; keep it UNKNOWN so bounded
+                // physical fallback can still make a real window COLD.
+                return .unknown
+            case .qualified:
+                break
+            }
+        case .attributeUnsupported:
+            return .unknown
+        case .invalidUIElement:
+            return .unknown
+        default:
+            return .unknown
+        }
+
+        let modal = attributeValueObservation(
+            kAXModalAttribute as CFString,
+            on: element,
+            messagingTimeout: AXMessagingTimeoutPolicy.passiveObservation
+        )
+        switch modal.error {
+        case .success:
+            guard let isModal = modal.value as? Bool else { return .unknown }
+            return isModal ? .auxiliary : .qualified
+        case .attributeUnsupported:
+            // AXModal is optional. A positively identified standard window is
+            // normal content when the optional attribute is absent.
+            return .qualified
+        case .invalidUIElement:
+            return .unknown
+        default:
+            return .unknown
+        }
+    }
+
+    private func exactAttachedSheetMatches(
+        windowID: CGWindowID,
+        parentWindows: [AXUIElement]
+    ) -> Bool {
+        // Candidate-PID scope is already established. Bound relationship reads
+        // by both count and elapsed time so a pathological app cannot stall the
+        // main-thread refresh. An uninspected surface remains UNKNOWN and uses
+        // the existing bounded physical fallback; it is never guessed normal.
+        let maximumParentCount = 12
+        let maximumSheetCount = 24
+        let lookupDeadline = ProcessInfo.processInfo.systemUptime + 0.12
+        var sheets: [AXUIElement] = []
+        sheets.reserveCapacity(min(parentWindows.count, maximumSheetCount))
+        for parent in parentWindows.prefix(maximumParentCount) {
+            guard ProcessInfo.processInfo.systemUptime <= lookupDeadline else {
+                break
+            }
+            let observation = attributeValueObservation(
+                "AXSheets" as CFString,
+                on: parent,
+                messagingTimeout: AXMessagingTimeoutPolicy.passiveObservation
+            )
+            guard observation.error == .success,
+                  let attached = observation.value as? [AXUIElement] else {
+                continue
+            }
+            sheets.append(
+                contentsOf: attached.prefix(
+                    max(maximumSheetCount - sheets.count, 0)
+                )
+            )
+            if sheets.count >= maximumSheetCount { break }
+        }
+        guard !sheets.isEmpty else { return false }
+        return ExactWindowIdentityPolicy.matchingIndex(
+            targetWindowID: windowID,
+            candidateWindowIDs: sheets.map(runtimeWindowIDResolver.resolve)
+        ) != nil
     }
 
     private func visibleGeometryMatches(

@@ -1,26 +1,27 @@
-# SnapFlow Final → Tabora v1.0.0 移行監査
+# SnapFlow Final → Tabora v1.0.0 移行記録
 
-日付: 2026-08-18
+移行日: 2026-08-18
+
+この文書は、SnapFlow FinalからTaboraへproduct identityを分離した時点のsource lineageと、移行で変更した範囲を固定する開発記録です。現在のruntime検証手順は`RELEASE_PROCESS.md`、Space移送の保守境界は`PRIVATE_API_GROUP_SPACE_MIGRATION.md`を正本とします。
 
 ## Baseline
 
-移行では、提供されたSnapFlow Final project archiveをbehavior baselineとして使用しました。
-
-- SnapFlow Final version: 1.3.0
+- SnapFlow Final version: `1.3.0`
 - Baseline archive SHA-256: `049ab054992cc2aea6737300f538205d4c897d71255448b97417b9d870ecfc23`
-- baseline内のhistorical Git HEAD: `005af4b15fc256627e55f4346b05b91f1ae5a93d`
-- baselineには検証済みのuncommitted working-tree changesが含まれていました。そのため、historical commit単体ではなくarchive自体がfrozen source stateを定義します。
+- baseline内historical Git HEAD: `005af4b15fc256627e55f4346b05b91f1ae5a93d`
 
-## 移行だけで行った変更
+Final archiveにはhistorical HEADより後のworking-tree changesが含まれるため、移行元の正確なsource stateはcommit単体ではなくarchive hashで識別します。
+
+## 移行時の変更範囲
 
 - Swift package / executable target: `SnapFlow` → `Tabora`
 - source target directory: `Sources/SnapFlow` → `Sources/Tabora`
 - test target directory / imports: `SnapFlowTests` / `SnapFlow` → `TaboraTests` / `Tabora`
 - application entry typeとuser-visible product stringをTaboraへ変更
 - productを直接表すdiagnostic queue / notification identity stringをTaboraへ変更
-- update URLを `Pentagon22GIT/Tabora` へ変更
+- update URLを`Pentagon22GIT/Tabora`へ変更
 
-## Identity変更
+### Identity
 
 - Version: `1.3.0` → `1.0.0`
 - Build number: `13` → `1`
@@ -28,64 +29,54 @@
 - Community Bundle ID: `dev.pent.SnapFlow.community` → `dev.pent.Tabora.community`
 - build artifact: `SnapFlow*.app` / `SnapFlow-<version>.zip` → `Tabora*.app` / `Tabora-<version>.zip`
 - Info.plist provenance key: `SnapFlowEdition` / `SnapFlowSourceRevision` / `SnapFlowSourceDirty` → `Tabora...`
-- 旧SnapFlow certificate fingerprintを削除し、Tabora専用Official fingerprint `B931AC85747B9B12E32751D3776AAFD3430E5A12` を設定済み（公開fingerprintのみ。private keyはrepository外）
+- Tabora Official certificate fingerprint: `B931AC85747B9B12E32751D3776AAFD3430E5A12`
 
-## Documentation / repository変更
+private signing keyはrepository外で管理します。
 
-- active documentationをTabora v1.0.0向けに再構築
-- version固有のhistorical SnapFlow release / validation文書をactive Tabora repositoryから除外
-- 旧 `.git`、`.build`、build output、release output、`.DS_Store`、`__MACOSX`を除外
-- project-owned `build/official`、`build/community`、`release` output directoryはdistributed project folder内に空の状態で維持
+## Repository / documentation
+
+- active documentationをTabora向けに再構築
+- version固有のSnapFlow release / validation文書をactive Tabora documentationから分離
+- 旧`.git`、generated build output、release output、`.DS_Store`、`__MACOSX`を配布sourceから除外
 - GitHub URL、template、workflow、security metadataをTaboraへ移行
-- 中間CI layerとしてsafety invariant workflowを追加
+- safety invariant workflowを追加
 
-## Behavior変更の分類
+## Behavior freeze
 
-**意図したbehavior変更: なし。**
+移行phaseではproduct identity、presentation、repository構成、documentationだけを変更対象とし、次のruntime behaviorを意図的に変更しませんでした。
 
-移行中にtimer interval、geometry calculation、AX mutation rule、group membership algorithm、Recovery algorithm、Mission Control authorization rule、cursor rule、snap decision、resize ruleを意図的には変更していません。
+- timer interval
+- geometry calculation
+- AX mutation rule
+- group membership algorithm
+- Recovery algorithm
+- Mission Control authorization
+- cursor ownership
+- snap decision
+- resize rule
 
-3-window layoutを移行専用の特殊対象にはしていません。継承した構造規則は2 / 3 / 4 split layoutで共通です。
+2 / 3 / 4 split layoutには同じ構造規則を適用し、3-window layoutだけを移行専用behaviorにはしていません。
 
-## 移行環境で実施した検証
+## 移行時のsource整合基準
 
-- file / directory identity audit
-- active code / config / scripts / GitHub metadata全体の旧product名scan
-- frozen baselineに対するsource / test transformの完全比較
-- 既存build scriptがbaseline scriptのidentity-only transformであることを確認
-- `swift package dump-package` がpackage / product `Tabora`、target `Tabora` / `TaboraTests` で成功
-- 全Sources / Testsに対する `swiftc -parse` が成功
-- `swift test` は実行を試みたが、このLinux環境には `AppKit` moduleがないためcompile段階で失敗
-- この環境には `zsh` がないためzsh script syntaxは実行していない。script自体は検証済みbaseline scriptのidentity-only transform
-- secret / generated-artifact hygiene scan
-- Markdown local-link / YAML syntax check
-- package ZIP再構築とcontent audit
+移行では次をsource-levelの完了条件として使用しました。
 
-## この文書では成功扱いしない検証
+- active code / config / scripts / GitHub metadataから旧product identityを除去
+- frozen baselineに対するsource / test transformをidentity変更範囲へ限定
+- package / product / target identityを`Tabora` / `TaboraTests`へ統一
+- Sources / TestsのSwift syntaxを維持
+- secret / generated-artifact hygieneを維持
+- Markdown local link / workflow metadataを新repositoryへ同期
+- package ZIPの内容とartifact namingをTabora identityへ統一
 
-移行環境はAppKit / Accessibility / Window Server integrationを持つmacOS runtimeではありません。そのため、この文書はTaboraのruntime functional-equivalence test、Community app build、Official app build、Mission Control挙動、TCC挙動がmacOSで成功したとは主張しません。
+AppKit、Accessibility、Window Server、TCC、Mission Controlを必要とするruntime validationは移行sourceの成立条件とは分離し、macOS Release validationとして管理します。
 
-SnapFlow Final Baseline自体は移行前にユーザーが動作確認済みです。Tabora Official Release前には、同等のmacOS functional suiteを改めて実行する必要があります。
+## 現行sourceとの関係
 
-## 後続macOS実機監査の完了
+現行開発基盤: **Tabora v2.2.1 (Build 18)**
 
-最新source適用確認: **2026-09-03 / Tabora v2.2.0 (Build 17)**
+v2.2.1ではPreview HOT/COLD、multi-display foreground、provisional Snap peerの判定境界を更新していますが、`WindowSpaces` / `GroupSpaceMigration` / `TaboraSkyLightBridge`のmigration transport、FIFO、rollback、destination layout contractは変更していません。
 
-最新macOS実機確認: **2026-09-01 / Tabora v2.1.0 (Build 16) / macOS 26.6.2**
+Desktop間group migrationはmacOS 26.5.2 / 26.6.2で成立を確認した履歴を保持します。OS versionによるallowlistではなく、各起動時のruntime capabilityと実Window→Space membershipによって利用可否と物理成功を判定する設計は現行sourceでも維持されています。
 
-実機機能監査はv2.0.0 Build 14で完了した記録を基準とし、v2.1.0まで継承確認済みです。v2.2.0はMission Control previewの取得gateをtransform判定へ接続しましたが、Space observation / transport / FIFO / rollback / AX layout / foreground intentは変更していません。共有transform境界のsource監査は完了し、v2.2.0のmacOS実機再確認は`RELEASE_PROCESS.md`の未完了項目として残します。
-
-上記の移行時監査でLinux環境のため成功扱いしなかったruntime項目は、その後のmacOS実機開発・Release監査で確認を完了しました。移行時点の記録は履歴として維持し、現在の確認状態を次に固定します。
-
-- [x] v2.1.0の`swift test`をmacOS環境で完走し、当時のtest suiteの成功を確認
-- [ ] v2.2.0の現行sourceはmacOSで`swift test`を再実行する（この監査環境にはSwift / macOS SDKがないため未確認）
-- [x] build / release経路をmacOS上で実行し、Tabora identityでの成果物生成を確認
-- [x] 2 / 3 / 4 split、shared resize、replacement、Recoveryを実操作で確認
-- [x] Mission Control Proxy選択とconnected foregroundを実操作で確認
-- [x] Desktop間group migrationをmacOS 26.5.2 / 26.6.2で往復確認
-- [x] same-app multi-windowを含むWindow ID / membership境界を確認
-- [x] Preview / Assist / Foreground monitoringの回帰監査を完了
-- [x] 平常時常駐コストをTabora直接負荷、WindowServer委託負荷、System / Battery / Memoryまで実測
-- [x] Privacy / Security / Architecture / Release文書と現行挙動の整合を再監査
-
-性能面の最新値は[PERFORMANCE_VALIDATION.md](PERFORMANCE_VALIDATION.md)、Space移送の現行Release確認は[PRIVATE_API_GROUP_SPACE_MIGRATION.md](PRIVATE_API_GROUP_SPACE_MIGRATION.md)を参照してください。
+現在のRelease確認項目は[RELEASE_PROCESS.md](RELEASE_PROCESS.md)、移送実装の詳細は[PRIVATE_API_GROUP_SPACE_MIGRATION.md](PRIVATE_API_GROUP_SPACE_MIGRATION.md)、常駐性能基準は[PERFORMANCE_VALIDATION.md](PERFORMANCE_VALIDATION.md)を参照してください。

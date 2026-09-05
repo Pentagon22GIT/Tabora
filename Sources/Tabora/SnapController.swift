@@ -2172,7 +2172,9 @@ final class SnapController {
                     expectedDescriptors: lastPresentableResizeHandleDescriptors
                 )
             }
-            let snapshot = windowService.windowOcclusionSnapshot()
+            let windowServerObservation = windowService
+                .windowOcclusionSnapshotObservation()
+            let snapshot = windowServerObservation.snapshot
             let signature = SplitLayoutGeometry.recoverySceneSignature(
                 for: snapshot,
                 managedWindowIDs: Set(lockedPlacements.values.compactMap(\.cgWindowID)),
@@ -2198,7 +2200,9 @@ final class SnapController {
                 lastRecoverySceneSignature = signature
                 refreshResizeHandles(
                     deferOcclusionRefresh: true,
-                    windowServerSnapshot: snapshot
+                    windowServerSnapshot: snapshot,
+                    windowServerSnapshotCompleteness:
+                        windowServerObservation.completeness
                 )
                 refreshResizeHandleOcclusion(
                     force: true,
@@ -2209,7 +2213,9 @@ final class SnapController {
                 // cache entry must not rebuild resize geometry/occlusion or
                 // create another broad desktop transaction.
                 refreshMissionControlGroupProxies(
-                    windowServerSnapshot: snapshot
+                    windowServerSnapshot: snapshot,
+                    windowServerSnapshotCompleteness:
+                        windowServerObservation.completeness
                 )
             case .none:
                 break
@@ -2664,7 +2670,8 @@ final class SnapController {
 
     private func windowServerFrontmostEvaluation(
         memberIDs: Set<String>,
-        snapshot providedSnapshot: [WindowOcclusionSnapshot]? = nil
+        snapshot providedSnapshot: [WindowOcclusionSnapshot]? = nil,
+        displayFrame: CGRect? = nil
     ) -> GroupFrontmostEvaluation {
         guard !memberIDs.isEmpty else { return .indeterminate }
         let bindings = persistedManagedWindowBindings.map(\.identity)
@@ -2679,7 +2686,8 @@ final class SnapController {
         guard selections.count == memberIDs.count else { return .indeterminate }
         return GroupFrontmostEvaluationPolicy.evaluate(
             memberSelections: selections,
-            snapshot: providedSnapshot ?? windowService.windowOcclusionSnapshot()
+            snapshot: providedSnapshot ?? windowService.windowOcclusionSnapshot(),
+            displayFrame: displayFrame
         )
     }
 
@@ -4416,7 +4424,8 @@ final class SnapController {
 
             switch windowServerFrontmostEvaluation(
                 memberIDs: [identity],
-                snapshot: scene.windowServerSnapshot
+                snapshot: scene.windowServerSnapshot,
+                displayFrame: screen.frame
             ) {
             case .occluded:
                 continue

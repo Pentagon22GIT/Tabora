@@ -86,10 +86,10 @@ enum MissionControlTransientPreviewEligibilityPolicy {
     /// whole group frontmost can authorize one atomic group plan.
     static func authorizedHotGroupIDs<GroupID: Hashable>(
         currentGroupIDs: Set<GroupID>,
-        currentEvaluationByGroupID: [GroupID: GroupFrontmostEvaluation]
+        currentEvaluationByGroupID: [GroupID: PreviewGroupVisibilityEvaluation]
     ) -> Set<GroupID> {
         Set(currentGroupIDs.filter {
-            currentEvaluationByGroupID[$0] == .verifiedFrontmost
+            currentEvaluationByGroupID[$0] == .hot
         })
     }
 }

@@ -229,6 +229,113 @@ final class SnapGroupTests: XCTestCase {
         )
     }
 
+    func testFrontmostEvaluationClipsSharedToleranceAtAdjacentDisplayBoundary() {
+        let members: Set<WindowServerSelectionSnapshot> = [
+            WindowServerSelectionSnapshot(pid: 100, windowID: 10),
+            WindowServerSelectionSnapshot(pid: 200, windowID: 20)
+        ]
+        // These frames model the shared historical 1 pt expansion already
+        // applied by WindowOcclusionSnapshot. The foreign window physically
+        // ends at the adjacent display boundary (x = 0), so its synthetic
+        // spill into this display is only 1 pt after display clipping.
+        let adjacentDisplayWindow = WindowOcclusionSnapshot(
+            windowID: 99, pid: 300,
+            frame: CGRect(x: -501, y: -1, width: 502, height: 902),
+            zIndex: 0, layer: 0
+        )
+        let memberA = WindowOcclusionSnapshot(
+            windowID: 10, pid: 100,
+            frame: CGRect(x: -1, y: -1, width: 502, height: 902),
+            zIndex: 1, layer: 0
+        )
+        let memberB = WindowOcclusionSnapshot(
+            windowID: 20, pid: 200,
+            frame: CGRect(x: 499, y: -1, width: 502, height: 902),
+            zIndex: 2, layer: 0
+        )
+        let snapshot = [adjacentDisplayWindow, memberA, memberB]
+
+        XCTAssertEqual(
+            GroupFrontmostEvaluationPolicy.evaluate(
+                memberSelections: members,
+                snapshot: snapshot
+            ),
+            .occluded,
+            "Unscoped historical evaluation reproduces the cross-display false positive"
+        )
+        XCTAssertEqual(
+            GroupFrontmostEvaluationPolicy.evaluate(
+                memberSelections: members,
+                snapshot: snapshot,
+                displayFrame: CGRect(x: 0, y: 0, width: 1_000, height: 900)
+            ),
+            .verifiedFrontmost
+        )
+    }
+
+    func testFrontmostEvaluationStillRaisesForWindowThatTrulySpansDisplay() {
+        let members: Set<WindowServerSelectionSnapshot> = [
+            WindowServerSelectionSnapshot(pid: 100, windowID: 10),
+            WindowServerSelectionSnapshot(pid: 200, windowID: 20)
+        ]
+        let spanningWindow = WindowOcclusionSnapshot(
+            windowID: 99, pid: 300,
+            frame: CGRect(x: -501, y: 100, width: 506, height: 250),
+            zIndex: 0, layer: 0
+        )
+        let memberA = WindowOcclusionSnapshot(
+            windowID: 10, pid: 100,
+            frame: CGRect(x: -1, y: -1, width: 502, height: 902),
+            zIndex: 1, layer: 0
+        )
+        let memberB = WindowOcclusionSnapshot(
+            windowID: 20, pid: 200,
+            frame: CGRect(x: 499, y: -1, width: 502, height: 902),
+            zIndex: 2, layer: 0
+        )
+
+        XCTAssertEqual(
+            GroupFrontmostEvaluationPolicy.evaluate(
+                memberSelections: members,
+                snapshot: [spanningWindow, memberA, memberB],
+                displayFrame: CGRect(x: 0, y: 0, width: 1_000, height: 900)
+            ),
+            .occluded
+        )
+    }
+
+    func testDisplayScopedFrontmostKeepsStrictSameDisplayOrdering() {
+        let members: Set<WindowServerSelectionSnapshot> = [
+            WindowServerSelectionSnapshot(pid: 100, windowID: 10),
+            WindowServerSelectionSnapshot(pid: 200, windowID: 20)
+        ]
+        let frontMember = WindowOcclusionSnapshot(
+            windowID: 10, pid: 100,
+            frame: CGRect(x: 0, y: 0, width: 500, height: 900),
+            zIndex: 0, layer: 0
+        )
+        let separatingWindow = WindowOcclusionSnapshot(
+            windowID: 99, pid: 300,
+            frame: CGRect(x: 100, y: 100, width: 200, height: 200),
+            zIndex: 1, layer: 0
+        )
+        let rearMember = WindowOcclusionSnapshot(
+            windowID: 20, pid: 200,
+            frame: CGRect(x: 500, y: 0, width: 500, height: 900),
+            zIndex: 2, layer: 0
+        )
+
+        XCTAssertEqual(
+            GroupFrontmostEvaluationPolicy.evaluate(
+                memberSelections: members,
+                snapshot: [frontMember, separatingWindow, rearMember],
+                displayFrame: CGRect(x: 0, y: 0, width: 1_000, height: 900)
+            ),
+            .occluded,
+            "Display scoping must not relax the existing strict Group ordering rule"
+        )
+    }
+
     func testFrontmostEvaluationSupportsSingleProvisionalPlacement() {
         let member = WindowServerSelectionSnapshot(pid: 100, windowID: 10)
         let window = WindowOcclusionSnapshot(

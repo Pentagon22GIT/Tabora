@@ -537,9 +537,34 @@ extension SnapController {
         })
         guard selections.count == Set(groupWindows.map(\.stableIdentity)).count
         else { return .indeterminate }
+
+        // WindowOcclusionSnapshot intentionally carries the shared historical
+        // 1 pt boundary tolerance. On adjacent displays that tolerance can make
+        // a globally-frontmost window on the other display overlap this Group
+        // by two synthetic points and falsely authorize an AXRaise. Preserve
+        // the existing strict Group ordering rule, but evaluate geometry only
+        // inside the Group's physical display. A window that truly spans into
+        // this display remains an occluder and still triggers the normal raise.
+        let placementDisplayIDs = groupWindows.compactMap {
+            lockedPlacements[$0.stableIdentity]?.displayID
+        }
+        let uniqueDisplayIDs = Set(placementDisplayIDs)
+        let displayFrame: CGRect?
+        if placementDisplayIDs.count == groupWindows.count,
+           uniqueDisplayIDs.count == 1,
+           let displayID = uniqueDisplayIDs.first,
+           let screen = screen(withDisplayID: displayID) {
+            displayFrame = screen.frame
+        } else {
+            // Preserve the historical strict evaluation when display ownership
+            // is temporarily unavailable. Missing scope must not weaken the
+            // foreground trigger.
+            displayFrame = nil
+        }
         return GroupFrontmostEvaluationPolicy.evaluate(
             memberSelections: selections,
-            snapshot: windowService.windowOcclusionSnapshot()
+            snapshot: windowService.windowOcclusionSnapshot(),
+            displayFrame: displayFrame
         )
     }
 

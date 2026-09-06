@@ -318,8 +318,11 @@ final class GroupSpaceMigrationLine {
                 transaction.normalDesktopDispatchIsReady = false
             }
         }
-        if activeBecameReady, let activeTransaction {
-            dispatchCapturedMove(activeTransaction)
+        if activeBecameReady {
+            // Desktop evidence establishes readiness, not ownership of frame
+            // writes. An interaction may have begun since capture; use the
+            // same controller/structure checks as the ordinary driver.
+            driveActiveTransaction()
         }
         var rearmedGroupIDs = Set<SnapGroupID>()
         for groupID in groupIDs {
@@ -1548,7 +1551,7 @@ final class GroupSpaceMigrationLine {
         if let next = activeTransaction,
            next.phase == .awaitingNormalDesktopDispatch,
            next.normalDesktopDispatchIsReady {
-            dispatchCapturedMove(next)
+            driveActiveTransaction()
         }
         stopTimerIfIdle()
     }

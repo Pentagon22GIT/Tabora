@@ -1,8 +1,28 @@
+import AppKit
 import CoreGraphics
 import XCTest
 @testable import Tabora
 
 final class WindowSafetyPolicyTests: XCTestCase {
+    func testSnapRollbackOwnsMeasurementAdmissionUntilItFinishes() {
+        let checked = expectation(description: "Rollback admission")
+        DispatchQueue.main.async {
+            _ = NSApplication.shared
+            let controller = SnapController()
+            controller.isSnapRollbackActive = true
+            XCTAssertTrue(controller.isWindowMutationHandoffBlocked)
+            XCTAssertFalse(controller.beginConstraintMeasurement())
+            XCTAssertFalse(controller.isConstraintMeasurementActive)
+
+            controller.isSnapRollbackActive = false
+            XCTAssertFalse(controller.isWindowMutationHandoffBlocked)
+            XCTAssertTrue(controller.beginConstraintMeasurement())
+            controller.endConstraintMeasurement()
+            checked.fulfill()
+        }
+        wait(for: [checked], timeout: 2)
+    }
+
     func testAssistPreviewProviderAuthorizationCanCrossEscapingCaptureGate() {
         var forwardedAuthorization: (() -> Bool)?
         let provider: PickerPreviewProvider = { _, captureIsAuthorized in

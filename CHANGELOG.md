@@ -1,5 +1,25 @@
 # 更新履歴
 
+## 2.2.2 — 2026-09-06
+
+### 非同期操作とrollbackの安定化
+
+- Snap rollbackまたはGroup Space Migrationが実windowの更新を所有している間は、Restore、Snap、shared resize、App Constraint計測など、同じAX frame operationを置き換え得る新しい操作を開始しない共通gateを追加した。Mission Control終了待ちのmigrationはまだframeを書き込まないため、このgateで不必要に通常Desktop観測を止めない。
+- Group Space Migrationのdestination layoutが期限切れ・失効・環境無効化へ進む場合、実行中memberのAX frame generationを先に取り消してから復元またはgroup解散へ移る。期限切れ後に返った古いcallbackは同一PID laneの次memberを開始できず、復元開始後のwindowを旧layoutが再変更しない。
+- 通常Desktop安定確認およびFIFOの次transaction開始は、private moveを直接発行せず共通transaction driverへ戻す。capture後に別操作が開始された場合やgroup構造・controller条件が変化した場合は、dispatch直前の再検証でmoveを開始しない。
+
+### Mission Control Proxy / Preview
+
+- 取り消された古いMission Control Proxy選択確認callbackは、自身のselection generationが現在値と一致する場合だけ後続処理へ進む。短時間に取消・再選択した場合も、旧callbackが同じProxy上の新しい候補を終了させない。
+- Previewのresize/display変更確認中にwindowの位置だけが変わっても、PID、Window ID、stable identity、display、pixel sizeが同じなら同一候補として有限確認を継続する。位置は取得pixelを変えないため、確認待ちが残留して後続Preview取得を止め続ける状態を解消した。size、display、physical identityが変わった場合は従来どおり同一候補として受理しない。
+- 変更した競合境界に対して7件のpolicy / batch / asynchronous selection testを追加した。
+
+### Documentation / performance
+
+- 非同期window mutationの所有者、世代失効、復元へのhandoff、遅延callbackの扱いを`Documentation/ASYNC_TRANSACTION_OWNERSHIP.md`へ恒久仕様として追加し、Architecture、Security Invariants、Foreground、Migration、Release文書を同期した。
+- Versionを`2.2.2`、build numberを`19`へ更新した。
+- v2.2.2は既存の非同期処理に所有権確認と取消順序を追加する安定化であり、常駐timer、polling、画像取得trigger、Recovery頻度、Window Server / AXの常時観測を変更しない。したがって、バージョン変更による平常時常駐性能への影響はなく、正式な性能基準はv2.2.0 Build 17の値を維持する。
+
 ## 2.2.1 — 2026-09-05
 
 ### Mission Control Preview / HOT・COLD

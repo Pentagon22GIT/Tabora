@@ -1022,6 +1022,13 @@ extension SnapController {
         interaction presentedInteraction: ResizeHandleInteraction,
         at point: CGPoint
     ) {
+        guard !isWindowMutationHandoffBlocked,
+              !isApplicationInteractionSuppressed,
+              !isSnapPlacementInProgress,
+              !isAssistPlacementPending else {
+            rejectHandleResizeStart()
+            return
+        }
         let presentedDescriptors = presentedInteraction.descriptors
         let descriptors = presentedDescriptors.compactMap { presented in
             baseResizeHandleDescriptors.first { $0.id == presented.id }

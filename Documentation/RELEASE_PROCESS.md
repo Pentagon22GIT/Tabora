@@ -57,9 +57,9 @@ swift test
 
 ### 現行Release状態
 
-**Tabora v2.2.1 (Build 18) / 2026-09-05**
+**Tabora v2.2.2 (Build 19) / 2026-09-06**
 
-v2.2.1は、v2.2.0で確立したtrigger-only Previewとevent-driven foregroundを維持したまま、HOT/COLDのvisibility境界とmulti-displayのphysical scopeを修正するReleaseです。新しい常駐polling、画像取得timer、Space polling、全Desktop AX censusは追加しません。
+v2.2.2は、v2.2.0で確立したtrigger-only Previewとevent-driven foreground、およびv2.2.1のHOT/COLD・multi-display境界を維持したまま、非同期window mutationの所有権、timeoutから復元へのhandoff、Mission Control Proxy選択の世代分離、Preview geometry確認を安定化するReleaseです。新しい常駐polling、画像取得timer、Space polling、全Desktop AX censusは追加しません。
 
 - [x] Preview HOT/COLDをGroup-level state + member-relative physical observationへ整理し、`COLD-visible`と`COLD-not-visible`を分離
 - [x] dialog / system dialog / modal / exact sheetだけを明示的auxiliaryとして除外し、未知/custom subroleは`UNKNOWN`へ保持
@@ -72,14 +72,18 @@ v2.2.1は、v2.2.0で確立したtrigger-only Previewとevent-driven foreground�
 - [x] 可視な別Display上ですでにtopのGroupを直接操作した場合、foreground ONのまま不要な実window再orderingが発生しないことを実操作で確認
 - [x] Group上に実際のoccluderが存在する場合は従来どおりevent-driven whole-group raiseが成立することを実操作で確認
 - [x] 可視Display間の移動で余分なPreview画像取得が発生しないことを実操作で確認
+- [x] Snap rollback / migration frame mutationのowner gate、batch取消順序、Proxy選択generation、position-only Preview確認をpolicy testへ追加
+- [ ] migration layout timeout後の遅延callbackが次lane memberを開始せず、復元後に旧layoutを再適用しないことを実機確認
+- [ ] Proxy選択の取消直後に同じProxyを再選択しても、古いsettlement callbackが新しい選択を終了しないことを実機確認
+- [ ] Preview resize確認中に位置だけを移動しても確認debtが解消し、size/display変更は従来どおり新候補になることを実機確認
 - [ ] final sourceで`swift test`とCommunity buildをmacOS上で完走
 - [ ] Release asset生成前に2 / 3 / 4 split、shared resize、Mission Control、Space migration、Preview ON/OFFの最終functional suiteを完走
 
 ### 常駐性能
 
-常駐性能の正式基準は **v2.2.0 Build 17 / 2026-09-05** のR0〜R6計測を維持します。v2.2.1で変更した経路はwindow click、foreground transition、occlusion、Space/display遷移、Snap操作などのイベント発生時に動作し、無操作の常駐計測では変更箇所を直接評価しません。
+常駐性能の正式基準は **v2.2.0 Build 17 / 2026-09-05** のR0〜R6計測を維持します。v2.2.1で変更した経路はwindow click、foreground transition、occlusion、Space/display遷移、Snap操作などのイベント発生時に動作し、v2.2.2は既存の非同期処理へowner/generation確認と取消順序だけを追加します。いずれも無操作の常駐計測条件と取得頻度を変更しません。
 
-v2.2.1では常駐timer / polling / capture triggerを追加していないため、同じ無操作計測を新しい性能値として重複記録しません。既存値をv2.2.1で計測した値として読み替えることも行いません。正式な常駐比較値は[PERFORMANCE_VALIDATION.md](PERFORMANCE_VALIDATION.md)を正本とします。
+v2.2.1 / v2.2.2では常駐timer / polling / capture triggerを追加しておらず、v2.2.2へのバージョン変更による平常時常駐性能への影響はありません。同じ無操作計測を新しい性能値として重複記録せず、既存値をv2.2.1 / v2.2.2で計測した値として読み替えることも行いません。正式な常駐比較値は[PERFORMANCE_VALIDATION.md](PERFORMANCE_VALIDATION.md)を正本とします。
 
 過去Releaseの実機確認履歴はCHANGELOGと各機能文書に保持し、現行Releaseではこの手順を省略せず変更範囲に応じて再確認します。
 

@@ -810,7 +810,7 @@ struct MissionControlGroupProxyMember {
     let icon: NSImage?
 }
 
-private struct MissionControlPreviewCacheKey: Hashable {
+struct MissionControlPreviewCacheKey: Hashable {
     let displayID: CGDirectDisplayID
     let pid: pid_t
     let windowID: CGWindowID
@@ -842,10 +842,34 @@ private struct MissionControlPendingPreviewResult {
     let coldAuthorizationRevision: UInt64?
 }
 
-private struct MissionControlPreviewGeometryConfirmationCandidate {
+struct MissionControlPreviewGeometryConfirmationCandidate {
     let key: MissionControlPreviewCacheKey
     var observationCount: Int
     let firstObservedAt: TimeInterval
+
+    mutating func advance(
+        matching currentKey: MissionControlPreviewCacheKey,
+        now: TimeInterval
+    ) -> Bool? {
+        // Translation does not change captured pixels or restart size/display
+        // settlement. Requiring the full cache key here can strand this debt
+        // because the observation fallback deliberately ignores position.
+        guard MissionControlGroupProxyController.canReuseCapturedPixels(
+            from: key, for: currentKey
+        ) else { return nil }
+        observationCount = MissionControlPreviewTriggerPolicy
+            .nextStableObservationCount(
+                previousCount: observationCount,
+                representsSameCandidate: true
+            )
+        return MissionControlPreviewTriggerPolicy.isConfirmed(
+            observationCount: observationCount,
+            firstObservedAt: firstObservedAt,
+            now: now,
+            minimumStableInterval:
+                MissionControlPreviewWorkPolicy.confirmationInterval
+        )
+    }
 }
 
 final class MissionControlGroupProxyController {
@@ -1937,22 +1961,13 @@ final class MissionControlGroupProxyController {
                 continue
             }
             guard var candidate = geometryConfirmationCandidates[memberID],
-                  candidate.key == currentKey else {
-                // The newest key is handled by observeGeometryCandidate below.
+                  let isConfirmed = candidate.advance(
+                    matching: currentKey, now: now
+                  ) else {
+                // A new size/display is handled by the observation fallback.
                 continue
             }
-            candidate.observationCount = MissionControlPreviewTriggerPolicy
-                .nextStableObservationCount(
-                    previousCount: candidate.observationCount,
-                    representsSameCandidate: true
-                )
-            if MissionControlPreviewTriggerPolicy.isConfirmed(
-                observationCount: candidate.observationCount,
-                firstObservedAt: candidate.firstObservedAt,
-                now: now,
-                minimumStableInterval:
-                    MissionControlPreviewWorkPolicy.confirmationInterval
-            ) {
+            if isConfirmed {
                 geometryConfirmationCandidates.removeValue(forKey: memberID)
                 queueConfirmedGeometryRefresh(
                     memberID: memberID,
@@ -2114,7 +2129,7 @@ final class MissionControlGroupProxyController {
             && lhs.stableIdentity == rhs.stableIdentity
     }
 
-    private static func canReuseCapturedPixels(
+    static func canReuseCapturedPixels(
         from source: MissionControlPreviewCacheKey,
         for destination: MissionControlPreviewCacheKey
     ) -> Bool {
@@ -3077,7 +3092,7 @@ final class MissionControlGroupProxyController {
 
 }
 
-private final class MissionControlGroupProxyWindow: NSWindow, NSWindowDelegate {
+final class MissionControlGroupProxyWindow: NSWindow, NSWindowDelegate {
     var groupID = SnapGroupID()
     var presentedMemberIDs = Set<String>()
     var beginSelectionConfirmation: ((SnapGroupID, Set<String>) -> UInt64)?
@@ -3559,9 +3574,12 @@ private final class MissionControlGroupProxyWindow: NSWindow, NSWindowDelegate {
             return
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            guard let self else { return }
-            guard self.selectionConfirmationGeneration == selectionGeneration,
-                  self.groupID == selectedGroupID,
+            // A retired callback has no authority to terminate a newer pending
+            // selection on this same proxy, even if its own token is invalid.
+            guard let self,
+                  self.selectionConfirmationGeneration == selectionGeneration
+            else { return }
+            guard self.groupID == selectedGroupID,
                   self.presentedMemberIDs == selectedMemberIDs,
                   self.presentationGeneration
                     == selectedPresentationGeneration,

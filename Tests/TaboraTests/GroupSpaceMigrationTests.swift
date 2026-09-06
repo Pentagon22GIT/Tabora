@@ -3,6 +3,79 @@ import XCTest
 @testable import Tabora
 
 final class GroupSpaceMigrationTests: XCTestCase {
+    func testFrameBatchExpiryRetiresWritesBeforeRestoreHandoff() {
+        var events: [String] = []
+        var results: [Bool] = []
+        let successor = GroupMigrationFrameBatch(
+            memberIDs: ["a"],
+            cancelFrame: { events.append("cancel-restore-\($0)") },
+            completion: { _ in }
+        )
+        let batch = GroupMigrationFrameBatch(
+            memberIDs: ["a", "b", "c", "other-app"],
+            cancelFrame: { events.append("cancel-\($0)") },
+            completion: {
+                results.append($0)
+                events.append("restore")
+                XCTAssertTrue(successor.begin(memberID: "a"))
+            }
+        )
+        XCTAssertTrue(batch.begin(memberID: "a"))
+        XCTAssertTrue(batch.begin(memberID: "other-app"))
+        XCTAssertTrue(batch.resolve(memberID: "a", succeeded: true))
+        XCTAssertTrue(batch.begin(memberID: "b"))
+
+        batch.expire()
+        XCTAssertEqual(events, ["cancel-b", "cancel-other-app", "restore"])
+        XCTAssertEqual(results, [false])
+        // The old same-PID lane cannot write c after restoration has begun.
+        XCTAssertFalse(batch.resolve(memberID: "b", succeeded: true))
+        XCTAssertFalse(batch.begin(memberID: "c"))
+        batch.expire()
+        batch.cancel()
+        XCTAssertEqual(events, ["cancel-b", "cancel-other-app", "restore"])
+        XCTAssertTrue(successor.resolve(memberID: "a", succeeded: true))
+    }
+
+    func testFrameBatchCancellationDoesNotStartFailureRestore() {
+        var cancelled: [String] = []
+        var completed = false
+        let batch = GroupMigrationFrameBatch(
+            memberIDs: ["a", "b"],
+            cancelFrame: { cancelled.append($0) },
+            completion: { _ in completed = true }
+        )
+        XCTAssertTrue(batch.begin(memberID: "a"))
+        batch.cancel()
+        batch.expire()
+        XCTAssertEqual(cancelled, ["a"])
+        XCTAssertFalse(completed)
+        XCTAssertFalse(batch.resolve(memberID: "a", succeeded: false))
+        XCTAssertFalse(batch.begin(memberID: "b"))
+    }
+
+    func testFrameBatchCompletionIsOneShotAndKeepsFailedResult() {
+        for firstSucceeded in [false, true] {
+            var results: [Bool] = []
+            let batch = GroupMigrationFrameBatch(
+                memberIDs: ["a", "b"],
+                cancelFrame: { _ in XCTFail("Completed writes need no cancellation") },
+                completion: { results.append($0) }
+            )
+            XCTAssertFalse(batch.begin(memberID: "foreign"))
+            XCTAssertFalse(batch.resolve(memberID: "b", succeeded: true))
+            XCTAssertTrue(batch.begin(memberID: "a"))
+            XCTAssertFalse(batch.begin(memberID: "a"))
+            XCTAssertTrue(batch.resolve(memberID: "a", succeeded: firstSucceeded))
+            XCTAssertFalse(batch.resolve(memberID: "a", succeeded: true))
+            XCTAssertTrue(results.isEmpty)
+            XCTAssertTrue(batch.begin(memberID: "b"))
+            XCTAssertTrue(batch.resolve(memberID: "b", succeeded: true))
+            batch.expire()
+            XCTAssertEqual(results, [firstSucceeded])
+        }
+    }
+
     func testForegroundFlushWaitsForNormalProxySelectionOwnership() {
         XCTAssertTrue(
             GroupSpaceMigrationForegroundFlushOwnershipPolicy.allowsFlush(

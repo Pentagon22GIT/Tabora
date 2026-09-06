@@ -26,6 +26,7 @@ Taboraは、macOSのウィンドウを画面端・四隅・分割領域へ配置
 - 多言語対応の対象と保守手順: [LOCALIZATION.md](Documentation/LOCALIZATION.md)
 - Mission ControlのDesktop間グループ移送: [PRIVATE_API_GROUP_SPACE_MIGRATION.md](Documentation/PRIVATE_API_GROUP_SPACE_MIGRATION.md)
 - 最前面監視のevent・gate・fallback境界: [FOREGROUND_MONITORING.md](Documentation/FOREGROUND_MONITORING.md)
+- 非同期window操作の所有権とrollback境界: [ASYNC_TRANSACTION_OWNERSHIP.md](Documentation/ASYNC_TRANSACTION_OWNERSHIP.md)
 - 常駐負荷と性能の実測結果: [PERFORMANCE_VALIDATION.md](Documentation/PERFORMANCE_VALIDATION.md)
 - セキュリティ境界: [THREAT_MODEL.md](Documentation/THREAT_MODEL.md) / [SECURITY_INVARIANTS.md](Documentation/SECURITY_INVARIANTS.md)
 - バージョンごとの変更履歴: [CHANGELOG.md](CHANGELOG.md)

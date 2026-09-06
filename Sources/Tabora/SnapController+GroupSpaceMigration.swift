@@ -12,29 +12,58 @@ enum GroupSpaceMigrationForegroundFlushOwnershipPolicy {
     }
 }
 
-private final class GroupMigrationFrameBatch {
+final class GroupMigrationFrameBatch {
     private var pending: Set<String>
+    private var inFlight = Set<String>()
     private var allSucceeded = true
     private var didFinish = false
-    private let completion: (Bool) -> Void
+    private let cancelFrame: (String) -> Void
+    private var completion: ((Bool) -> Void)?
 
-    init(memberIDs: Set<String>, completion: @escaping (Bool) -> Void) {
+    init(
+        memberIDs: Set<String>,
+        cancelFrame: @escaping (String) -> Void,
+        completion: @escaping (Bool) -> Void
+    ) {
         pending = memberIDs
+        self.cancelFrame = cancelFrame
         self.completion = completion
     }
 
-    func resolve(memberID: String, succeeded: Bool) {
-        guard !didFinish, pending.remove(memberID) != nil else { return }
+    func begin(memberID: String) -> Bool {
+        guard !didFinish, pending.contains(memberID) else { return false }
+        return inFlight.insert(memberID).inserted
+    }
+
+    @discardableResult
+    func resolve(memberID: String, succeeded: Bool) -> Bool {
+        guard !didFinish,
+              inFlight.remove(memberID) != nil,
+              pending.remove(memberID) != nil else { return false }
         if !succeeded { allSucceeded = false }
         if pending.isEmpty { finish(allSucceeded) }
+        return true
     }
 
     func expire() { finish(false) }
 
-    private func finish(_ succeeded: Bool) {
+    // Environment invalidation already terminates the migration owner. It
+    // must not launch the layout-failure restore callback after that handoff.
+    func cancel() { finish(false, deliversCompletion: false) }
+
+    private func finish(_ succeeded: Bool, deliversCompletion: Bool = true) {
         guard !didFinish else { return }
         didFinish = true
-        completion(succeeded && pending.isEmpty)
+        let outstanding = inFlight
+        inFlight.removeAll()
+        let completion = self.completion
+        self.completion = nil
+        // Retire the old AX generations before completion can start a restore
+        // or another batch. Late callbacks cannot admit the next lane member.
+        for memberID in outstanding.sorted() { cancelFrame(memberID) }
+        if deliversCompletion {
+            completion?(succeeded && pending.isEmpty)
+        }
     }
 }
 
@@ -536,6 +565,8 @@ extension SnapController: GroupSpaceMigrationHost {
     }
 
     func dissolveGroupSpaceMigration(_ capture: GroupSpaceMigrationCapture) {
+        groupMigrationFrameBatch?.cancel()
+        groupMigrationFrameBatch = nil
         for member in capture.members {
             windowService.cancelFrameOperation(for: member.element)
         }
@@ -650,15 +681,22 @@ extension SnapController: GroupSpaceMigrationHost {
             completion(false)
             return
         }
-        let batch = GroupMigrationFrameBatch(
-            memberIDs: Set(capture.members.map(\.stableIdentity)),
-            completion: completion
-        )
         let membersByIdentity = Dictionary(
             uniqueKeysWithValues: capture.members.map {
                 ($0.stableIdentity, $0)
             }
         )
+        groupMigrationFrameBatch?.cancel()
+        let service = windowService
+        let batch = GroupMigrationFrameBatch(
+            memberIDs: Set(capture.members.map(\.stableIdentity)),
+            cancelFrame: { identity in
+                guard let member = membersByIdentity[identity] else { return }
+                service.cancelFrameOperation(for: member.element)
+            },
+            completion: completion
+        )
+        groupMigrationFrameBatch = batch
         let lanes = GroupMigrationFrameSchedulingPolicy.lanes(
             subjects: capture.members.map {
                 GroupMigrationFrameWriteSubject(
@@ -670,6 +708,7 @@ extension SnapController: GroupSpaceMigrationHost {
         func runLane(_ identities: [String], at index: Int = 0) {
             guard identities.indices.contains(index) else { return }
             let identity = identities[index]
+            guard batch.begin(memberID: identity) else { return }
             guard let member = membersByIdentity[identity],
                   let frame = frames[identity] else {
                 batch.resolve(memberID: identity, succeeded: false)
@@ -678,7 +717,9 @@ extension SnapController: GroupSpaceMigrationHost {
             }
             windowService.setFrameReliably(frame, for: member.element) {
                 succeeded in
-                batch.resolve(memberID: identity, succeeded: succeeded)
+                guard batch.resolve(
+                    memberID: identity, succeeded: succeeded
+                ) else { return }
                 runLane(identities, at: index + 1)
             }
         }

@@ -1,6 +1,21 @@
 # 更新履歴
 
-## 2.2.2 — 2026-09-06
+## 2.2.3 — 2026-09-07
+
+### 安定基盤への復旧
+
+- v2.2.2で追加した非同期操作、Mission Control Proxy、Preview geometry確認に関する実動コード変更をすべて撤回し、`Sources`、`Tests`、`Package.swift`を安定版v2.2.1と同一内容へ戻した。
+- v2.2.2で確認された、対象アプリ終了後もGroupが破棄されずMission Control用の取得画像が背景に残る問題などの不安定動作を解消するため、新しいcleanup、監視、gate、timer、pollingは追加せず、既知の安定動作へ復帰した。
+- 安全性強化を目的とする変更であっても、既存の入力終了、Group解散、Preview破棄、rollback、通常操作と利用体験を動作ライン全体で保証できない場合は安定版へ取り込まない保守方針へ戻した。
+
+### Release / documentation
+
+- v2.2.2の変更内容は履歴として本CHANGELOGに保持する一方、同版で追加した非同期操作の恒久仕様は現行仕様から撤回した。Architecture、Security Invariants、Foreground、Migration、Release、Performance文書をv2.2.1の実装境界へ同期した。
+- Versionを`2.2.3`、build numberを`20`へ更新した。実動コードと常駐処理はv2.2.1から変更していないため、v2.2.3について新しい性能値や改善率は主張しない。
+
+## 2.2.2 — 2026-09-06（撤回）
+
+> 以下はv2.2.2リリース時点の変更記録です。実動コード変更と追加仕様はv2.2.3へ継承していません。
 
 ### 非同期操作とrollbackの安定化
 

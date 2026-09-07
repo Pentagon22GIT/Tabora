@@ -53,7 +53,7 @@ connected groupの最前面保証を維持しながら、常駐中の独立10 Hz
 
 操作後の最初のfallback観測はbaseline確立だけに使い、古い選択を認可へ変換しない。
 
-Mission Control Proxy確認は従来の0.14秒で最初に判定する。macOSのMission Control終了とAppKit/workspace activation publicationだけが遅れている場合、同じcandidate generation、group/member集合、presentation generation、有効transition tokenを維持している間だけ0.06秒、0.10秒の有限再観測を許可する。各遅延callbackは最初に自身のselection generationが現在値と一致することを要求し、取消済みcallbackは同じProxyで後から開始された候補を終了・releaseしない。いずれかのidentity/tokenが変化した場合または上限到達時は現在generationの所有者だけが明示cancelし、通常foreground fallbackへクリックを寄付しない。migration presentation ownershipだけではActive Space cleanupからProxy selectionを保護しない。
+Mission Control Proxy確認は従来の0.14秒で最初に判定する。macOSのMission Control終了とAppKit/workspace activation publicationだけが遅れている場合、同じcandidate generation、group/member集合、presentation generation、有効transition tokenを維持している間だけ0.06秒、0.10秒の有限再観測を許可する。いずれかのidentity/tokenが変化した場合または上限到達時は明示cancelし、通常foreground fallbackへクリックを寄付しない。migration presentation ownershipだけではActive Space cleanupからProxy selectionを保護しない。
 
 `automatic`の閉鎖境界は、exactな新規system selection、monitor lifecycle終了（Tabora / linked resize / connected raiseのOFF、login session非アクティブ、connected layout消失）、controller stop、group dissolution / resetである。通常のSnap / resize / migration transaction開始だけでは閉じない。transaction自身が認可とrollback stateを所有するためで、成功時は検証済みpostconditionから再設定し、失敗時はcaptured stateを復元する。
 

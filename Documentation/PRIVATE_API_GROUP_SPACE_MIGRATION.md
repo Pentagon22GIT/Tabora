@@ -61,7 +61,7 @@ sourceへ戻した取消では該当groupだけを即時撤去する。予約sha
 
 Active Space変更はこのFIFOを取り消す環境無効化ではない。Mission Control終了後にgroupの一部memberだけがactive Desktopへ通常geometryで戻った場合も、縮小変形終了のgroup-local証拠として通常Desktop settleへ使用する。全memberが非active Spaceで通常geometryを観測できない場合は推測せず、capture後のActive Space通知を要求する。destinationへ移動する操作中に既存の共通cleanupが`cancelAllFrameOperations()`を実行しても、`dispatchingMove`以降のmigration frame batch、membership verify、rollback、layout、rebuildはmigration所有として保護する。待機中はAX frame operationを持たないため、この除外を広げない。
 
-各transactionは実dispatch直前に共通driverへ戻り、controllerがmigrationを継続できること、group構造がcaptureと一致すること、memberのstable identity、capture済みWindow ID、現在の単一user Spaceを再検証する。全memberが既にexact destinationなら重複moveを省略する。それ以外はdestination外にいるexact memberだけを、sourceまたはユーザーが同じMission Control session中に移した別Desktopからdestinationへ集約する。これにより同名・同一PIDの別windowを取り込まず、既に到着済みのsurfaceへ重複命令を送らない。Window ID変更とnon-user Spaceは即時拒否し、`unknown`だけを0.10秒monitorで最大10回再観測する。
+各transactionは実dispatch直前にmemberのstable identity、capture済みWindow ID、現在の単一user Spaceを再検証する。全memberが既にexact destinationなら重複moveを省略する。それ以外はdestination外にいるexact memberだけを、sourceまたはユーザーが同じMission Control session中に移した別Desktopからdestinationへ集約する。これにより同名・同一PIDの別windowを取り込まず、既に到着済みのsurfaceへ重複命令を送らない。Window ID変更とnon-user Spaceは即時拒否し、`unknown`だけを0.10秒monitorで最大10回再観測する。
 
 この分離は、Mission Control自身がProxyへ適用中のmanaged-window transformと、Taboraが実application surfaceへ投入する非同期move operationを同一sceneで重ねないための境界である。同一PIDの別windowを続けてMission Control移送した時に、先行surfaceの縮小transformが残留する競合をAX直列化やProxy保持で補修しない。move/layoutは通常Desktopで開始されるが、`completed`直後だけは消費済みProxyを同じMission Control compositor tailへ再生成しないよう、既存のgroup-local normal-desktop rearm（2観測・0.15秒以上）を通してからfresh Proxy/handleを再構築する。これは実window移送・layout・foreground intentの完了条件ではなくpresentation quarantineだけである。`rolledBack`は従来どおり追加quarantineを持ち越さず、dispatch前cancelはrollback APIを発行せず現在のtransformからの通常復帰確認を行う。
 
@@ -71,7 +71,7 @@ physical commit後のAX layoutではTabora生成の画像coverを表示しない
 
 `captured → awaitingNormalDesktopDispatch`では実moveは未実行である。feature OFF、controller/session/display無効化、または構造不一致なら`cancelledBeforeStart`へ閉じ、rollbackを発行しない。`dispatchingMove → verifyingMove`でdestination commandを受理した後だけ、timeout時にTaboraが実際に移動対象へ入れたWindow IDを実行時originごとのbatchへ分け、一件ずつmembership確認してから次のoriginを処理する。全originがcapture sourceなら確認成功を`rolledBack`とする。dispatch前からmemberが別Spaceにあった場合はTabora自身の変更だけを復元して`dissolvedAfterOriginRestore`とし、ユーザーの分離状態を虚偽groupとして保持しない。identityを再確認できない場合、rollback API失敗、または不完全timeoutは`dissolvedAfterIncompleteRollback`とする。
 
-`physicalCommitted → applyingLayout → rebuildingGroup`ではsourceへ戻さない。後続失敗はdestination entry frameへの有限な復元を試み、group metadataだけを解散する。layout batchが期限切れまたは失効した場合はin-flight memberのAX frame generationを復元開始前に取り消し、旧callbackが同一PID laneの次memberを開始できない状態へ閉じる。environment invalidationではlayout failure用completionを起動せず、migration terminal所有者だけが解散を処理する。これにより、物理的にdestinationへ到達したウィンドウをアプリ側のlayout失敗で別Spaceへ再移送せず、復元後に旧layoutを再開しない。
+`physicalCommitted → applyingLayout → rebuildingGroup`ではsourceへ戻さない。後続失敗はdestination entry frameへの有限な復元を試み、group metadataだけを解散する。これにより、物理的にdestinationへ到達したウィンドウをアプリ側のlayout失敗で別Spaceへ再移送しない。
 
 terminal stateは`completed`、`rolledBack`、`cancelledBeforeStart`、`cancelledAtSource`、`dissolvedAfterOriginRestore`、`dissolvedAtDestination`、`dissolvedAfterIncompleteRollback`に限定する。`cancelledAtSource`だけはWindowServerがsourceへ戻した同一Proxyを保持し、その他のcancel/失敗から独立させる。非同期frame callbackはtransaction IDとphaseへ束縛し、終了済みまたは後続transactionへ書き込ませない。
 
@@ -168,7 +168,7 @@ Proxy作成直後にsource Spaceが`unknown`となるWindowServer publication遅
 
 destination drop直後にもmember SpaceまたはAX elementが一時的に`unknown`となる場合がある。これはdispatch前の有限再観測対象であり、単発のunknownだけでcandidateを破棄しない。一方、dispatchが受付済みでも全memberのdestination membershipが期限内に成立しない場合はOS/private API側の停止をTaboraから成功へ偽装せず、記録済み実行時originへの直列rollbackへ収束させる。
 
-全memberのdestination到達後に実行するframe適用では、同一PIDへ複数のAX位置・サイズ変更を同時発行しない。PIDごとに直列laneを作り、異なるPIDだけを並列実行する。batch期限は最長laneに対して1window当たり従来の1.8秒を確保する。期限切れ時は実行中laneのframe generationを先に取り消し、遅延callbackを次memberへ進ませない。いずれかが失敗した場合は成功扱いにせず、destination entry frame復元とgroup解散の既存経路へ収束させる。
+全memberのdestination到達後に実行するframe適用では、同一PIDへ複数のAX位置・サイズ変更を同時発行しない。PIDごとに直列laneを作り、異なるPIDだけを並列実行する。batch期限は最長laneに対して1window当たり従来の1.8秒を確保する。いずれかが失敗した場合は成功扱いにせず、destination entry frame復元とgroup解散の既存経路へ収束させる。
 
 同一PIDの別windowを後続でMission Control移送した時の縮小・操作不能表示は、frame適用より前に再現したためAX laneの問題ではない。既存のprivate API利用例と照合してoperationの即時解放はABI利用例と一致した。一方、Tabora固有だったのはMission Controlのactive transform中に同じ非同期move APIを重ねる点である。このためoperation保持や追加アニメーションではなく、scene separationを恒久境界とした。
 
@@ -189,11 +189,11 @@ destination drop直後にもmember SpaceまたはAX elementが一時的に`unkno
 
 ## Release確認表
 
-最新source適用確認: **2026-09-06 / Tabora v2.2.2 (Build 19)**
+最新source適用確認: **2026-09-07 / Tabora v2.2.3 (Build 20)**
 
 最新macOS実機確認: **2026-09-01 / Tabora v2.1.0 (Build 16) / macOS 26.6.2**
 
-実機確認内容はv2.0.0 Build 14以降の確認履歴を継承します。v2.2.2はObservation / TransportのAPI方式、layout計画、FIFO順序、physical commit、post-migration foreground intentを変更せず、dispatch直前の共通再検証とAX layout timeout後のgeneration取消順序を強化します。現行Releaseでは下記の移送確認表を通常のfunctional suiteとして維持します。
+実機確認内容はv2.0.0 Build 14以降の確認履歴を継承します。v2.2.3の実動コードとテストは安定版v2.2.1と同一であり、v2.2.2の非同期操作変更は継承しません。この文書が対象とするObservation / Transport / migration FIFO / rollback / AX layout / post-migration foreground intentの契約もv2.2.1から変更しません。現行Releaseでは下記の移送確認表を通常のfunctional suiteとして維持します。
 
 - [x] 2/3/4 member、同一/異なるアプリ。
 - [x] 同一アプリ複数memberで各AX elementが別Window IDへ解決され、重複ID captureがdispatch前に拒否されること。
@@ -209,8 +209,6 @@ destination drop直後にもmember SpaceまたはAX elementが一時的に`unkno
 - [x] physical commit後のAX layoutでTabora生成のfloating handoff coverが一切表示されず、実window更新だけが見えること。cover撤去によってtransport、membership verify、layout completion、group commit、Proxy rearmの順序が変化しないこと。
 - [x] 同じMission Control sessionで異なる2groupを別Desktopへ移動し、両captureが保持され、終了後にdrop順のFIFOで一件ずつ完了すること。先行groupのverify/layout/rollback中に後続moveをdispatchしないこと。
 - [x] FIFO処理中にdestination Desktopへ切り替えても、Active Space cleanupがmigrationのframe batchをcancelせず、両groupがlayout/commitまで完了すること。
-- [ ] destination layout timeout後に遅延callbackが返っても同一PID laneの次memberを開始せず、entry frame復元後に旧layoutが再適用されないこと。
-- [ ] capture後・dispatch前に別のSnap、Restore、shared resize、App Constraint計測が開始された場合、現在のownerを置き換えずmigrationが安全にcancelされること。
 - [x] capture後にmemberを一枚だけ別user Spaceへ手動移動した場合もcapture済みWindow IDが一致するそのmemberをdestinationへ集約すること。既にdestinationにいるmemberはprivate move対象から除外し、全member到着済みならmoveを発行しないこと。移送失敗時は各memberを実行時originへ戻し、capture前から分離していたgroupは復元後に解散すること。
 - [x] group移送完了後にMission Controlを再度開き、同一PID/別PIDの通常windowを移送しても縮小transform、操作不能surface、group画像欠落が起きないこと。
 - [x] `completed`とdispatch前cancelでは、消費済みProxyを同じMission Control compositor tailへ再生成しないため対象groupだけnormal Desktop rearmを通すこと。`rolledBack`やdestination dissolutionでは不要な旧scene quarantineを残さないこと。

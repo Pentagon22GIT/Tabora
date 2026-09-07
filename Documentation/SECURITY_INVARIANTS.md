@@ -16,8 +16,6 @@
 10. destination layoutは既知App Constraint、visible frame内収容、非重複、実geometry接続を満たしたframeだけをgroup commitへ渡す。
 11. managed-display topologyはread-only evidenceであり、通常1 Hz tickから全Space/全groupを再構築してはいけない。Display変更通知の有限settlementで未解決なexact loss candidateだけを期限付きで1 Hzへ委託し、expiry後は自動停止する。
 12. Display消失rebindは全memberのsame user Space、same physical NSScreen、managed-display identifier一致、既存zone関係としてのcomplete connected geometryを同時に要求する。unknown/分散ではgroupを破壊・移動しない。完全検証済みrebindでは旧display環境由来のdegraded stateとそのconfirmation evidenceを同時に解消するが、別transactionが所有するSpace transition suspensionは解除してはいけない。
-13. 通常Desktop安定確認またはFIFO terminalからprivate moveへ進む前に、共通transaction driverでcontroller状態とgroup構造を再検証する。capture後に別操作が開始された状態からmoveを直接dispatchしてはいけない。
-14. migration layout batchのtimeout・cancel・environment invalidationでは、in-flight memberのAX frame generationを先に失効させる。旧callbackが復元開始後に同一PID laneの次memberを開始してはいけない。
 
 ## 派生処理とライフサイクル
 
@@ -32,10 +30,10 @@
 - Preview=ONの現在候補を枚数やLRU順で恒久的に画像なしへ落とさない。候補増加時は全候補のper-image byte budgetを縮小し、画像解像度で総量を調整する。
 - 通常Mission Control CG Preview、Assist、MC transientはglobal画像取得数の上限を共有する。取得枠待機はbackground threadの有限時間に限定し、main thread、構造状態、画像枚数の打ち切りに流用しない。Normal Preview / Assistは枠待機後にその要求を所有する既存operationのcancel状態だけを再確認し、失効済みrequestから新しいCG captureを発行しない。この補完のためにHOT/COLD、Space、geometry、Window Server census、AX query、timerを追加してはいけない。既に同期CG captureが発行済みなら物理中断を試みず完了を許容し、logical cancellationにより結果を採用しない。MC transientはさらに独立single-flightで同時物理transactionを1本にする。
 - login session非アクティブ中はdesktop由来のcaptureとforeground selection観測を停止するが、event monitorを復帰させるRecovery coreは維持する。
-- 非同期frame mutationはPIDを含むwindow identityと単調増加tokenに所有され、cancel/完了後のcallbackは後続operationを完了させない。Snap rollbackまたは`dispatchingMove`以降のmigrationが所有する間は、同じframe operationを置き換え得るRestore、Snap、shared resize、App Constraint計測を開始しない。所有権のhandoffは[ASYNC_TRANSACTION_OWNERSHIP.md](ASYNC_TRANSACTION_OWNERSHIP.md)を正本とする。
+- 非同期frame mutationはPIDを含むwindow identityと単調増加tokenに所有され、cancel/完了後のcallbackは後続operationを完了させない。
 - 永続設定から読み出した座標、距離、待機時間は有限値に正規化してからgeometryやtimerへ渡す。
 - Preview OFFはproxy再構築の可否に依存せず、待機取得・retry・deadline・完了適用を失効する。OFF後のproviderはcurrent settingを再確認し、古いgenerationの結果をcacheへ入れない。
-- resize-settled previewは物理windowごとに最新geometryの確認候補を1件だけ保持する。最後の変化後の一回再観測で同じgeometryを確認するまで取得せず、COLD待機を含む旧geometryの要求は最新geometryへ置換する。確認中の位置だけの変化はPID、Window ID、stable identity、display、pixel sizeが一致する限り同一候補として継続し、position差だけで有限debtを残留させない。Assist／Snap中はgeometry取得を開始しない。
+- resize-settled previewは物理windowごとに最新geometryの確認候補を1件だけ保持する。最後の変化後の一回再観測で同じgeometryを確認するまで取得せず、COLD待機を含む旧geometryの要求は最新geometryへ置換する。Assist／Snap中はgeometry取得を開始しない。
 - COLD/geometryのcooldownは要求の破棄ではなくadmission保留である。実行中取得の後に成立したtriggerを先行取得へ吸収せず、最新keyの追従要求を1件保持する。
 - Mission Control / Space / display変形中は全preview triggerに共通するdesktop stability gateを閉じる。非同期結果は通常desktopでidentity・display・geometry・byte budgetを再検証するまでcacheへ適用しない。
 - 2 / 3 / 4分割Assist切り替えはPicker表示だけを変更し、選択前にwindow frame、group membership、restore state、Mission Control stateを変更しない。

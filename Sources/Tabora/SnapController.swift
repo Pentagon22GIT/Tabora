@@ -752,14 +752,6 @@ final class SnapController {
     // one-window state between those steps and produce a visible flash.
     var isSnapPlacementInProgress = false
     var isSnapRollbackActive = false
-    var groupMigrationFrameBatch: GroupMigrationFrameBatch?
-    var isWindowMutationHandoffBlocked: Bool {
-        // These owners must finish or explicitly retire their AX generations
-        // before a new interaction can replace an operation on the same window.
-        // A queued migration awaiting the desktop does not own frame writes.
-        isSnapRollbackActive
-            || groupSpaceMigrationLine.ownsWindowMutationTransaction
-    }
     var snapPlacementInteractionGeneration: Int?
     var activeSnapPlacementContext: SnapPlacementContext?
     var interactionGeneration = 0
@@ -1070,8 +1062,7 @@ final class SnapController {
     }
 
     func restoreLast() {
-        guard !isWindowMutationHandoffBlocked,
-              !isConstraintMeasurementActive,
+        guard !isConstraintMeasurementActive,
               !isConstraintPermissionPromptActive,
               !isRestoreTransactionActive,
               !isSnapPlacementInProgress,
@@ -1289,8 +1280,7 @@ final class SnapController {
 
     @discardableResult
     func beginConstraintMeasurement() -> Bool {
-        guard !isWindowMutationHandoffBlocked,
-              !isConstraintMeasurementActive,
+        guard !isConstraintMeasurementActive,
               !isConstraintPermissionPromptActive,
               !isRestoreTransactionActive,
               !isSnapPlacementInProgress,
@@ -1372,8 +1362,7 @@ final class SnapController {
     }
 
     func snapFocusedWindow(to zone: SnapZone) {
-        guard !isWindowMutationHandoffBlocked,
-              !isApplicationInteractionSuppressed,
+        guard !isApplicationInteractionSuppressed,
               handleResizeSession == nil, !isHandleResizeFinalizing else { return }
         guard isEnabled, ensurePermission(),
               let focusedWindow = windowService.focusedWindow(
@@ -2302,9 +2291,7 @@ final class SnapController {
         observedMouseLocation: CGPoint? = nil,
         observedEventHandlerWindowID: CGWindowID? = nil
     ) {
-        guard isEnabled,
-              !isWindowMutationHandoffBlocked,
-              !isApplicationInteractionSuppressed else { return }
+        guard isEnabled, !isApplicationInteractionSuppressed else { return }
         lastInteractionAt = Date()
 
         if event.type == .leftMouseDragged,
@@ -3476,10 +3463,6 @@ final class SnapController {
         frontmostGroupIDsBeforePlacement: Set<SnapGroupID>? = nil,
         completion: ((Bool) -> Void)? = nil
     ) {
-        guard !isWindowMutationHandoffBlocked else {
-            completion?(false)
-            return
-        }
         let operationGeneration = interactionGeneration
         let observationScene = makeSnapObservationScene()
         guard let placementContext = snapPlacementContext(

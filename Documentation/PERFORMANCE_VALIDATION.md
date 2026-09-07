@@ -35,17 +35,25 @@ R0〜R6は機能実行時のベンチマークではありません。R4でもwi
 
 ---
 
-## v2.2.1 / v2.2.2 (Build 18 / 19) の扱い
+## v2.2.3 (Build 20) の扱い
 
-**v2.2.1およびv2.2.2では常駐性能を再計測しません。**
+**v2.2.3では常駐性能を再計測しません。**
+
+v2.2.3の実動コードとテストは安定版v2.2.1と同一であり、v2.2.2で追加した非同期操作、Preview、Mission Control Proxyの変更を継承しません。常駐timer、polling、画像取得trigger、Recovery頻度、Window Server / AXの常時観測も変更していません。
+
+したがって、常駐コストの正式比較値はv2.2.0 Build 17の計測を引き続き基準とし、v2.2.3について未計測の性能値や改善率を新たに記載しません。
+
+---
+
+## v2.2.1 (Build 18) の扱い
+
+**v2.2.1では常駐性能を再計測しません。**
 
 v2.2.1の主な変更は、Preview HOT/COLDの判定境界、未知occluderの有限確認、可視マルチディスプレイでのforeground判定、provisional Snap peerのdisplay scopeです。これらはwindow selection、occlusion変化、Space/display遷移、Snap操作などの**イベント発生時に実行される経路**です。
 
 現在のR0〜R6常駐計測は、計測中にwindow clickやforeground transitionを発生させない条件で固定しています。そのため同じ計測を繰り返しても、v2.2.1で変更したイベント経路を直接評価する測定にはなりません。
 
-v2.2.2の変更は、既存の非同期window mutationに対するowner/generation確認、timeout時の取消順序、Mission Control Proxy選択callbackのgeneration確認、Preview geometry確認中のposition-only変化の受理です。すべて既存event、既存one-shot、既存callbackの内部で行い、処理回数を増やしません。
-
-またv2.2.1とv2.2.2では、常駐画像取得timer、foreground専用polling、Space polling、新しい1 Hz処理、常時Window Server / AX censusを追加していません。Previewの取得triggerとcooldown、Recovery頻度、foreground監視頻度も変更していません。したがって、**v2.2.2へのバージョン変更による平常時常駐性能への影響はありません。常駐コストの正式比較値はv2.2.0 Build 17の計測を引き続き基準とし、v2.2.1 / v2.2.2について未計測の性能値や改善率を新たに記載しません。**
+またv2.2.1では、常駐画像取得timer、foreground専用polling、Space polling、新しい1 Hz処理、常時AX censusを追加していません。したがって、**常駐コストの正式比較値はv2.2.0 Build 17の計測を引き続き基準とし、v2.2.1について未計測の性能値や改善率を新たに記載しません。**
 
 将来、常駐監視頻度、Preview取得方式、Recovery tick、常時Window Server/AX observation、常駐表示処理を変更した場合は再計測します。
 

@@ -73,9 +73,9 @@ AppKit、Accessibility、Window Server、TCC、Mission Controlを必要とする
 
 ## 現行sourceとの関係
 
-現行開発基盤: **Tabora v2.2.2 (Build 19)**
+現行開発基盤: **Tabora v2.2.3 (Build 20)**
 
-v2.2.2ではmigration transport、FIFO順序、physical commit、layout計画を変更せず、dispatch直前の共通再検証とdestination layout timeout時のAX generation取消順序を強化しています。旧callbackを復元後へ持ち越さない共通所有権は[ASYNC_TRANSACTION_OWNERSHIP.md](ASYNC_TRANSACTION_OWNERSHIP.md)を参照してください。
+v2.2.3の実動コードとテストは安定版v2.2.1と同一です。v2.2.2で追加した非同期操作の変更は継承せず、`WindowSpaces` / `GroupSpaceMigration` / `TaboraSkyLightBridge`のmigration transport、FIFO、rollback、destination layout contractをv2.2.1の境界へ戻しています。
 
 Desktop間group migrationはmacOS 26.5.2 / 26.6.2で成立を確認した履歴を保持します。OS versionによるallowlistではなく、各起動時のruntime capabilityと実Window→Space membershipによって利用可否と物理成功を判定する設計は現行sourceでも維持されています。
 

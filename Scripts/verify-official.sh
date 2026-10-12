@@ -38,8 +38,11 @@ for LANGUAGE in ja en ko zh-Hans zh-Hant; do
 done
 
 /usr/bin/codesign --verify --strict --verbose=4 "$APP"
-/usr/bin/lipo "$APP/Contents/MacOS/Tabora" -verify_arch arm64 x86_64 || \
-  fail "公式実行ファイルがUniversal 2（arm64/x86_64）ではありません。"
+ACTUAL_ARCHITECTURES="$(/usr/bin/lipo -archs "$APP/Contents/MacOS/Tabora")" || \
+  fail "公式実行ファイルのアーキテクチャを取得できません。"
+readonly ACTUAL_ARCHITECTURES
+[[ "$ACTUAL_ARCHITECTURES" == "arm64 x86_64" || "$ACTUAL_ARCHITECTURES" == "x86_64 arm64" ]] || \
+  fail "公式実行ファイルがUniversal 2（arm64/x86_64）ではありません。実際: $ACTUAL_ARCHITECTURES"
 /usr/bin/codesign --verify --strict --verbose=4 \
   -R="identifier \"$EXPECTED_BUNDLE_ID\" and certificate leaf = H\"$CERTIFICATE_SHA1\"" "$APP"
 

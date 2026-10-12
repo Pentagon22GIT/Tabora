@@ -123,9 +123,9 @@
 "settings.experimental.api_status.pending" = "현재 API 상태: 확인 대기 중";
 "settings.experimental.api_status.available" = "현재 API 상태: 사용 가능";
 "settings.experimental.api_status.unavailable" = "현재 API 상태: 사용 불가(이 기능을 끄십시오)";
-"settings.experimental.assist.title" = "2/3/4분할 Assist 전환";
-"settings.experimental.assist.checkbox" = "Option 키로 2/3/4분할 Assist 전환";
-"settings.experimental.assist.note" = "Option(⌥) 키를 누르는 동안 남은 두 4분할 제안 영역을 하나로 합쳐 3분할 배치를 만들 수 있습니다. 반대로 한쪽 절반에 윈도우 하나가 배치되어 있고 남은 영역에 서로 다른 윈도우 두 개를 배치할 수 있으면, 해당 영역을 둘로 나눈 3분할 제안으로 전환합니다.";
+"settings.general.assist.title" = "2/3/4분할 Assist 전환";
+"settings.general.assist.checkbox" = "Option 키로 2/3/4분할 Assist 전환";
+"settings.general.assist.note" = "Option(⌥) 키를 누르는 동안 남은 두 4분할 제안 영역을 하나로 합쳐 3분할 배치를 만들 수 있습니다. 반대로 한쪽 절반에 윈도우 하나가 배치되어 있고 남은 영역에 서로 다른 윈도우 두 개를 배치할 수 있으면, 해당 영역을 둘로 나눈 3분할 제안으로 전환합니다.";
 "settings.experimental.workspace.title" = "화면 가장자리의 Space 전환 지연";
 "settings.experimental.workspace.note" = "문서화되지 않은 macOS 전체 환경설정을 변경합니다. 향후 macOS에서 작동하지 않을 수 있으며, 적용 시 Dock이 재시동됩니다. Tabora를 종료해도 원래 값으로 복원하지 않습니다.";
 "settings.experimental.workspace.delay_button" = "Space 전환을 최대 60초 지연";
@@ -208,3 +208,8 @@
 "workspace.error.invalid_readback" = "현재 workspaces-edge-delay 값을 숫자로 읽을 수 없습니다.";
 "workspace.error.verification_failed" = "설정을 기록한 후 확인한 값이 요청한 값과 일치하지 않습니다.";
 "workspace.error.rollback_failed" = "설정을 변경하지 못했고 원래 값으로 복원하지도 못했습니다. 변경 사항이 일부만 적용되었을 수 있습니다.\n변경 오류: %@\n복원 오류: %@";
+
+"settings.general.extensions.title" = "확장 기능";
+"settings.experimental.latest_preview.title" = "Mission Control 이미지 업데이트";
+"settings.experimental.latest_preview.checkbox" = "Mission Control 안에서 최신 이미지로 전환";
+"settings.experimental.latest_preview.note" = "기본값은 꺼짐입니다. 윈도우 미리보기가 켜져 있으면 Mission Control 안에서 이미지를 다시 캡처합니다. macOS 동작에 따라 이미지가 흐려지거나 가장자리에 간격이 생길 수 있습니다. 끄면 일반 데스크탑에서 캡처한 이미지를 사용합니다.";

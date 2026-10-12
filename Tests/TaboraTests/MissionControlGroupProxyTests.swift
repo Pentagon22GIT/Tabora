@@ -37,9 +37,20 @@ final class MissionControlGroupProxyTests: XCTestCase {
     }
 
     func testTransientPreviewProviderAuthorizationCanCrossEscapingCaptureGate() {
+        let member = MissionControlTransientPreviewMemberPlan(
+            stableIdentity: "capture-gate-test",
+            pid: 1,
+            windowID: 1,
+            relativeFrame: CGRect(x: 0, y: 0, width: 100, height: 100),
+            targetPixelSize: MissionControlPreviewPixelSize(
+                width: 100,
+                height: 100
+            ),
+            byteBudget: 1 * 1024 * 1024
+        )
         var forwardedAuthorization: (() -> Bool)?
         let provider: MissionControlTransientPreviewCapturer.PreviewProvider = {
-            _, _, captureIsAuthorized in
+            _, captureIsAuthorized in
             // This assignment is intentionally part of the regression test.
             // `PreviewProvider` must declare the authorization parameter as
             // escaping because the real provider forwards it into the optional
@@ -48,7 +59,7 @@ final class MissionControlGroupProxyTests: XCTestCase {
             return nil
         }
 
-        XCTAssertNil(provider(nil, .nominal, { true }))
+        XCTAssertNil(provider(member, { true }))
         XCTAssertTrue(forwardedAuthorization?() == true)
     }
 

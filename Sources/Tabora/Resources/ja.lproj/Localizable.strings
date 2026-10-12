@@ -123,9 +123,9 @@
 "settings.experimental.api_status.pending" = "現在のAPI状態: 確認待ち";
 "settings.experimental.api_status.available" = "現在のAPI状態: 利用可能";
 "settings.experimental.api_status.unavailable" = "現在のAPI状態: 利用不可（機能をオフにしてください）";
-"settings.experimental.assist.title" = "2 / 3 / 4分割Assist切り替え";
-"settings.experimental.assist.checkbox" = "Optionで2 / 3 / 4分割Assistを切り替える";
-"settings.experimental.assist.note" = "Option（⌥）を押している間、4分割候補の残り2面を1つへ統合して3分割候補にできます。反対に、左右または上下の半分が1枚だけ配置され、残り領域へ異なる2ウィンドウを配置できる場合は、その領域を2面へ分けた3分割候補へ切り替えます。";
+"settings.general.assist.title" = "2 / 3 / 4分割Assist切り替え";
+"settings.general.assist.checkbox" = "Optionで2 / 3 / 4分割Assistを切り替える";
+"settings.general.assist.note" = "Option（⌥）を押している間、4分割候補の残り2面を1つへ統合して3分割候補にできます。反対に、左右または上下の半分が1枚だけ配置され、残り領域へ異なる2ウィンドウを配置できる場合は、その領域を2面へ分けた3分割候補へ切り替えます。";
 "settings.experimental.workspace.title" = "画面端でのSpace移動を遅延";
 "settings.experimental.workspace.note" = "macOS全体の未公開Preferenceを変更します。将来のmacOSでは動作しない可能性があり、適用時にDockが再起動します。Tabora終了時には元へ戻しません。";
 "settings.experimental.workspace.delay_button" = "Space移動を60秒まで遅延";
@@ -208,3 +208,8 @@
 "workspace.error.invalid_readback" = "現在のworkspaces-edge-delayを数値として読み取れませんでした。";
 "workspace.error.verification_failed" = "設定を書き込んだ後の確認結果が一致しませんでした。";
 "workspace.error.rollback_failed" = "設定変更に失敗し、元の値への復元にも失敗しました。変更が部分的に適用されている可能性があります。\n変更エラー: %@\n復元エラー: %@";
+
+"settings.general.extensions.title" = "拡張機能";
+"settings.experimental.latest_preview.title" = "Mission Controlの画像更新";
+"settings.experimental.latest_preview.checkbox" = "Mission Control内で最新の画像に切り替える";
+"settings.experimental.latest_preview.note" = "初期設定はOFFです。プレビュー表示が有効な場合、Mission Control内で画像を再取得します。macOSの動作によって画像が粗くなったり、周囲に隙間が生じる場合があります。OFFでは通常時に取得した画像を使用します。";

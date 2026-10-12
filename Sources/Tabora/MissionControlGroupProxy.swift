@@ -7,6 +7,22 @@ struct MissionControlTransitionToken: Equatable {
     let expiresAt: TimeInterval
 }
 
+enum MissionControlTransientPreviewEligibilityPolicy {
+    /// Transient replacement is optional, so it is stricter than the normal
+    /// HOT/COLD cache. Normal activity may preserve a previously confirmed HOT
+    /// state through an incomplete WindowServer census; transient capture may
+    /// not inherit that state. Only a complete current observation proving the
+    /// whole group frontmost can authorize one atomic group plan.
+    static func authorizedHotGroupIDs<GroupID: Hashable>(
+        currentGroupIDs: Set<GroupID>,
+        currentEvaluationByGroupID: [GroupID: PreviewGroupVisibilityEvaluation]
+    ) -> Set<GroupID> {
+        Set(currentGroupIDs.filter {
+            currentEvaluationByGroupID[$0] == .hot
+        })
+    }
+}
+
 enum MissionControlTransitionTokenPolicy {
     static let lifetime: TimeInterval = 2.0
 
@@ -927,6 +943,9 @@ final class MissionControlGroupProxyController {
     private var cooldownRefreshDeadline: TimeInterval?
     private var activePreviewByteBudget = 0
     private var latestPreviewProvider: PreviewProvider?
+    private var transientPreviewsAreEnabled = false
+    private var pendingTransientPreviewResults:
+        [SnapGroupID: (generation: UInt64, result: MissionControlTransientPreviewGroupResult)] = [:]
     private var latestTransientPreviewProvider:
         MissionControlTransientPreviewCapturer.PreviewProvider?
     // Mission Control-only snapshots never enter the normal Preview cache.
@@ -983,6 +1002,7 @@ final class MissionControlGroupProxyController {
         previewVisibilityEvaluationByGroupID:
             [SnapGroupID: PreviewGroupVisibilityEvaluation] = [:],
         previewsEnabled: Bool,
+        transientPreviewsEnabled: Bool = false,
         previewCacheByteLimit: Int,
         previewProvider: @escaping PreviewProvider,
         transientPreviewProvider: @escaping MissionControlTransientPreviewCapturer.PreviewProvider
@@ -990,6 +1010,7 @@ final class MissionControlGroupProxyController {
         setPreviewCacheByteLimit(previewCacheByteLimit)
         structuralPreviewMemberIDs = structuralMemberIDs
         setPreviewsEnabled(previewsEnabled)
+        setTransientPreviewsEnabled(transientPreviewsEnabled)
         let presentableGroups = groups.filter { group in
             group.memberIDs.count >= 2
                 && group.memberIDs.allSatisfy {
@@ -1053,7 +1074,8 @@ final class MissionControlGroupProxyController {
             activePreviewKeys = currentPreviewKeys
             activePreviewByteBudget = previewByteBudget
             latestPreviewProvider = previewProvider
-            latestTransientPreviewProvider = transientPreviewProvider
+            latestTransientPreviewProvider = transientPreviewsAreEnabled
+                ? transientPreviewProvider : nil
             // A frame-only key change must not turn a structurally known member
             // into a new member and start an unbounded sequence of captures. Carry
             // its derived image to the new key; committed size/display mutations
@@ -1134,7 +1156,7 @@ final class MissionControlGroupProxyController {
             commitValidatedPreviewResults(
                 currentPreviewKeys: currentPreviewKeys
             )
-            if desktopPresentationIsStable {
+            if transientPreviewsAreEnabled, desktopPresentationIsStable {
                 transientAuthorizedHotGroupIDs =
                     MissionControlTransientPreviewEligibilityPolicy
                         .authorizedHotGroupIDs(
@@ -1163,6 +1185,7 @@ final class MissionControlGroupProxyController {
                 // callback can authorize real windows.
                 continue
             }
+            pendingTransientPreviewResults.removeValue(forKey: groupID)
             transientPreviewAppliedGroupIDs.remove(groupID)
             windowsByGroupID.removeValue(forKey: groupID)?.retire()
         }
@@ -1228,7 +1251,8 @@ final class MissionControlGroupProxyController {
                 [weak self] groupID, memberIDs in
                 self?.onSelectQueuedMigrationGroup?(groupID, memberIDs)
             }
-            if transientPreviewTargetGroupIDs.isEmpty,
+            if transientPreviewsAreEnabled, previewsAreEnabled,
+               transientPreviewTargetGroupIDs.isEmpty,
                memberWindows.allSatisfy({ $0.cgWindowID != nil }) {
                 let sourceMembers = memberWindows.compactMap { window
                     -> MissionControlTransientPreviewMemberPlan? in
@@ -1300,6 +1324,18 @@ final class MissionControlGroupProxyController {
         hasPendingPreviewCacheApplication = false
     }
 
+    /// Revokes only the optional Mission Control image lane. Normal previews
+    /// and HOT/COLD decisions remain owned by this controller.
+    func setTransientPreviewsEnabled(_ enabled: Bool) {
+        transientPreviewsAreEnabled = enabled
+        guard !enabled else { return }
+        endTransientPreviewSession()
+        pendingTransientPreviewResults.removeAll()
+        latestTransientPreviewProvider = nil
+        transientPreviewPlansByGroupID.removeAll()
+        transientAuthorizedHotGroupIDs.removeAll()
+    }
+
     var hasTransientPreviewSession: Bool {
         !transientPreviewTargetGroupIDs.isEmpty
             || transientCaptureHasStarted
@@ -1311,7 +1347,7 @@ final class MissionControlGroupProxyController {
     }
 
     func beginTransientPreviewSession(targetGroupIDs: Set<SnapGroupID>) {
-        guard previewsAreEnabled,
+        guard transientPreviewsAreEnabled, previewsAreEnabled,
               !previewCaptureIsSuspended,
               transientPreviewTargetGroupIDs.isEmpty,
               transientPreviewAppliedGroupIDs.isEmpty else { return }
@@ -1345,6 +1381,18 @@ final class MissionControlGroupProxyController {
         windowServerSnapshot: [WindowOcclusionSnapshot],
         now: TimeInterval = ProcessInfo.processInfo.systemUptime
     ) {
+        guard transientPreviewsAreEnabled else { return }
+        // Reuse completed pixels after a click rather than recapturing them.
+        // The regular recovery observations drive this; no new polling timer.
+        if !CGEventSource.buttonState(.combinedSessionState, button: .left) {
+            let pending = pendingTransientPreviewResults
+            pendingTransientPreviewResults.removeAll()
+            for delivery in pending.values {
+                applyTransientPreviewResult(
+                    delivery.result, generation: delivery.generation
+                )
+            }
+        }
         guard !transientPreviewTargetGroupIDs.isEmpty,
               !transientCaptureHasStarted else { return }
         let targetWindowIDs = Set(
@@ -1400,6 +1448,7 @@ final class MissionControlGroupProxyController {
     func endTransientPreviewSession(
         preservingAppliedGroupIDs preservedGroupIDs: Set<SnapGroupID> = []
     ) {
+        pendingTransientPreviewResults.removeAll()
         guard hasTransientPreviewSession else { return }
         transientPreviewSessionGeneration &+= 1
         transientPreviewCapturer.cancel()
@@ -1419,7 +1468,7 @@ final class MissionControlGroupProxyController {
     }
 
     private func startTransientPreviewCapture() {
-        guard !transientCaptureHasStarted else { return }
+        guard transientPreviewsAreEnabled, !transientCaptureHasStarted else { return }
         let generation = transientPreviewSessionGeneration
         let targetPlans = transientPreviewTargetGroupIDs.compactMap {
             transientPreviewSessionPlansByGroupID[$0]
@@ -1504,19 +1553,20 @@ final class MissionControlGroupProxyController {
         _ result: MissionControlTransientPreviewGroupResult,
         generation: UInt64
     ) {
-        guard generation == transientPreviewSessionGeneration,
+        guard transientPreviewsAreEnabled,
+              generation == transientPreviewSessionGeneration,
               transientPreviewTargetGroupIDs.contains(result.groupID),
               !desktopPresentationIsStable,
-              !CGEventSource.buttonState(
-                  .combinedSessionState,
-                  button: .left
-              ),
               previewsAreEnabled,
               let plan = transientPreviewSessionPlansByGroupID[result.groupID],
               plan.groupRevision == result.groupRevision,
               result.previewsByMemberID.count == plan.members.count,
               let window = windowsByGroupID[result.groupID],
               window.allowsTransientPreviewMutation else { return }
+        if CGEventSource.buttonState(.combinedSessionState, button: .left) {
+            pendingTransientPreviewResults[result.groupID] = (generation, result)
+            return
+        }
         let stableMemberIDs = Set(plan.members.map(\.stableIdentity))
         guard stableMemberIDs.count == plan.members.count else { return }
         let frames = Dictionary(
@@ -1576,6 +1626,7 @@ final class MissionControlGroupProxyController {
     }
 
     func retireForSpaceMigration(groupID: SnapGroupID) {
+        pendingTransientPreviewResults.removeValue(forKey: groupID)
         transientPreviewAppliedGroupIDs.remove(groupID)
         windowsByGroupID.removeValue(forKey: groupID)?.retire()
         if activeSelectionCandidate?.groupID == groupID {
@@ -1635,6 +1686,7 @@ final class MissionControlGroupProxyController {
     ) {
         for groupID in Array(windowsByGroupID.keys) where
             !preservedGroupIDs.contains(groupID) {
+            pendingTransientPreviewResults.removeValue(forKey: groupID)
             transientPreviewAppliedGroupIDs.remove(groupID)
             windowsByGroupID.removeValue(forKey: groupID)?.retire()
         }
@@ -2001,6 +2053,7 @@ final class MissionControlGroupProxyController {
     }
 
     func hide(groupID: SnapGroupID) {
+        pendingTransientPreviewResults.removeValue(forKey: groupID)
         transientPreviewAppliedGroupIDs.remove(groupID)
         if activeSelectionCandidate?.groupID == groupID {
             activeSelectionCandidate = nil
@@ -2024,6 +2077,7 @@ final class MissionControlGroupProxyController {
 
     func cancelSelectionTransition(for groupID: SnapGroupID) {
         windowsByGroupID[groupID]?.cancelSelectionTransition()
+        pendingTransientPreviewResults.removeValue(forKey: groupID)
         transientPreviewAppliedGroupIDs.remove(groupID)
     }
 

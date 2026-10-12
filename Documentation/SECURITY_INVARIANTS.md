@@ -23,9 +23,10 @@
 - PreviewのGroup HOT/COLDはcompleteなWindow Server evidenceだけで更新する。全exact memberが現在のon-screen censusに存在する場合だけmember-relativeな外部occlusionを評価し、Group内member ordering、unionの空白、隣接Displayの共有1 pt境界spillをCOLD根拠にしない。全memberがcomplete censusから外れた場合は`COLD-not-visible`としてHOT leaseを閉じるが画像取得は行わない。partial / incomplete / transform中は`indeterminate`として直前状態を破壊しない。
 - PreviewのCOLD-visible候補はphysical occlusionを先に証明し、そのcandidateだけをAX意味分類する。明示的な`AXDialog` / `AXSystemDialog` / modal / exact attached sheetだけをauxiliaryとしてCOLD根拠から除外し、未知・独自subrole・一時的な解決失敗をauxiliaryへ昇格しない。UNKNOWNのsemantic evidenceはexact candidate単位に保ちつつ、Group-level physical occlusionには有限confirmation budgetを持たせ、candidate churnで0.15秒再観測を無期限化してはいけない。
 - HOT→`COLD-visible`だけを2観測・0.15秒以上で確定して`coldConfirmed`取得へ接続する。`COLD-not-visible`へ移った時は旧visible epochのCOLD authorizationを失効し、admit済み同期CG取得もcompletion / staging commitで旧revisionを拒否する。`geometryConfirmed`や他Groupの取得authorizationを巻き込んではならない。
-- 通常Mission Control Preview cacheは初回、確定resize/display移動、確定HOT→COLD-visible以外の理由で取得しない。Recovery tick、cache age、proxy再描画から通常cache用画像要求を生成しない。Mission Control開始は通常cacheとは独立したsession限定transient laneだけを起動できる。
+- 通常Mission Control Preview cacheは初回、確定resize/display移動、確定HOT→COLD-visible以外の理由で取得しない。Recovery tick、cache age、proxy再描画から通常cache用画像要求を生成しない。Mission Control開始は初期OFFの内部更新設定がONの場合に限り、通常cacheとは独立したsession限定transient laneだけを起動できる。
 - MC transient laneは通常Desktopのcomplete exposure evidenceでgroup全体がHOTと証明された場合だけ、その全member集合を開始時の可視Space + exact group/member identityへ一度固定する。通常HOT stateのunknown保持をtransient認可へ流用しない。部分遮蔽groupを分割取得・部分適用せず、認可済みgroupをatomicに取得・適用する。Mission Control内と結果適用時にHOT/COLDを再評価せず、transform geometryが連続安定するまで取得せず、通常cacheへcommitしない。session/generation不一致、選択開始後のlate result、budget超過、取得失敗は棄却する。
 - MC transientは通常cache limitと同額の独立byte budget、固定済みHOT group plan単位のadmission、session member上限、物理transaction最大1本を必須とする。設定UIはnormal + transientの合計上限を表示し、各laneへ表示値の半分ずつを割り当てる。通常Preview/Assistと同じglobal CG capture gateも通し、旧sessionの物理requestが収束する前に次sessionのrequestを重ねない。global gate待機後およびCG取得後の派生画像処理でもsession generationを再確認し、失効済みsessionへ新規Window Server取得・縮小・再sampleを継続してはいけない。
+- 内部画像更新OFFは通常Preview設定と独立してsessionを失効し、一時画像と保留結果を破棄する。画像nil時の再試行は同じ認可session内の1回に限定する。button押下中の適用保留は次の既存観測で再認可し、選択開始・session終了を越えて適用しない。
 - previewは派生表示であり、取得失敗・上限超過・cancelによってgroup identity、foreground認可、placement、resize ownershipを変更しない。
 - Preview=ONの現在候補を枚数やLRU順で恒久的に画像なしへ落とさない。候補増加時は全候補のper-image byte budgetを縮小し、画像解像度で総量を調整する。
 - 通常Mission Control CG Preview、Assist、MC transientはglobal画像取得数の上限を共有する。取得枠待機はbackground threadの有限時間に限定し、main thread、構造状態、画像枚数の打ち切りに流用しない。Normal Preview / Assistは枠待機後にその要求を所有する既存operationのcancel状態だけを再確認し、失効済みrequestから新しいCG captureを発行しない。この補完のためにHOT/COLD、Space、geometry、Window Server census、AX query、timerを追加してはいけない。既に同期CG captureが発行済みなら物理中断を試みず完了を許容し、logical cancellationにより結果を採用しない。MC transientはさらに独立single-flightで同時物理transactionを1本にする。
@@ -160,6 +161,8 @@
 36. groupの表示番号は現在存在する全groupのstable sort indexだけから導出する。累積`creationOrder`や一時的にpresentableなProxy集合を表示番号として使わず、通常Proxyとmigration reservation/shadowで同じordinalを使用する。
 
 ## Previewとoptional data
+
+- 全サイズ補完はtransientの認可済みplanだけを対象とし、global capture枠を保持したまま最大1回実行する。bridgeはTCC許可、exact PID + Window ID、layer 0を前後で確認し、取得境界のsession失効は画像を返さない。非公開APIの利用不能を理由にwindowのtransform、Space、focus、権限設定を変更しない。
 
 1. Preview imageはderived / disposable stateである。
 2. Preview cache pressure / failureでplacement correctnessを変えてはいけない。

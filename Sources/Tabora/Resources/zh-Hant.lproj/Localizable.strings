@@ -123,9 +123,9 @@
 "settings.experimental.api_status.pending" = "目前 API 狀態：等待檢查";
 "settings.experimental.api_status.available" = "目前 API 狀態：可用";
 "settings.experimental.api_status.unavailable" = "目前 API 狀態：無法使用（請關閉此功能）";
-"settings.experimental.assist.title" = "切換 2/3/4 分佈局輔助";
-"settings.experimental.assist.checkbox" = "按住 Option 鍵切換 2/3/4 分佈局輔助";
-"settings.experimental.assist.note" = "按住 Option（⌥）鍵時，可將四分佈局中剩餘的兩個建議區域合併為一個區域，形成三分佈局。相反地，當半螢幕中只有一個視窗，且剩餘區域可容納兩個不同視窗時，該區域會拆分為兩個三分佈局建議。";
+"settings.general.assist.title" = "切換 2/3/4 分佈局輔助";
+"settings.general.assist.checkbox" = "按住 Option 鍵切換 2/3/4 分佈局輔助";
+"settings.general.assist.note" = "按住 Option（⌥）鍵時，可將四分佈局中剩餘的兩個建議區域合併為一個區域，形成三分佈局。相反地，當半螢幕中只有一個視窗，且剩餘區域可容納兩個不同視窗時，該區域會拆分為兩個三分佈局建議。";
 "settings.experimental.workspace.title" = "延遲螢幕邊緣的空間切換";
 "settings.experimental.workspace.note" = "更改一項未公開的 macOS 全域偏好設定。此設定可能在未來的 macOS 版本中失效，套用時會重新啟動 Dock。結束 Tabora 時不會回復原值。";
 "settings.experimental.workspace.delay_button" = "將空間切換最多延遲 60 秒";
@@ -208,3 +208,8 @@
 "workspace.error.invalid_readback" = "無法將目前的 workspaces-edge-delay 值讀取為數字。";
 "workspace.error.verification_failed" = "寫入設定後讀取的值與要求的值不一致。";
 "workspace.error.rollback_failed" = "無法更改設定，也無法回復原值。更改可能只套用了一部分。\n更改錯誤：%@\n回復錯誤：%@";
+
+"settings.general.extensions.title" = "擴充功能";
+"settings.experimental.latest_preview.title" = "Mission Control 影像更新";
+"settings.experimental.latest_preview.checkbox" = "在 Mission Control 內切換為最新影像";
+"settings.experimental.latest_preview.note" = "預設關閉。啟用視窗預覽時，在 Mission Control 內重新擷取影像。受 macOS 行為影響，影像可能模糊或邊緣出現間隙。關閉時使用在正常桌面狀態下擷取的影像。";

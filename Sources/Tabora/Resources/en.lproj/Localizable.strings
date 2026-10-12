@@ -123,9 +123,9 @@
 "settings.experimental.api_status.pending" = "Current API Status: Pending";
 "settings.experimental.api_status.available" = "Current API Status: Available";
 "settings.experimental.api_status.unavailable" = "Current API Status: Unavailable (Turn This Feature Off)";
-"settings.experimental.assist.title" = "Switch Between 2-, 3-, and 4-Way Assist";
-"settings.experimental.assist.checkbox" = "Hold Option to Switch Between 2-, 3-, and 4-Way Assist";
-"settings.experimental.assist.note" = "While you hold Option (⌥), two remaining quarter-layout suggestions can be merged into one region to create a three-way layout. Conversely, when one half contains a single window and two different windows fit in the remaining area, that area is split into two three-way-layout suggestions.";
+"settings.general.assist.title" = "Switch Between 2-, 3-, and 4-Way Assist";
+"settings.general.assist.checkbox" = "Hold Option to Switch Between 2-, 3-, and 4-Way Assist";
+"settings.general.assist.note" = "While you hold Option (⌥), two remaining quarter-layout suggestions can be merged into one region to create a three-way layout. Conversely, when one half contains a single window and two different windows fit in the remaining area, that area is split into two three-way-layout suggestions.";
 "settings.experimental.workspace.title" = "Delay Space Switching at Screen Edges";
 "settings.experimental.workspace.note" = "Changes an undocumented macOS-wide preference. It may stop working in future macOS releases, and applying it restarts the Dock. Tabora does not restore the original value when it quits.";
 "settings.experimental.workspace.delay_button" = "Delay Space Switching for Up to 60 Seconds";
@@ -208,3 +208,8 @@
 "workspace.error.invalid_readback" = "The current workspaces-edge-delay value could not be read as a number.";
 "workspace.error.verification_failed" = "The value read after writing did not match the requested setting.";
 "workspace.error.rollback_failed" = "The setting could not be changed or restored to its original value. The change may have been applied only partially.\nChange Error: %@\nRestore Error: %@";
+
+"settings.general.extensions.title" = "Extensions";
+"settings.experimental.latest_preview.title" = "Mission Control image updates";
+"settings.experimental.latest_preview.checkbox" = "Switch to the latest images inside Mission Control";
+"settings.experimental.latest_preview.note" = "Off by default. When window previews are enabled, recaptures images inside Mission Control. Depending on macOS behavior, images may look blurry or show gaps around their edges. When off, images captured on the normal desktop are used.";

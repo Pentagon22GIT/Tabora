@@ -123,9 +123,9 @@
 "settings.experimental.api_status.pending" = "当前 API 状态：等待检查";
 "settings.experimental.api_status.available" = "当前 API 状态：可用";
 "settings.experimental.api_status.unavailable" = "当前 API 状态：不可用（请关闭此功能）";
-"settings.experimental.assist.title" = "切换 2/3/4 分布局辅助";
-"settings.experimental.assist.checkbox" = "按住 Option 键切换 2/3/4 分布局辅助";
-"settings.experimental.assist.note" = "按住 Option（⌥）键时，可将四分布局中剩余的两个建议区域合并为一个区域，从而形成三分布局。相反，当半屏中只有一个窗口，且剩余区域可容纳两个不同窗口时，该区域会拆分为两个三分布局建议。";
+"settings.general.assist.title" = "切换 2/3/4 分布局辅助";
+"settings.general.assist.checkbox" = "按住 Option 键切换 2/3/4 分布局辅助";
+"settings.general.assist.note" = "按住 Option（⌥）键时，可将四分布局中剩余的两个建议区域合并为一个区域，从而形成三分布局。相反，当半屏中只有一个窗口，且剩余区域可容纳两个不同窗口时，该区域会拆分为两个三分布局建议。";
 "settings.experimental.workspace.title" = "延迟屏幕边缘的空间切换";
 "settings.experimental.workspace.note" = "更改一项未公开的 macOS 全局偏好设置。此设置可能在未来的 macOS 版本中失效，应用时会重新启动程序坞。退出 Tabora 时不会恢复原值。";
 "settings.experimental.workspace.delay_button" = "将空间切换最多延迟 60 秒";
@@ -208,3 +208,8 @@
 "workspace.error.invalid_readback" = "无法将当前 workspaces-edge-delay 值读取为数字。";
 "workspace.error.verification_failed" = "写入设置后读取的值与请求的值不一致。";
 "workspace.error.rollback_failed" = "无法更改设置，也无法恢复原值。更改可能只应用了一部分。\n更改错误：%@\n恢复错误：%@";
+
+"settings.general.extensions.title" = "扩展功能";
+"settings.experimental.latest_preview.title" = "Mission Control 图像更新";
+"settings.experimental.latest_preview.checkbox" = "在 Mission Control 内切换为最新图像";
+"settings.experimental.latest_preview.note" = "默认关闭。启用窗口预览时，在 Mission Control 内重新捕获图像。受 macOS 行为影响，图像可能模糊或边缘出现间隙。关闭时使用在正常桌面状态下捕获的图像。";

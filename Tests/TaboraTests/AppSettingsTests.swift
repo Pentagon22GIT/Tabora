@@ -68,7 +68,25 @@ final class AppSettingsTests: XCTestCase {
         )
     }
 
-    func testAssistLayoutSwitchingIsExperimentalByDefault() {
+    func testLatestPreviewOptInAndPromotedAssistPreserveIndependentPreferences() throws {
+        let name = "TaboraTests.PreviewSettings.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        defaults.set(true, forKey: "experimentalAssistLayoutSwitchingEnabled")
+        let settings = AppSettings(defaults: defaults)
+        XCTAssertFalse(AppSettings.defaultMissionControlLatestPreviewEnabled)
+        XCTAssertFalse(settings.missionControlLatestPreviewEnabled)
+        XCTAssertTrue(settings.assistLayoutSwitchingEnabled)
+        settings.missionControlLatestPreviewEnabled = true
+        XCTAssertTrue(AppSettings(defaults: defaults).missionControlLatestPreviewEnabled)
+        settings.missionControlLatestPreviewEnabled = false
+        XCTAssertFalse(AppSettings(defaults: defaults).missionControlLatestPreviewEnabled)
+        XCTAssertTrue(settings.assistLayoutSwitchingEnabled)
+        settings.assistLayoutSwitchingEnabled = false
+        XCTAssertFalse(defaults.bool(forKey: "experimentalAssistLayoutSwitchingEnabled"))
+    }
+
+    func testAssistLayoutSwitchingRemainsOptIn() {
         XCTAssertFalse(AppSettings.defaultAssistLayoutSwitchingEnabled)
     }
 

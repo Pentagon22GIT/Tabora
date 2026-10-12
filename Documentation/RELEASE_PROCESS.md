@@ -32,6 +32,10 @@ swift test
 - relevant external occluderの出現 / 消失
 - Recovery
 - Mission Control
+- 新規設定で内部画像更新がOFFであること、OFFでは通常画像を維持し、内部再取得を開始しないこと。ON/OFFの変更、取得枠待機中のOFF、連続開閉・選択中の遅延結果を確認すること
+- Debug / Releaseの両方でPreview取得・安定判定の診断出力と診断専用の計時処理が含まれないこと。今回のソースから再ビルドし、旧バイナリを検証・配布に流用しないこと。設定保存・サイズ制約・プレビュー機能は維持すること
+- 内部画像更新ONではクリック中の完成画像が同じsessionのbutton解放後に適用され、選択・終了後には適用されないこと。nil時の再試行は1回で止まり、通常画像・HOT/COLD・group選択を阻害しないこと
+- 「一般 → 拡張機能」がウィンドウ移動とドラッグ判定の間にあり、Option Assistの保存済みON/OFFが維持されること。5言語で新しい試験的設定と説明が表示されること
 - 試験的なDesktop間グループ移送をOFFのままにした時、既存Proxy選択・前面化・通常Space分離が変化しないこと
 - 試験的なDesktop間グループ移送をONにし、2 / 3 / 4 memberでsource→destination→sourceの往復、全member membership、移送後layout、restore frame、group再構成を確認すること
 - 非公開move runtimeを意図的に利用不能とした検証buildで、通常Desktop復帰後に一度だけ警告され、設定からOFFにできること。設定欄のAPI状態と動作確認済み環境も確認すること
@@ -57,33 +61,26 @@ swift test
 
 ### 現行Release状態
 
-**Tabora v2.2.3 (Build 20) / 2026-09-07**
+**Tabora v2.3.0 (Build 21) / 2026-10-12 — macOS検証未完了**
 
-v2.2.3は、v2.2.2の実動コード変更をすべて撤回し、実動コードとテストを安定版v2.2.1と同一内容へ戻す保守Releaseです。新しい監視、gate、常駐polling、画像取得timer、Space polling、全Desktop AX censusは追加しません。
-
-- [x] Preview HOT/COLDをGroup-level state + member-relative physical observationへ整理し、`COLD-visible`と`COLD-not-visible`を分離
-- [x] dialog / system dialog / modal / exact sheetだけを明示的auxiliaryとして除外し、未知/custom subroleは`UNKNOWN`へ保持
-- [x] UNKNOWN candidateが入れ替わってもGroup-level physical occlusion confirmationを無期限に再開しない有限budgetを実装
-- [x] not-visible境界で旧`coldConfirmed` commit authorizationだけを失効し、`geometryConfirmed`を独立維持
-- [x] Preview OFF時にPreview専用visibility / semantic classificationを上流から停止
-- [x] off-Space Groupをgeneric presentation failure debtへ積まず、復帰時は既存Space reconciliationから再構築
-- [x] multi-display foregroundのstrict判定を対象Groupのphysical Displayへscopeし、隣接Displayの共有1 pt境界spillによる不要なwhole-group raiseを除去
-- [x] 同じdisplay-scoped strict判定をprovisional Snap peerへ適用し、Snap成立条件を緩めずcross-display誤除外を防止
-- [x] 可視な別Display上ですでにtopのGroupを直接操作した場合、foreground ONのまま不要な実window再orderingが発生しないことを実操作で確認
-- [x] Group上に実際のoccluderが存在する場合は従来どおりevent-driven whole-group raiseが成立することを実操作で確認
-- [x] 可視Display間の移動で余分なPreview画像取得が発生しないことを実操作で確認
-- [x] v2.2.3の実動コードとテストがv2.2.1と同一であり、v2.2.2の実装変更を含まないことを確認
+- [x] 取得方式の選択を共通ルーティングへ集約し、Mission Control内では全サイズ取得を優先し、必要時のみ通常取得へfallbackする実装へ更新
+- [x] 通常取得と補完が同じcapture枠を保持し、group適用・cache分離・終了時破棄へ既存経路で接続することをコードレビュー
+- [x] Version / Build、README、設計・権限文書を同期
+- [x] Preview取得・安定判定のデバッグ診断機能と専用計時をソースから削除（Debug / Release共通）。設定保存と公開ツールは維持
+- [ ] 再ビルドしたCommunity / Officialで診断文字列・出力経路の除去と、既存画像取得・設定保存の実動作を確認
+- [ ] macOS上で`swift test`とCommunity buildを完走（追加6テストを含む）
+- [ ] macOS 26 / 27で同じwindow内容・寸法を比較し、通常画像と全サイズ画像の実画素の文字輪郭、透明余白、欠落、色、縦横比を確認。寸法が大きいだけでは合格にしない
+- [ ] 1x / Retina、2 / 3 / 4分割、多数group、multi-displayで補完の適用とメモリ・応答時間を確認
+- [ ] 補完不可・画面収録拒否/取消・window終了時に新しい誤対象画像が表示されず、既存の表示/破棄経路へ戻ることを確認
+- [ ] Mission Controlの連続開閉、Preview OFF、cache解放、選択handoff、Space移送、sleep/wakeで旧結果が復活しないことを確認
+- [ ] 既存の2 / 3 / 4 split、shared resize、Assist、foreground、Space migrationのfunctional suiteを完走
 - [ ] 対象アプリ終了後にGroup、Mission Control Proxy、Preview画像が残らないことを実機確認
-- [ ] final sourceで`swift test`とCommunity buildをmacOS上で完走
-- [ ] Release asset生成前に2 / 3 / 4 split、shared resize、Mission Control、Space migration、Preview ON/OFFの最終functional suiteを完走
+
+上の未完了項目が残る間は、修正済み正式配布版やmacOS 27互換性確認済みとは扱いません。過去の実機確認を今回の変更へ自動継承しません。
 
 ### 常駐性能
 
-常駐性能の正式基準は **v2.2.0 Build 17 / 2026-09-05** のR0〜R6計測を維持します。v2.2.3の実動コードはv2.2.1と同一であり、常駐処理を変更しません。
-
-v2.2.3では同じ無操作計測を新しい性能値として重複記録しません。既存値をv2.2.3で計測した値として読み替えることも行いません。正式な常駐比較値は[PERFORMANCE_VALIDATION.md](PERFORMANCE_VALIDATION.md)を正本とします。
-
-過去Releaseの実機確認履歴はCHANGELOGと各機能文書に保持し、現行Releaseではこの手順を省略せず変更範囲に応じて再確認します。
+常駐性能の比較基準は **v2.2.0 Build 17 / 2026-09-05** のR0〜R6です。今回の全サイズ優先取得は操作中の取得経路変更なので、実測まで高速化や負荷不変を主張しません。[PERFORMANCE_VALIDATION.md](PERFORMANCE_VALIDATION.md)を正本とします。
 
 ## 3. Security確認
 

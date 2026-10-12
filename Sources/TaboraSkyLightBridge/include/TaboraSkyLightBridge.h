@@ -1,5 +1,6 @@
 #import <ApplicationServices/ApplicationServices.h>
 #import <Foundation/Foundation.h>
+#import "TaboraWindowCapture.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -21,6 +22,7 @@ typedef NS_OPTIONS(NSUInteger, TSLBridgeMoveRuntimeComponent) {
 };
 
 FOUNDATION_EXPORT TSLBridgeCapability TSLBridgeCopyCapabilities(void);
+
 FOUNDATION_EXPORT TSLBridgeMoveRuntimeComponent
 TSLBridgeCopyMoveRuntimeComponents(void);
 FOUNDATION_EXPORT NSString *TSLBridgeCopyMoveRuntimeDiagnosticDescription(

@@ -78,22 +78,6 @@ enum MissionControlTransientPreviewValidationPolicy {
     }
 }
 
-enum MissionControlTransientPreviewEligibilityPolicy {
-    /// Transient replacement is optional, so it is stricter than the normal
-    /// HOT/COLD cache. Normal activity may preserve a previously confirmed HOT
-    /// state through an incomplete WindowServer census; transient capture may
-    /// not inherit that state. Only a complete current observation proving the
-    /// whole group frontmost can authorize one atomic group plan.
-    static func authorizedHotGroupIDs<GroupID: Hashable>(
-        currentGroupIDs: Set<GroupID>,
-        currentEvaluationByGroupID: [GroupID: PreviewGroupVisibilityEvaluation]
-    ) -> Set<GroupID> {
-        Set(currentGroupIDs.filter {
-            currentEvaluationByGroupID[$0] == .hot
-        })
-    }
-}
-
 enum MissionControlTransientPreviewPolicy {
     // Transient pixels are session-only and released at Mission Control exit.
     // Give the lane the same bounded byte ceiling as the normal cache so a
@@ -181,13 +165,11 @@ enum MissionControlTransientPreviewPolicy {
     }
 }
 
-/// Transient capture deliberately reuses the same direct-window provider as the
-/// normal preview cache. A desktop-independent ScreenCaptureKit filter can
-/// publish the Mission Control-transformed surface inside an original-size
-/// transparent canvas. That output has the right outer dimensions but the
-/// wrong pixels for a replacement preview. Direct window capture returns the
-/// window bounds themselves and also keeps permission, admission and quality
-/// behavior identical to the already-established normal preview path.
+/// Transient capture uses the shared admission slot, preferring a full-size
+/// source inside Mission Control and using legacy capture only as a fallback.
+/// ScreenCaptureKit is not used: earlier device testing returned transformed
+/// pixels inside an original-size transparent canvas. Dimensions alone do not
+/// prove pixel quality; full-size recovery still requires native validation.
 ///
 /// One serial transaction is permitted at a time. Cancellation invalidates
 /// results immediately. Work still waiting for shared capture admission is
@@ -198,8 +180,7 @@ enum MissionControlTransientPreviewPolicy {
 final class MissionControlTransientPreviewCapturer {
     typealias CaptureAuthorization = () -> Bool
     typealias PreviewProvider = (
-        CGWindowID?,
-        PreviewCaptureResolution,
+        MissionControlTransientPreviewMemberPlan,
         @escaping CaptureAuthorization
     ) -> CGImage?
 
@@ -260,11 +241,9 @@ final class MissionControlTransientPreviewCapturer {
                     }
                     guard captureIsAuthorized(),
                           ownerPIDsByWindowID[member.windowID] == member.pid,
-                          let source = previewProvider(
-                              member.windowID,
-                              MissionControlTransientPreviewPolicy
-                                  .captureResolution(for: member),
-                              captureIsAuthorized
+                          let source = MissionControlPreviewSourceRetryPolicy.capture(
+                              shouldContinue: captureIsAuthorized,
+                              provider: { previewProvider(member, captureIsAuthorized) }
                           ),
                           // The provider may have waited for the shared capture
                           // admission slot. Recheck the logical MC session before
@@ -459,4 +438,21 @@ final class MissionControlTransientPreviewCapturer {
         DispatchQueue.main.async { onFinished() }
     }
 
+}
+
+/// A brief admission conflict or empty backend result must not consume the
+/// entire session. Cancellation is checked before and after each attempt.
+enum MissionControlPreviewSourceRetryPolicy {
+    static func capture(
+        shouldContinue: () -> Bool,
+        provider: () -> CGImage?
+    ) -> CGImage? {
+        for _ in 0..<2 {
+            guard shouldContinue() else { return nil }
+            let image = provider()
+            guard shouldContinue() else { return nil }
+            if let image { return image }
+        }
+        return nil
+    }
 }

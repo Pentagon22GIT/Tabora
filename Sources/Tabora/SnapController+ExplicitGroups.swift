@@ -1112,6 +1112,7 @@ extension SnapController {
             previewVisibilityEvaluationByGroupID:
                 previewVisibilityEvaluationByGroupID,
             previewsEnabled: previewsEnabled,
+            transientPreviewsEnabled: settings.missionControlLatestPreviewEnabled,
             previewCacheByteLimit: AppSettings
                 .missionControlPreviewMemoryByteLimit(
                     settings.missionControlPreviewMemoryLimitMiB
@@ -1133,18 +1134,29 @@ extension SnapController {
                 )
             },
             transientPreviewProvider: {
-                [weak self] windowID, resolution, captureIsAuthorized in
+                [weak self] member, captureIsAuthorized in
                 guard let self,
                       self.settings.windowPreviewsEnabled,
+                      self.settings.missionControlLatestPreviewEnabled,
                       captureIsAuthorized() else { return nil }
                 return self.windowService.previewCGImage(
-                    for: windowID,
+                    for: member.windowID,
                     capacityWait:
                         PreviewCaptureAdmissionPolicy
                             .missionControlCapacityWait,
-                    resolution: resolution,
+                    resolution: MissionControlTransientPreviewPolicy
+                        .captureResolution(for: member),
+                    fullSizeRequest: PreviewFullSizeRequest(
+                        ownerPID: member.pid,
+                        windowSize: member.relativeFrame.size,
+                        targetPixelSize: CGSize(
+                            width: member.targetPixelSize.width,
+                            height: member.targetPixelSize.height
+                        )
+                    ),
                     shouldCapture: { [weak self] in
                         self?.settings.windowPreviewsEnabled == true
+                            && self?.settings.missionControlLatestPreviewEnabled == true
                             && captureIsAuthorized()
                     }
                 )

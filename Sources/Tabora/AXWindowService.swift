@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import CoreGraphics
+import TaboraSkyLightBridge
 
 
 enum PreviewOccluderAXSubrolePolicy {
@@ -385,30 +386,6 @@ enum AXMessagingTimeoutPolicy {
     static let animationMutation: Float = passiveObservation
 }
 
-enum PreviewCaptureAdmissionPolicy {
-    /// Normal preview, transient preview and Assist are derived background
-    /// work. If another lane briefly owns both global capture slots, wait
-    /// off-main for one
-    /// established interactive readiness interval instead of consuming a
-    /// finite retry as an immediate contention failure.
-    static let maximumCapacityWait: TimeInterval = 0.45
-    static let assistCapacityWait = maximumCapacityWait
-    static let missionControlCapacityWait = maximumCapacityWait
-
-    static func effectiveWait(
-        requested: TimeInterval,
-        isMainThread: Bool
-    ) -> TimeInterval {
-        guard !isMainThread, requested.isFinite, requested > 0 else { return 0 }
-        return min(requested, maximumCapacityWait)
-    }
-}
-
-enum PreviewCaptureResolution: Equatable {
-    case nominal
-    case best
-}
-
 final class AXWindowService {
     private struct CGWindowRecord {
         let id: CGWindowID
@@ -423,16 +400,6 @@ final class AXWindowService {
         case matched(ManagedWindow)
         case rejected
     }
-
-    // Preview capture is derived state. Bound cross-subsystem capture
-    // concurrency without holding a lock across the legacy synchronous Window
-    // Server capture call. At most two captures may be active. Callers may wait
-    // off-main for one bounded readiness interval so brief cross-subsystem
-    // contention does not consume their finite image retries.
-    private static let maximumConcurrentPreviewCaptures = 2
-    private static let previewCaptureAdmission = DispatchSemaphore(
-        value: maximumConcurrentPreviewCaptures
-    )
 
     private var hasPromptedForPermission = false
     private var frameOperationGenerations: [String: Int] = [:]
@@ -2879,49 +2846,18 @@ final class AXWindowService {
 
     func previewCGImage(
         for windowID: CGWindowID?,
-        capacityWait requestedCapacityWait: TimeInterval,
+        capacityWait: TimeInterval,
         resolution: PreviewCaptureResolution = .nominal,
+        fullSizeRequest: PreviewFullSizeRequest? = nil,
         shouldCapture: (() -> Bool)? = nil
     ) -> CGImage? {
-        guard let windowID else { return nil }
-        let capacityWait = PreviewCaptureAdmissionPolicy.effectiveWait(
-            requested: requestedCapacityWait,
-            isMainThread: Thread.isMainThread
+        WindowPreviewCaptureService.capture(
+            for: windowID,
+            capacityWait: capacityWait,
+            resolution: resolution,
+            fullSizeRequest: fullSizeRequest,
+            shouldCapture: shouldCapture
         )
-        guard Self.beginPreviewCapture(waitingUpTo: capacityWait) else {
-            return nil
-        }
-        defer { Self.endPreviewCapture() }
-        // Authorization may change while this request waits for the shared
-        // Mission Control / Assist capture slot. Recheck after admission and
-        // immediately before Window Server capture so a disabled Preview, a
-        // cancelled Normal/Assist operation, or an invalid transient session
-        // cannot leave an already-reserved request executable.
-        guard shouldCapture?() ?? true else { return nil }
-        let resolutionOption: CGWindowImageOption
-        switch resolution {
-        case .nominal:
-            resolutionOption = .nominalResolution
-        case .best:
-            resolutionOption = .bestResolution
-        }
-        return CGWindowListCreateImage(
-            .null,
-            .optionIncludingWindow,
-            windowID,
-            [.boundsIgnoreFraming, resolutionOption]
-        )
-    }
-
-    private static func beginPreviewCapture(
-        waitingUpTo wait: TimeInterval
-    ) -> Bool {
-        let deadline: DispatchTime = wait > 0 ? .now() + wait : .now()
-        return previewCaptureAdmission.wait(timeout: deadline) == .success
-    }
-
-    private static func endPreviewCapture() {
-        previewCaptureAdmission.signal()
     }
 
     private func onscreenWindowRecords() -> [CGWindowRecord] {

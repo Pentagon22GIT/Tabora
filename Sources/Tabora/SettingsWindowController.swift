@@ -122,8 +122,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     )
     private let sideDwellDurationSlider = NSSlider()
     private let sideDwellDurationValue = NSTextField(labelWithString: "")
+    private let missionControlLatestPreviewCheckbox = NSButton(
+        checkboxWithTitle: L10n.text("settings.experimental.latest_preview.checkbox"),
+        target: nil,
+        action: nil
+    )
     private let assistLayoutSwitchingCheckbox = NSButton(
-        checkboxWithTitle: L10n.text("settings.experimental.assist.checkbox"),
+        checkboxWithTitle: L10n.text("settings.general.assist.checkbox"),
         target: nil,
         action: nil
     )
@@ -497,6 +502,25 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         stack.addArrangedSubview(linkedResizeOptionsStack)
 
         stack.addArrangedSubview(separator())
+        stack.addArrangedSubview(sectionTitle(L10n.text("settings.general.extensions.title")))
+        let assistLayoutTitle = NSTextField(
+            labelWithString: L10n.text("settings.general.assist.title")
+        )
+        assistLayoutTitle.font = .systemFont(ofSize: 13, weight: .medium)
+        stack.addArrangedSubview(assistLayoutTitle)
+        assistLayoutSwitchingCheckbox.target = self
+        assistLayoutSwitchingCheckbox.action = #selector(
+            toggleAssistLayoutSwitching
+        )
+        stack.addArrangedSubview(assistLayoutSwitchingCheckbox)
+        let assistLayoutNote = NSTextField(
+            wrappingLabelWithString: L10n.text("settings.general.assist.note")
+        )
+        assistLayoutNote.textColor = .secondaryLabelColor
+        assistLayoutNote.maximumNumberOfLines = 0
+        stack.addArrangedSubview(assistLayoutNote)
+        stack.addArrangedSubview(separator())
+
         stack.addArrangedSubview(sectionTitle(L10n.text("settings.general.drag_detection.title")))
         let detectionNote = NSTextField(
             wrappingLabelWithString: L10n.text("settings.general.drag_detection.note")
@@ -663,22 +687,20 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         stack.addArrangedSubview(missionControlGroupMigrationRuntimeStatus)
         stack.addArrangedSubview(separator())
 
-        let assistLayoutTitle = NSTextField(
-            labelWithString: L10n.text("settings.experimental.assist.title")
+        let latestPreviewTitle = NSTextField(
+            labelWithString: L10n.text("settings.experimental.latest_preview.title")
         )
-        assistLayoutTitle.font = .systemFont(ofSize: 13, weight: .medium)
-        stack.addArrangedSubview(assistLayoutTitle)
-        assistLayoutSwitchingCheckbox.target = self
-        assistLayoutSwitchingCheckbox.action = #selector(
-            toggleAssistLayoutSwitching
+        latestPreviewTitle.font = .systemFont(ofSize: 13, weight: .medium)
+        stack.addArrangedSubview(latestPreviewTitle)
+        missionControlLatestPreviewCheckbox.target = self
+        missionControlLatestPreviewCheckbox.action = #selector(toggleMissionControlLatestPreview)
+        stack.addArrangedSubview(missionControlLatestPreviewCheckbox)
+        let latestPreviewNote = NSTextField(
+            wrappingLabelWithString: L10n.text("settings.experimental.latest_preview.note")
         )
-        stack.addArrangedSubview(assistLayoutSwitchingCheckbox)
-        let assistLayoutNote = NSTextField(
-            wrappingLabelWithString: L10n.text("settings.experimental.assist.note")
-        )
-        assistLayoutNote.textColor = .secondaryLabelColor
-        assistLayoutNote.maximumNumberOfLines = 0
-        stack.addArrangedSubview(assistLayoutNote)
+        latestPreviewNote.textColor = .secondaryLabelColor
+        latestPreviewNote.maximumNumberOfLines = 0
+        stack.addArrangedSubview(latestPreviewNote)
         stack.addArrangedSubview(separator())
 
         let workspaceEdgeTitle = NSTextField(
@@ -894,6 +916,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             "value.seconds",
             settings.sideDwellDuration
         )
+        missionControlLatestPreviewCheckbox.state = settings
+            .missionControlLatestPreviewEnabled ? .on : .off
         assistLayoutSwitchingCheckbox.state = settings
             .assistLayoutSwitchingEnabled ? .on : .off
         missionControlGroupMigrationCheckbox.state = settings
@@ -1357,6 +1381,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         settings.missionControlPreviewMemoryLimitMiB = value
         onMissionControlPreviewMemoryLimitChange?(value)
         refresh()
+    }
+
+    @objc private func toggleMissionControlLatestPreview() {
+        settings.missionControlLatestPreviewEnabled =
+            missionControlLatestPreviewCheckbox.state == .on
     }
 
     @objc private func toggleAssistLayoutSwitching() {

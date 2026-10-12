@@ -1681,6 +1681,9 @@ final class SnapController {
             self.missionControlGroupProxyController.setPreviewsEnabled(
                 self.settings.windowPreviewsEnabled
             )
+            self.missionControlGroupProxyController.setTransientPreviewsEnabled(
+                self.settings.missionControlLatestPreviewEnabled
+            )
             self.groupSpaceMigrationLine.settingsDidChange()
             self.missionControlGroupProxyController.hideAll()
             if !self.settings.missionControlGroupMigrationEnabled {

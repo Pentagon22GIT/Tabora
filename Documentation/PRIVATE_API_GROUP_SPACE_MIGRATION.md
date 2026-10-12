@@ -189,7 +189,9 @@ destination drop直後にもmember SpaceまたはAX elementが一時的に`unkno
 
 ## Release確認表
 
-最新source適用確認: **2026-09-07 / Tabora v2.2.3 (Build 20)**
+移送仕様の最終実機確認基準: **2026-09-07 / Tabora v2.2.3 (Build 20)**
+
+現行v2.3.0 (Build 21)はPreview補完用のread-only captureを同じbridgeへ追加しています。移送用symbol、capability、FIFOとmutation経路は変更していません。現行sourceでの実機回帰確認は未完了です。
 
 最新macOS実機確認: **2026-09-01 / Tabora v2.1.0 (Build 16) / macOS 26.6.2**
 

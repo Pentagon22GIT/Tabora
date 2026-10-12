@@ -84,7 +84,12 @@ final class AppSettings {
     static let shared = AppSettings()
     static let didChangeNotification = Notification.Name("TaboraSettingsDidChange")
 
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
     private let shortcutsKey = "shortcutBindings"
     private let edgeThresholdKey = "snapEdgeThreshold"
     private let cornerBandKey = "snapCornerBand"
@@ -104,6 +109,9 @@ final class AppSettings {
         "missionControlPreviewMemoryLimitMiB"
     private let constraintRecordingPromptsEnabledKey =
         "constraintRecordingPromptsEnabled"
+    private let missionControlLatestPreviewEnabledKey =
+        "experimentalMissionControlLatestPreviewEnabled"
+    // Preserve the existing preference when promoting Assist to General.
     private let assistLayoutSwitchingEnabledKey =
         "experimentalAssistLayoutSwitchingEnabled"
     private let missionControlGroupMigrationEnabledKey =
@@ -124,6 +132,7 @@ final class AppSettings {
     static let defaultMissionControlPreviewMemoryLimitMiB = 32
     static let missionControlPreviewMemoryLimitRange = 16...128
     static let missionControlPreviewMemoryLimitStep = 16
+    static let defaultMissionControlLatestPreviewEnabled = false
     static let defaultAssistLayoutSwitchingEnabled = false
     static let defaultMissionControlGroupMigrationEnabled = false
 
@@ -212,6 +221,21 @@ final class AppSettings {
         }
         set {
             defaults.set(newValue, forKey: windowPreviewsEnabledKey)
+            notify()
+        }
+    }
+
+    var missionControlLatestPreviewEnabled: Bool {
+        get {
+            guard defaults.object(
+                forKey: missionControlLatestPreviewEnabledKey
+            ) != nil else {
+                return Self.defaultMissionControlLatestPreviewEnabled
+            }
+            return defaults.bool(forKey: missionControlLatestPreviewEnabledKey)
+        }
+        set {
+            defaults.set(newValue, forKey: missionControlLatestPreviewEnabledKey)
             notify()
         }
     }

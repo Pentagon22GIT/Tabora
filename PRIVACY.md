@@ -1,8 +1,8 @@
 # プライバシーポリシー
 
-最終更新日: 2026-09-07
+最終更新日: 2026-10-12
 
-Taboraはローカルで動作するmacOSアプリです。v2.2.3の公式ソースには、解析、広告、テレメトリー、クラッシュレポート自動送信、ユーザーアカウント、アプリ自身によるHTTP通信を実装していません。
+Taboraはローカルで動作するmacOSアプリです。v2.3.0のソースには、解析、広告、テレメトリー、クラッシュレポート自動送信、ユーザーアカウント、アプリ自身によるHTTP通信を実装していません。
 
 ## ローカルで扱う情報
 
@@ -46,13 +46,16 @@ App Constraint recordは次のローカルJSONへ保存します。
 
 ### Preview画像
 
+Preview取得・Mission Control安定判定のデバッグ診断機能は、Debug / Releaseのいずれにも含めません。診断専用の取得時間計測も行わず、画像取得情報や安定判定情報を統合ログへ出力する処理はありません。アプリ独自の画像ファイル、診断ログファイル、不具合レポートファイルを自動作成する処理はありません。設定保存とメモリ内の画像キャッシュは従来どおりです。Appleが生成・管理するOS側のレポートや、配布アプリに含まれない開発者用リリースツールの記録は、このアプリ本体の処理とは別です。
+
 「配置候補にウィンドウ画像を表示」を有効にした場合だけ、画面収録権限を使用して配置候補およびMission Control連携で表示する対象ウィンドウのプレビュー画像を取得します。
 
 - 初期状態では任意機能です。
 - 表示用のメモリキャッシュで扱います。
 - キャッシュはboundedな派生データとして破棄可能です。
 - 配置候補はpanelが必要とした対象を取得します。Mission Controlの通常Preview cacheは新規member、確定resize/display移動、確定HOT→COLD-visibleだけをtriggerとして更新し、Space等でGroupが不可視になった`COLD-not-visible`だけでは画像を取得しません。時間経過やcache ageを理由とした定期取得も行いません。
-- Mission Controlを開いた場合だけ、開始時に可視だったSpace上のgroupについて、変形geometryが安定した後にCore Graphicsの対象window直接取得で一時画像を追加取得する場合があります。この画像はMission Control表示/選択handoff専用で通常Preview cacheへ保存せず、session終了またはhandoff終了でメモリから破棄します。
+- 初期OFFの試験的設定「Mission Control内で最新の画像に切り替える」とプレビュー表示を両方有効にし、Mission Controlを開いた場合だけ、開始時に可視だったSpace上のgroupについて、変形geometryが安定した後にSkyLightの全サイズ取得で一時画像を取得する場合があります。寸法不足・縦横比不一致・取得失敗の時だけ、Core Graphicsの対象window直接取得を一度fallbackとして使用します。全サイズ取得の前後で画面収録許可と対象windowのownerを確認し、新たな権限promptや別windowへの代替取得は行いません。この画像はMission Control表示/選択handoff専用で通常Preview cacheへ保存せず、session終了またはhandoff終了でメモリから破棄します。
+- 内部更新をOFFにすると取得sessionを失効し、一時画像を破棄します。通常時のプレビューは維持します。内部更新の取得が空の場合は同じ認可session内だけで1回再試行します。
 - Mission Control一時画像には通常Preview cacheとは別のbounded memory limitとsessionあたりの取得上限を設け、直接window取得transactionを同時に1本へ制限します。連続開閉で旧要求が未完了の場合は新しい取得を重ねず、session失効後はglobal capture admission待機後と画像縮小処理前にも認可を再確認して、不要な取得・派生処理を可能な限り早く棄却します。
 - 設定画面のメモリ上限は、通常キャッシュとMission Control中だけの一時キャッシュを合わせた合計値です。表示値の半分を通常キャッシュ枠、残り半分を一時キャッシュ枠として使用し、初期表示64 MiBでは各32 MiBです。
 - 通常Preview取得の実Window Server並列数は既存global gateに従います。1秒ごとの画像取得、directory scan、画像ファイルscanは行いません。

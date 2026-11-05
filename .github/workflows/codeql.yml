@@ -15,7 +15,11 @@ jobs:
     permissions:
       contents: read
       security-events: write
-    runs-on: xcode-27
+    # Swift traced extraction does not support macOS/Xcode 27.
+    # Keep this separate from the macOS 27 application CI.
+    runs-on: macos-26
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.0.1.app/Contents/Developer
     timeout-minutes: 45
     steps:
       - name: Checkout

@@ -213,3 +213,39 @@
 "settings.experimental.latest_preview.title" = "Mission Control image updates";
 "settings.experimental.latest_preview.checkbox" = "Switch to the latest images inside Mission Control";
 "settings.experimental.latest_preview.note" = "Off by default. When window previews are enabled, recaptures images inside Mission Control. Depending on macOS behavior, images may look blurry or show gaps around their edges. When off, images captured on the normal desktop are used.";
+
+/* Local setup and narrowly scoped removal. */
+"setup.title" = "Welcome to Tabora";
+"setup.welcome" = "Thank you for installing Tabora.";
+"setup.about" = "Tabora, developed by pent., helps you arrange windows without complicated configuration.";
+"setup.privacy" = "Your privacy and choices matter. Tabora does not collect analytics or tracking data, or transmit window information or images. Window arrangement is processed on your Mac. Settings and authorized per-app size constraints are stored locally. Optional preview images stay in memory.";
+"setup.license" = "Tabora is provided under Apache License 2.0. This screen is information about the app, not a request to accept new terms. You can change app permissions at any time in macOS System Settings.";
+"setup.options" = "Getting started";
+"setup.permissions" = "Allow Accessibility for Tabora to move and resize windows.";
+"setup.optional" = "These options are optional and can be changed in General settings. Screen Recording permission is requested only if you enable previews. macOS may require additional approval for the login item.";
+"setup.continue" = "Continue";
+"setup.finish" = "Start using Tabora";
+"cleanup.title" = "Remove data or uninstall";
+"cleanup.button" = "Choose what to remove…";
+"cleanup.settings" = "Remove settings and quit";
+"cleanup.records" = "Remove recorded app size constraints and quit";
+"cleanup.all" = "Remove all data and move this app to Trash";
+"cleanup.note" = "Only this Tabora edition is affected. Image caches are released on exit. Full uninstall removes the login item, preferences and app constraints, then moves this app to Trash. OS permissions and diagnostics, manually exported files and other copies are not changed. Removing settings also turns off opening Tabora at login. Removing only size-constraint records leaves the login setting unchanged.";
+"cleanup.cancel" = "Cancel";
+"cleanup.confirm" = "Confirm and quit";
+"cleanup.error" = "Removal could not be completed";
+"cleanup.failure_note" = "Some steps may already have completed. No automatic retry will occur. The app will quit with its controller stopped.";
+"cleanup.busy" = "Wait for window operations, size measurement, or restoration to finish before removing data.";
+
+"setup.privacy_title" = "Your privacy and choices";
+"setup.license_title" = "License and permissions";
+
+"information.title" = "About Tabora";
+"information.notice" = "Thank you for using Tabora. This notice explains how the app works and handles your privacy. It does not ask you to accept terms; you can close it and keep using the app.";
+"information.confirm" = "Use Tabora";
+"information.close" = "Close";
+
+"cleanup.unsafe_target" = "This item was not removed because its safety could not be verified: %@";
+"cleanup.operation_error" = "Could not process “%@” (error code %d).";
+
+"setup.back" = "Back";

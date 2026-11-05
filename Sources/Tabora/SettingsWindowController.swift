@@ -56,6 +56,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     )
     private var categoryViews: [SettingsCategory: NSView] = [:]
     private var categoryContentConstraints: [NSLayoutConstraint] = []
+    var onRemoval: ((AppRemovalChoice) -> Void)?
+    private var informationWindow: InitialSetupWindowController?
     private var selectedCategory: SettingsCategory = .general
     private var recordingAction: ShortcutAction?
     private var keyMonitor: Any?
@@ -192,6 +194,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     required init?(coder: NSCoder) { fatalError() }
 
     func windowWillClose(_ notification: Notification) {
+        informationWindow?.close()
         finishRecording()
         constraintMeasurementProgressPanel.dismiss()
         if constraintMeasurementOperationActive {
@@ -319,6 +322,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         languageNote.maximumNumberOfLines = 0
         stack.addArrangedSubview(languageNote)
 
+        stack.addArrangedSubview(separator())
+        let information = NSButton(title: L10n.text("information.title"), target: self, action: #selector(showAppInformation))
+        information.bezelStyle = .rounded
+        stack.addArrangedSubview(information)
+        let removal = NSButton(title: L10n.text("cleanup.button"), target: self, action: #selector(showRemoval))
+        removal.bezelStyle = .rounded
+        stack.addArrangedSubview(removal)
         stack.addArrangedSubview(separator())
         stack.addArrangedSubview(sectionTitle(L10n.text("settings.general.window_movement")))
         restoreSizeOnMoveCheckbox.target = self
@@ -1348,6 +1358,43 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     @objc private func resetDetectionSettings() {
         settings.resetDragDetectionSettings()
         refresh()
+    }
+
+    @objc private func showAppInformation() {
+        if informationWindow == nil {
+            informationWindow = InitialSetupWindowController(presentation: .review)
+        }
+        informationWindow?.showWindow(nil)
+    }
+
+    @objc private func showRemoval() {
+        guard !constraintMeasurementInProgress, !constraintMeasurementOperationActive else {
+            let alert = NSAlert()
+            alert.messageText = L10n.text("settings.language.busy.title")
+            alert.informativeText = L10n.text("cleanup.busy")
+            alert.runModal()
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = L10n.text("cleanup.title")
+        alert.informativeText = L10n.text("cleanup.note")
+        let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 470, height: 28))
+        AppRemovalChoice.allCases.forEach { popup.addItem(withTitle: $0.title) }
+        alert.accessoryView = popup
+        alert.addButton(withTitle: L10n.text("cleanup.cancel"))
+        alert.addButton(withTitle: L10n.text("setup.continue"))
+        guard alert.runModal() == .alertSecondButtonReturn,
+              let choice = AppRemovalChoice(rawValue: popup.indexOfSelectedItem) else { return }
+        let confirmation = NSAlert()
+        confirmation.alertStyle = .warning
+        confirmation.messageText = choice.title
+        let domain = Bundle.main.bundleIdentifier ?? "unbundled"
+        confirmation.informativeText = L10n.text("cleanup.note") + "\n\n" + domain
+            + (choice == .everything ? "\n" + Bundle.main.bundleURL.path : "")
+        confirmation.addButton(withTitle: L10n.text("cleanup.cancel"))
+        confirmation.addButton(withTitle: L10n.text("cleanup.confirm"))
+        guard confirmation.runModal() == .alertSecondButtonReturn else { return }
+        onRemoval?(choice)
     }
 
     @objc private func toggleLaunchAtLogin() {

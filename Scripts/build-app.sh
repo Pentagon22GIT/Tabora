@@ -29,12 +29,12 @@ if [[ "$EDITION" == "official" ]]; then
   readonly APP_NAME="Tabora"
   readonly DISPLAY_NAME="Tabora"
   readonly BUNDLE_ID="dev.pent.Tabora"
-  readonly OUTPUT_DIR="$ROOT/build/official"
+  readonly OUTPUT_DIR="${TABORA_BUILD_OUTPUT_DIR:-$ROOT/build/official}"
 else
   readonly APP_NAME="Tabora Community"
   readonly DISPLAY_NAME="Tabora Community"
   readonly BUNDLE_ID="dev.pent.Tabora.community"
-  readonly OUTPUT_DIR="$ROOT/build/community"
+  readonly OUTPUT_DIR="${TABORA_BUILD_OUTPUT_DIR:-$ROOT/build/community}"
 fi
 
 readonly APP="$OUTPUT_DIR/$APP_NAME.app"
@@ -62,9 +62,13 @@ readonly SOURCE_REVISION SOURCE_DIRTY
 
 echo "Building Tabora $VERSION ($EDITION)..."
 cd "$ROOT"
-"$SWIFT_BIN" package clean
+# Never erase an existing build or the shared developer cache.
+[[ "$OUTPUT_DIR" == /* && ! -e "$OUTPUT_DIR" && ! -L "$OUTPUT_DIR" ]] || \
+  fail "出力先は未使用の絶対パスを指定してください。TABORA_BUILD_OUTPUT_DIRで変更できます。"
+/bin/mkdir -p "${OUTPUT_DIR:h}"
+/bin/mkdir "$OUTPUT_DIR"
 typeset -a SWIFT_BUILD_ARGS
-SWIFT_BUILD_ARGS=(-c release)
+SWIFT_BUILD_ARGS=(-c release --scratch-path "$OUTPUT_DIR/swift-build")
 if [[ "$EDITION" == "official" ]]; then
   SWIFT_BUILD_ARGS+=(--arch arm64 --arch x86_64)
 fi
@@ -74,12 +78,6 @@ readonly BIN_DIR="$("$SWIFT_BIN" build "${SWIFT_BUILD_ARGS[@]}" --show-bin-path)
 readonly BIN="$BIN_DIR/Tabora"
 [[ -f "$BIN" ]] || fail "ビルド済み実行ファイルが見つかりません。"
 
-case "$APP" in
-  "$ROOT"/build/*) ;;
-  *) fail "安全でない出力先を拒否しました。" ;;
-esac
-
-/bin/rm -rf "$OUTPUT_DIR"
 /bin/mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 /bin/cp "$BIN" "$APP/Contents/MacOS/Tabora"
 for LANGUAGE in ja en ko zh-Hans zh-Hant; do

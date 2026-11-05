@@ -31,6 +31,25 @@ struct PreviewFullSizeRequest {
     }
 }
 
+/// A full-sized transparent canvas is not a usable full-sized window capture.
+/// A bounded alpha reduction checks occupancy without retaining another image.
+enum PreviewImageContentPolicy {
+    static func hasVisiblePixels(_ image: CGImage) -> Bool {
+        let side = 32
+        var pixels = [UInt8](repeating: 0, count: side * side * 4)
+        return pixels.withUnsafeMutableBytes { buffer in
+            guard let context = CGContext(data: buffer.baseAddress, width: side, height: side,
+                bitsPerComponent: 8, bytesPerRow: side * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                    | CGBitmapInfo.byteOrder32Big.rawValue) else { return false }
+            context.interpolationQuality = .low
+            context.draw(image, in: CGRect(x: 0, y: 0, width: side, height: side))
+            return stride(from: 3, to: buffer.count, by: 4).contains { buffer[$0] > 0 }
+        }
+    }
+}
+
 enum PreviewCaptureRoutingPolicy {
     /// Transformed scenes need full-size source semantics, not a comparison of
     /// canvas dimensions. A reduced surface can occupy a nominal-size canvas.
@@ -49,13 +68,20 @@ enum PreviewCaptureRoutingPolicy {
         }
         let candidate = fullSize()
         guard shouldCapture() else { return nil }
-        let candidateIsCompatible = candidate.map(request.hasCompatibleAspect) ?? false
+        let candidateIsCompatible = candidate.map {
+            request.hasCompatibleAspect($0) && PreviewImageContentPolicy.hasVisiblePixels($0)
+        } ?? false
         if let candidate, candidateIsCompatible,
            request.hasSufficientPixelDimensions(candidate) {
             return candidate
         }
-        let original = legacy()
+        let fallback = legacy()
         guard shouldCapture() else { return nil }
+        // The fallback can also become transparent while WindowServer changes
+        // scenes. Do not let its larger canvas replace a usable candidate.
+        let original = fallback.flatMap {
+            PreviewImageContentPolicy.hasVisiblePixels($0) ? $0 : nil
+        }
         let selected: CGImage?
         if let candidate, candidateIsCompatible {
             if let original, request.hasCompatibleAspect(original),
@@ -113,6 +139,7 @@ enum WindowPreviewCaptureService {
         capacityWait requestedCapacityWait: TimeInterval,
         resolution: PreviewCaptureResolution = .nominal,
         fullSizeRequest: PreviewFullSizeRequest? = nil,
+        expectedOwnerPID: pid_t? = nil,
         shouldCapture: (() -> Bool)? = nil
     ) -> CGImage? {
         guard let windowID else { return nil }
@@ -130,6 +157,8 @@ enum WindowPreviewCaptureService {
         // cancelled Normal/Assist operation, or an invalid transient session
         // cannot leave an already-reserved request executable.
         guard shouldCapture?() ?? true else { return nil }
+        guard let ownerPID = expectedOwnerPID ?? fullSizeRequest?.ownerPID,
+              ownerPID > 0, CGPreflightScreenCaptureAccess() else { return nil }
         let resolutionOption: CGWindowImageOption
         switch resolution {
         case .nominal:
@@ -137,9 +166,19 @@ enum WindowPreviewCaptureService {
         case .best:
             resolutionOption = .bestResolution
         }
+        let isAuthorized: () -> Bool = {
+            guard shouldCapture?() ?? true else { return false }
+            guard CGPreflightScreenCaptureAccess(),
+                  let descriptions = CGWindowListCopyWindowInfo(.optionIncludingWindow, windowID)
+                    as? [[String: Any]], descriptions.count == 1,
+                  let item = descriptions.first else { return false }
+            return (item[kCGWindowNumber as String] as? NSNumber)?.uint32Value == windowID
+                && (item[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == ownerPID
+                && (item[kCGWindowLayer as String] as? NSNumber)?.intValue == 0
+        }
         return PreviewCaptureRoutingPolicy.capture(
             fullSizeRequest: fullSizeRequest,
-            shouldCapture: { shouldCapture?() ?? true },
+            shouldCapture: isAuthorized,
             legacy: {
                 CGWindowListCreateImage(
                     .null,

@@ -73,7 +73,7 @@ AppKit、Accessibility、Window Server、TCC、Mission Controlを必要とする
 
 ## 現行sourceとの関係
 
-現行開発基盤: **Tabora v2.3.0 (Build 21)**
+2026-10-12時点の開発基盤: **Tabora v2.3.0 (Build 21)**
 
 v2.3.0はv2.2.3を基準にPreviewの全サイズ補完とそのテストを追加しています。v2.2.2で追加した非同期操作の変更は継承せず、`WindowSpaces` / `GroupSpaceMigration` / `TaboraSkyLightBridge`のmigration transport、FIFO、rollback、destination layout contractをv2.2.1の境界へ戻しています。
 

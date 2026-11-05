@@ -213,3 +213,39 @@
 "settings.experimental.latest_preview.title" = "Mission Control 图像更新";
 "settings.experimental.latest_preview.checkbox" = "在 Mission Control 内切换为最新图像";
 "settings.experimental.latest_preview.note" = "默认关闭。启用窗口预览时，在 Mission Control 内重新捕获图像。受 macOS 行为影响，图像可能模糊或边缘出现间隙。关闭时使用在正常桌面状态下捕获的图像。";
+
+/* Local setup and narrowly scoped removal. */
+"setup.title" = "欢迎使用 Tabora";
+"setup.welcome" = "感谢您安装 Tabora。";
+"setup.about" = "Tabora 由 pent. 开发，帮助您轻松排列窗口，无需复杂的初始设置。";
+"setup.privacy" = "我们尊重您的隐私和选择。Tabora 不收集分析或跟踪数据，也不向外部发送窗口信息或图像。窗口排列在本机处理，设置及您允许的应用尺寸限制保存在本地。预览图像为可选功能，仅在内存中处理。";
+"setup.license" = "Tabora 根据 Apache License 2.0 提供。本页面仅介绍应用，不要求您接受新的使用条件。您可随时在 macOS 系统设置中更改应用权限。";
+"setup.options" = "开始使用";
+"setup.permissions" = "请允许 Tabora 的辅助功能权限，以移动窗口和调整大小。";
+"setup.optional" = "以下选项均为可选，可稍后在通用设置中更改。仅在启用预览时请求屏幕录制权限。登录项可能需要在 macOS 中额外批准。";
+"setup.continue" = "继续";
+"setup.finish" = "开始使用 Tabora";
+"cleanup.title" = "删除数据或卸载";
+"cleanup.button" = "选择要删除的项目…";
+"cleanup.settings" = "删除设置并退出";
+"cleanup.records" = "删除应用尺寸记录并退出";
+"cleanup.all" = "删除所有数据并将此应用移到废纸篓";
+"cleanup.note" = "仅影响当前 Tabora 版本。退出时释放图像缓存。完整卸载会移除登录项、设置和应用尺寸记录，并将此应用移到废纸篓。不会更改系统权限、诊断记录、手动导出的文件或其他副本。 仅删除设置时也会关闭登录时启动 Tabora。仅删除尺寸限制记录不会更改登录设置。";
+"cleanup.cancel" = "取消";
+"cleanup.confirm" = "确认并退出";
+"cleanup.error" = "无法完成删除";
+"cleanup.failure_note" = "部分步骤可能已完成。不会自动重试，应用将停止并退出。";
+"cleanup.busy" = "请等待窗口操作、尺寸测量或恢复完成后再删除数据。";
+
+"setup.privacy_title" = "隐私与自主选择";
+"setup.license_title" = "许可与权限";
+
+"information.title" = "Tabora 使用说明";
+"information.notice" = "感谢您使用 Tabora。本页面介绍应用的运行方式和隐私保护，不要求您同意任何条款。关闭此页面后仍可继续使用应用。";
+"information.confirm" = "使用 Tabora";
+"information.close" = "关闭";
+
+"cleanup.unsafe_target" = "无法确认以下项目的安全性，因此未将其删除：%@";
+"cleanup.operation_error" = "无法处理“%@”（错误代码 %d）。";
+
+"setup.back" = "返回";

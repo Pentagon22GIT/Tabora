@@ -157,6 +157,34 @@ final class WindowPreviewCaptureTests: XCTestCase {
         }
     }
 
+    func testTransparentFullSizeCanvasNeverDisplacesVisibleFallback() throws {
+        let context = try XCTUnwrap(CGContext(data: nil, width: 800, height: 500,
+            bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        let transparent = try XCTUnwrap(context.makeImage())
+        XCTAssertFalse(PreviewImageContentPolicy.hasVisiblePixels(transparent))
+        let visible = try image(160, 100)
+        XCTAssertTrue(PreviewImageContentPolicy.hasVisiblePixels(visible))
+        let result = PreviewCaptureRoutingPolicy.capture(fullSizeRequest: request,
+            shouldCapture: { true }, legacy: { visible }, fullSize: { transparent })
+        XCTAssertTrue(result === visible)
+        XCTAssertNil(PreviewCaptureRoutingPolicy.capture(fullSizeRequest: request,
+            shouldCapture: { true }, legacy: { nil }, fullSize: { transparent }))
+    }
+
+    func testTransparentFallbackCannotReplaceVisibleReducedCandidate() throws {
+        let context = try XCTUnwrap(CGContext(data: nil, width: 800, height: 500,
+            bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        let transparent = try XCTUnwrap(context.makeImage())
+        let visible = try image(160, 100)
+        let result = PreviewCaptureRoutingPolicy.capture(fullSizeRequest: request,
+            shouldCapture: { true }, legacy: { transparent }, fullSize: { visible })
+        XCTAssertTrue(result === visible)
+        XCTAssertNil(PreviewCaptureRoutingPolicy.capture(fullSizeRequest: request,
+            shouldCapture: { true }, legacy: { transparent }, fullSize: { transparent }))
+    }
+
     func testInvalidPlanDoesNotLaunchPrivateCapture() throws {
         let source = try image(160, 100)
         for size in [CGSize.zero, CGSize(width: CGFloat.infinity, height: 500)] {

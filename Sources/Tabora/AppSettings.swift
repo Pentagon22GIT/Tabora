@@ -501,7 +501,7 @@ final class AppSettings {
         guard #available(macOS 13.0, *) else { return }
         if enabled {
             if SMAppService.mainApp.status != .enabled { try SMAppService.mainApp.register() }
-        } else if SMAppService.mainApp.status == .enabled {
+        } else if SMAppService.mainApp.status != .notRegistered {
             try SMAppService.mainApp.unregister()
         }
         notify()

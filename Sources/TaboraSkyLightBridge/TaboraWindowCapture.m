@@ -40,9 +40,10 @@ static const TSLCaptureRuntime *TSLSharedCaptureRuntime(void) {
 }
 
 static BOOL TSLPreviewWindowHasOwner(uint32_t windowID, pid_t ownerPID) {
-    NSArray *ids = @[@(windowID)];
-    CFArrayRef descriptions = CGWindowListCreateDescriptionFromArray(
-        (__bridge CFArrayRef)ids
+    // CGWindowListCreateDescriptionFromArray expects raw window ID pointers,
+    // not an NSArray of NSNumber. Query the exact ID without that ABI trap.
+    CFArrayRef descriptions = CGWindowListCopyWindowInfo(
+        kCGWindowListOptionIncludingWindow, windowID
     );
     if (!descriptions) { return NO; }
     BOOL matches = NO;

@@ -213,3 +213,39 @@
 "settings.experimental.latest_preview.title" = "Mission Controlの画像更新";
 "settings.experimental.latest_preview.checkbox" = "Mission Control内で最新の画像に切り替える";
 "settings.experimental.latest_preview.note" = "初期設定はOFFです。プレビュー表示が有効な場合、Mission Control内で画像を再取得します。macOSの動作によって画像が粗くなったり、周囲に隙間が生じる場合があります。OFFでは通常時に取得した画像を使用します。";
+
+/* Local setup and narrowly scoped removal. */
+"setup.title" = "Taboraへようこそ";
+"setup.welcome" = "Taboraをインストールしていただき、ありがとうございます";
+"setup.about" = "Taboraは、pent.が開発するウィンドウ配置アプリです。複雑な初期設定をせずに、すぐに使い始められます。";
+"setup.privacy" = "Taboraは利用状況の収集や追跡を行わず、ウィンドウの情報や画像を外部へ送信しません。配置に必要な処理はこのMacの中で行い、設定と、保存を許可したアプリごとのサイズ制約だけを端末に記録します。画像取得は任意で、取得した画像をファイルとして保存することはありません。";
+"setup.license" = "TaboraはApache License 2.0に基づいて提供されています。この画面はアプリについてのご案内であり、新たな利用条件への同意を求めるものではありません。アプリに与えた権限は、macOSのシステム設定からいつでも変更できます。";
+"setup.options" = "使い始めるための設定";
+"setup.permissions" = "ウィンドウを移動したりサイズを変更したりするために、システム設定でTaboraのアクセシビリティを許可してください。";
+"setup.optional" = "次の2つは、必要に応じて選べます。どちらも、あとからTaboraの「設定」→「一般」で変更できます。画像取得を選ぶと画面収録の許可を確認し、ログイン時の起動を選ぶとmacOSから追加の承認を求められる場合があります。";
+"setup.continue" = "次へ";
+"setup.finish" = "Taboraを使い始める";
+"cleanup.title" = "データの削除・アンインストール";
+"cleanup.button" = "削除する項目を選ぶ…";
+"cleanup.settings" = "設定を削除して終了";
+"cleanup.records" = "記録したアプリ別サイズ制約を削除して終了";
+"cleanup.all" = "全データを削除し、このアプリをゴミ箱へ移動";
+"cleanup.note" = "削除の対象は、いま使っているTaboraのエディションです。アンインストールではログイン項目を解除し、設定とアプリごとのサイズ制約を削除したうえで、本体をゴミ箱に移動します。画像はメモリ上にだけ存在し、終了時に解放されます。macOSが管理する権限や診断記録、手動で書き出したファイル、別の場所にあるTaboraは削除しません。 設定だけを削除する場合も、ログイン時の起動を解除します。制約記録だけの削除では、ログイン設定を変更しません。";
+"cleanup.cancel" = "キャンセル";
+"cleanup.confirm" = "選択した内容を実行して終了";
+"cleanup.error" = "削除を完了できませんでした";
+"cleanup.failure_note" = "途中まで削除が進んでいる可能性があるため、自動でやり直さずにTaboraを終了します。";
+"cleanup.busy" = "ウィンドウ操作・サイズ計測・復元が終わってから削除を実行してください。";
+
+"setup.privacy_title" = "プライバシーと選択の自由";
+"setup.license_title" = "ライセンスと権限について";
+
+"information.title" = "Taboraのご案内";
+"information.notice" = "Taboraをご利用いただき、ありがとうございます。この画面は、アプリの仕組みやプライバシーについてお伝えするご案内です。利用への同意を求めるものではなく、閉じてもそのままお使いいただけます。";
+"information.confirm" = "Taboraを使う";
+"information.close" = "閉じる";
+
+"cleanup.unsafe_target" = "安全を確認できないため、次の項目は削除しませんでした：%@";
+"cleanup.operation_error" = "「%@」を処理できませんでした（エラーコード %d）。";
+
+"setup.back" = "戻る";

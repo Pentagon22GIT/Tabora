@@ -177,3 +177,18 @@
 2. SnapFlow signing identityをTabora Officialへ再利用しない。
 3. private key、token、password、local secretをpublic repositoryへ入れない。
 4. Tabora certificate fingerprintが明示設定されていない場合、Official build verificationは失敗しなければならない。
+
+
+## v2.4.0: 初回案内・削除・取得境界
+
+- セットアップ完了前にはSnapControllerを開始しない。初回セットアップの途中終了は完了と扱わない。ログイン項目・画面収録の選択は既定OFF。
+- 削除対象domainは `dev.pent.Tabora` と `dev.pent.Tabora.community` に限る。UIは実行中のbundleを使用し、パス・domain入力欄を設けない。rootとしての削除は拒否する。
+- 制約JSONは `openat(O_DIRECTORY | O_NOFOLLOW)` で親を固定し、`fstatat(AT_SYMLINK_NOFOLLOW)` で通常ファイル・所有者・リンク数を確認して `unlinkat` する。未知のファイルやディレクトリを再帰削除しない。
+- 本体は標準のApplicationsフォルダにある実行中のbundleだけをゴミ箱へ移す。署名やTCCの変更、権限昇格、ゴミ箱を空にする処理、任意パスを扱う削除helperを追加しない。
+- 外部ウィンドウの計測・復元・リサイズ中は削除を開始しない。削除前にcontrollerとショートカットを停止する。途中失敗は完了と報告せず自動再試行しない。
+- キャプチャ経路は取得枠への入場後とAPI呼び出し前後に設定・世代・所有者・画面収録許可を再確認する。名目寸法が大きい全透明画像を、フルサイズ取得成功とは扱わない。
+- これらは別アプリへの誤操作を減らす境界であり、同じユーザー権限で任意コードが実行されたMac全体を隔離する仕組みではない。
+
+- 更新時の「Taboraのご案内」は利用条件への同意画面ではない。表示履歴を同意記録として扱わず、閉じる操作で通常起動へ進める。案内だけの表示・終了からログイン項目や画面収録の変更を実行しない。
+
+- 設定削除・制約削除・全アンインストールの入口は、対象domainとapplicationURLを実行中のBundleへ束縛する。許可リスト内の別エディションという理由だけでは削除を認可しない。設定削除ではSMAppServiceの自分自身のログイン登録も解除し、解除失敗時には設定消去へ進まない。制約記録だけの削除では登録を変更しない。

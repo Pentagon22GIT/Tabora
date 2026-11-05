@@ -2,6 +2,10 @@
 
 この手順はsource、Community build、Tabora Official buildの分離を維持します。
 
+## ビルド出力の保護
+
+ビルドスクリプトは既存出力を消去しません。公式パッケージ作成では、プロジェクト内の `build/official-release.*` に専用のビルド領域を作成します。該当する `release/v<version>` がすでに存在する場合は上書きせず停止します。ローカルCommunityビルドには `TABORA_BUILD_OUTPUT_DIR` で未使用の出力先を指定できますが、公式パッケージ作成では外部からの上書き指定を拒否します。
+
 ## 1. 前提条件
 
 - public `Pentagon22GIT/Tabora` repositoryから作業する。

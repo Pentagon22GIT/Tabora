@@ -557,6 +557,7 @@ private struct SideDwellContext: Equatable {
 final class SnapController {
     var isEnabled = true {
         didSet {
+            synchronizeManagedWindowLifecycle()
             if !isEnabled {
                 updateSelectionMonitoringState()
                 invalidatePendingOperations()
@@ -714,6 +715,7 @@ final class SnapController {
     var isReconcilingPlacementMutation = false
     var lockedPlacements: [String: LockedPlacement] = [:] {
         didSet {
+            synchronizeManagedWindowLifecycle()
             guard !isReconcilingPlacementMutation else { return }
             let removedIDs = Set(oldValue.keys).subtracting(lockedPlacements.keys)
             let affectedGroupIDs = Set(removedIDs.compactMap {
@@ -727,7 +729,9 @@ final class SnapController {
     }
     var explicitGroupStore = SnapGroupStore()
     let missionControlGroupPresentationIsEnabled = true
-    var isUserSessionActive = true
+    var isUserSessionActive = true {
+        didSet { synchronizeManagedWindowLifecycle() }
+    }
     var lastGroupWindowServerEvidenceByIdentity:
         [String: GroupWindowServerEvidence] = [:]
     var isPreservingGroupPresentationForWindowServerTransform = false
@@ -888,7 +892,28 @@ final class SnapController {
         }
     }
 
+    private func synchronizeManagedWindowLifecycle() {
+        activeWindowObserver.synchronizeManagedWindows(isControllerRunning && isEnabled && isUserSessionActive ? lockedPlacements.map {
+            ActiveWindowObserver.ManagedTarget(identity: $0.key, pid: $0.value.pid, element: $0.value.element)
+        } : [])
+    }
+
+    private func managedWindowWasDestroyed(_ target: ActiveWindowObserver.ManagedTarget) {
+        guard isControllerRunning, let placement = lockedPlacements[target.identity],
+              placement.pid == target.pid, CFEqual(placement.element, target.element) else { return }
+        // Retire derived pixels immediately; do not wait for census/recovery.
+        if let group = explicitGroupStore.group(containing: target.identity) {
+            missionControlGroupProxyController.hide(groupID: group.id)
+        }
+        if !dissolveExplicitGroupForUserDeparture(containing: target.identity) {
+            lockedPlacements.removeValue(forKey: target.identity)
+        }
+    }
+
     init() {
+        activeWindowObserver.onDestroyed = { [weak self] target in
+            self?.managedWindowWasDestroyed(target)
+        }
         activeWindowObserver.onFocusedWindowChange = { [weak self] pid in
             self?.handleResizeHandlePresentationSignal(
                 .accessibilityFocusChanged
@@ -972,6 +997,7 @@ final class SnapController {
     func start() {
         guard !isControllerRunning else { return }
         isControllerRunning = true
+        synchronizeManagedWindowLifecycle()
         _ = windowService.requestPermissionIfNeeded()
         if !installEventMonitors() {
             scheduleEventMonitorReadinessChecksIfNeeded()
@@ -983,6 +1009,16 @@ final class SnapController {
         activeWindowObserver.observeFrontmostApplication()
         recordCurrentDisplayGeometrySnapshot()
         refreshResizeHandles()
+    }
+
+    func prepareForRemoval() -> Bool {
+        guard !isConstraintMeasurementActive, !isConstraintPermissionPromptActive,
+              !isRestoreTransactionActive, !isSnapPlacementInProgress,
+              handleResizeSession == nil, !isHandleResizeFinalizing,
+              manualResizeWindow == nil, dragWindow == nil else { return false }
+        isEnabled = false
+        stop()
+        return true
     }
 
     func stop() {
@@ -5060,6 +5096,7 @@ final class SnapController {
                         for: windowID,
                         capacityWait:
                             PreviewCaptureAdmissionPolicy.assistCapacityWait,
+                        expectedOwnerPID: candidates.first { $0.cgWindowID == windowID }?.pid,
                         shouldCapture: { [weak self] in
                             self?.settings.windowPreviewsEnabled == true
                                 && captureIsAuthorized()

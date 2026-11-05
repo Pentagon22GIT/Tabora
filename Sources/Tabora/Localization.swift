@@ -68,8 +68,20 @@ enum AppLanguage: String, CaseIterable, Codable {
     }
 }
 
+private final class LocalizationLanguageState: @unchecked Sendable {
+    // The only mutable field is protected for both readers and writers.
+    private let lock = NSLock()
+    private var value = AppLanguage.selected()
+    func get() -> AppLanguage { lock.lock(); defer { lock.unlock() }; return value }
+    func set(_ language: AppLanguage) { lock.lock(); defer { lock.unlock() }; value = language }
+}
+
 enum L10n {
-    static let language = AppLanguage.selected()
+    private static let languageState = LocalizationLanguageState()
+    static var language: AppLanguage {
+        get { languageState.get() }
+        set { languageState.set(newValue) }
+    }
 
     static func text(
         _ key: String,

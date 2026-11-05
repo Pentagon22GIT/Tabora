@@ -607,8 +607,7 @@ final class AXWindowService {
 
     func windowServerFrame(_ window: ManagedWindow) -> CGRect? {
         guard let windowID = window.cgWindowID else { return nil }
-        let requestedIDs = [NSNumber(value: windowID)] as CFArray
-        let descriptions = CGWindowListCreateDescriptionFromArray(requestedIDs)
+        let descriptions = CGWindowListCopyWindowInfo(.optionIncludingWindow, windowID)
             as? [[String: Any]] ?? []
         guard let item = descriptions.first(where: {
             ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value == windowID
@@ -2802,8 +2801,7 @@ final class AXWindowService {
         // Query only the exact physical surface. Snap settlement is verification,
         // not animation, so avoid broad Window Server census work while screen
         // capture software may be querying the same subsystem.
-        let requestedIDs = [NSNumber(value: windowID)] as CFArray
-        let descriptions = CGWindowListCreateDescriptionFromArray(requestedIDs)
+        let descriptions = CGWindowListCopyWindowInfo(.optionIncludingWindow, windowID)
             as? [[String: Any]] ?? []
         guard let item = descriptions.first(where: { item in
             (item[kCGWindowNumber as String] as? NSNumber)?.uint32Value
@@ -2849,6 +2847,7 @@ final class AXWindowService {
         capacityWait: TimeInterval,
         resolution: PreviewCaptureResolution = .nominal,
         fullSizeRequest: PreviewFullSizeRequest? = nil,
+        expectedOwnerPID: pid_t? = nil,
         shouldCapture: (() -> Bool)? = nil
     ) -> CGImage? {
         WindowPreviewCaptureService.capture(
@@ -2856,6 +2855,7 @@ final class AXWindowService {
             capacityWait: capacityWait,
             resolution: resolution,
             fullSizeRequest: fullSizeRequest,
+            expectedOwnerPID: expectedOwnerPID,
             shouldCapture: shouldCapture
         )
     }

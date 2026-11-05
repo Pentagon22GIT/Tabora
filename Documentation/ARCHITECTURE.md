@@ -129,3 +129,14 @@ Taboraは独立した低頻度Recovery watchdogを維持します。Recoveryはl
 - Community: `dev.pent.Tabora.community`
 
 両identityは意図的に別々のtrust domain / TCC domainを使用します。
+
+
+## 初回案内とデータ削除
+
+`InstallationLifecycle` はローカライズが既定値を保存する前に初回状態を判定する。初回は `InitialSetupWindowController` の完了後にcontrollerを生成・開始する。更新時は初回セットアップを繰り返さない。`AppInformationNotice` が重要な案内の版を独立して管理し、未表示の版だけを案内する。これは同意の要求ではなく、ボタンと閉じる操作のどちらでも表示履歴を保存して通常起動へ進む。設定からの読み返しは履歴や権限を書き換えない。
+
+`ActiveWindowObserver` は最前面アプリのフォーカス通知と管理中ウィンドウの破棄通知を、PIDごとの同じAXObserverへ集約する。破棄通知は登録したAX要素と現在のplacementを照合し、既存のgroup retirementへ渡す。画像非表示はWindowServerの再列挙を待たない。未対応アプリは既存Recovery経路に依存する。
+
+`AppRemoval` は現在のエディションの既知データだけを扱う。UIによる選択・再確認、動作中transactionの拒否、controller停止、対象検証、削除、終了という順序を守る。本体は復元可能なゴミ箱移動で、再帰的削除helperはない。
+
+Mission Controlの一時画像は引き続き1セッション1回の取得であり、継続更新は未実装。取得寸法と実画素の品質を区別する。2026-11-05の検証ではSPIの全透明canvasとSCKの縮小内容を確認した。

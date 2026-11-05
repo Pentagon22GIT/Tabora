@@ -3,8 +3,12 @@ import ApplicationServices
 
 @main
 final class TaboraApp: NSObject, NSApplicationDelegate {
+    private var applicationHasStarted = false
+    private var needsInitialSetup = false
+    private var needsAppInformationNotice = false
+    private var setupWindow: InitialSetupWindowController?
     private var statusItem: NSStatusItem!
-    private let controller = SnapController()
+    private lazy var controller = SnapController()
     private let shortcutManager = GlobalShortcutManager()
     private var settingsWindowIsVisible = false
     private lazy var settingsWindow: SettingsWindowController = {
@@ -32,6 +36,7 @@ final class TaboraApp: NSObject, NSApplicationDelegate {
         controller.onLanguageApply = { [weak self] language in
             self?.relaunch(using: language) ?? false
         }
+        controller.onRemoval = { [weak self] choice in self?.removeApplicationData(choice) }
         return controller
     }()
     private var settingsObserver: NSObjectProtocol?
@@ -39,7 +44,17 @@ final class TaboraApp: NSObject, NSApplicationDelegate {
 
     static func main() {
         let app = NSApplication.shared
+        let domain = Bundle.main.bundleIdentifier
+        let recordURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Tabora")
+            .appendingPathComponent(domain ?? "unbundled")
+            .appendingPathComponent("constraints-v1.json")
+        let needsSetup = InstallationLifecycle.needsSetup(
+            domain: domain, hasExistingRecords: FileManager.default.fileExists(atPath: recordURL.path)
+        )
         let delegate = TaboraApp()
+        delegate.needsInitialSetup = needsSetup
+        delegate.needsAppInformationNotice = AppInformationNotice.needsPresentation(domain: domain)
         app.delegate = delegate
         app.setActivationPolicy(.accessory)
         app.run()
@@ -56,6 +71,25 @@ final class TaboraApp: NSObject, NSApplicationDelegate {
             }
         }
 
+        if needsInitialSetup || needsAppInformationNotice {
+            let setup = InitialSetupWindowController(
+                presentation: needsInitialSetup ? .initialSetup : .informationUpdate
+            )
+            setupWindow = setup
+            setup.onComplete = { [weak self] in
+                self?.setupWindow = nil
+                self?.startApplication()
+            }
+            setup.showWindow(nil)
+            NSApplication.shared.activate(ignoringOtherApps: true)
+            return
+        }
+        startApplication()
+    }
+
+    private func startApplication() {
+        guard !applicationHasStarted else { return }
+        applicationHasStarted = true
         configureStatusItem()
         configureShortcuts()
         controller.onGroupSpaceMigrationAPIUnavailable = { [weak self] notice in
@@ -71,7 +105,7 @@ final class TaboraApp: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         if let settingsObserver { NotificationCenter.default.removeObserver(settingsObserver) }
-        controller.stop()
+        if applicationHasStarted { controller.stop() }
     }
 
     private func configureStatusItem() {
@@ -192,6 +226,30 @@ final class TaboraApp: NSObject, NSApplicationDelegate {
     }
 
     @objc private func quit() {
+        NSApplication.shared.terminate(nil)
+    }
+
+    private func removeApplicationData(_ choice: AppRemovalChoice) {
+        // Stop capture, observers and writers before deleting persistent state.
+        guard controller.prepareForRemoval() else {
+            let alert = NSAlert()
+            alert.messageText = L10n.text("settings.language.busy.title")
+            alert.informativeText = L10n.text("cleanup.busy")
+            alert.runModal()
+            return
+        }
+        shortcutManager.clear()
+        if let settingsObserver { NotificationCenter.default.removeObserver(settingsObserver) }
+        settingsObserver = nil
+        do {
+            try AppRemoval.perform(choice, domain: Bundle.main.bundleIdentifier ?? "",
+                                   applicationURL: Bundle.main.bundleURL)
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = L10n.text("cleanup.error")
+            alert.informativeText = error.localizedDescription + "\n\n" + L10n.text("cleanup.failure_note")
+            alert.runModal()
+        }
         NSApplication.shared.terminate(nil)
     }
 

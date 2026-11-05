@@ -1127,6 +1127,7 @@ extension SnapController {
                     capacityWait:
                         PreviewCaptureAdmissionPolicy
                             .missionControlCapacityWait,
+                    expectedOwnerPID: windowsByIdentity.values.first { $0.cgWindowID == windowID }?.pid,
                     shouldCapture: { [weak self] in
                         self?.settings.windowPreviewsEnabled == true
                             && captureIsAuthorized()

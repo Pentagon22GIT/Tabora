@@ -3,6 +3,76 @@ import XCTest
 @testable import Tabora
 
 final class NativeWindowIntegrationTests: XCTestCase {
+    func testPhysicalLivenessDistinguishesMinimizedClosedAndWrongOwner() throws {
+        guard AXIsProcessTrusted() else { throw XCTSkip("Accessibility required") }
+        let app = NSApplication.shared
+        app.setActivationPolicy(.accessory)
+        app.finishLaunching()
+        let window = NSWindow(contentRect: NSRect(x: 80, y: 80, width: 320, height: 240),
+                              styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.animationBehavior = .none
+        defer { window.close() }
+        window.orderFront(nil)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        let id = CGWindowID(window.windowNumber)
+        let service = AXWindowService()
+        var value: CFTypeRef?
+        XCTAssertEqual(AXUIElementCopyAttributeValue(AXUIElementCreateApplication(getpid()),
+            kAXWindowsAttribute as CFString, &value), .success)
+        let element = try XCTUnwrap((value as? [AXUIElement])?.first { RuntimeWindowIDResolver().resolve($0) == id })
+        XCTAssertEqual(service.physicalWindowLiveness(element: element, pid: getpid(), windowID: id), .alive)
+        XCTAssertEqual(service.physicalWindowLiveness(element: element, pid: getpid() + 1, windowID: id), .missing)
+        window.miniaturize(nil)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertEqual(service.physicalWindowLiveness(element: element, pid: getpid(), windowID: id), .alive)
+        window.close()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        XCTAssertEqual(service.physicalWindowLiveness(element: element, pid: getpid(), windowID: id), .missing)
+    }
+
+    func testPhysicalRetirementAcrossLayoutsWithoutAXDestructionNotification() throws {
+        let layouts: [[SnapZone]] = [
+            [.leftHalf, .rightHalf],
+            [.leftHalf, .topRight, .bottomRight],
+            [.topLeft, .topRight, .bottomLeft, .bottomRight]
+        ]
+        for zones in layouts {
+            for closedIndex in zones.indices {
+                let controller = SnapController()
+                controller.isControllerRunning = true
+                controller.isReconcilingPlacementMutation = true
+                defer { controller.stop() }
+                let bounds = CGRect(x: 0, y: 0, width: 800, height: 600)
+                let members = zones.indices.map { "fixture-\(zones.count)-\($0)" }
+                let group = try XCTUnwrap(controller.explicitGroupStore.reconcileAfterLayoutMutation(
+                    preferredMemberID: members[0], displayID: CGMainDisplayID(),
+                    placements: zones.indices.map {
+                        SplitPlacementGeometry(stableIdentity: members[$0], zone: zones[$0], frame: zones[$0].frame(in: bounds))
+                    }, detachedConnections: []))
+                controller.lockedPlacements = Dictionary(uniqueKeysWithValues: zones.indices.map {
+                    (members[$0], LockedPlacement(element: AXUIElementCreateApplication(getpid()), pid: getpid(),
+                        stableIdentity: members[$0], cgWindowID: CGWindowID(100 + $0), zone: zones[$0],
+                        displayID: CGMainDisplayID(), appliedFrame: zones[$0].frame(in: bounds)))
+                })
+                // An unavailable all-Space query must preserve structural truth.
+                controller.reconcileMissingExplicitGroupWindows(windowServerSnapshot: [], exactLiveness: { _, _ in .unknown })
+                XCTAssertEqual(controller.explicitGroupStore.groups.map(\.id), [group.id])
+                // Hidden/minimized/off-Space exact windows still exist.
+                controller.reconcileMissingExplicitGroupWindows(windowServerSnapshot: [], exactLiveness: { _, _ in .alive })
+                XCTAssertEqual(controller.lockedPlacements.count, zones.count)
+                // No AX callback, even while a transform-preservation gate is set.
+                controller.isPreservingGroupPresentationForWindowServerTransform = true
+                controller.reconcileMissingExplicitGroupWindows(windowServerSnapshot: [], exactLiveness: { pid, id in
+                    XCTAssertEqual(pid, getpid())
+                    return id == CGWindowID(100 + closedIndex) ? .missing : .alive
+                })
+                XCTAssertTrue(controller.explicitGroupStore.groups.isEmpty)
+                XCTAssertTrue(controller.lockedPlacements.isEmpty)
+            }
+        }
+    }
+
     func testExactWindowDescriptionUsesRealWindowServerIdentity() throws {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
@@ -59,6 +129,33 @@ final class NativeWindowIntegrationTests: XCTestCase {
     /// Runs the production group/proxy/destruction path with real native windows.
     /// Does not start the controller's global input monitors or recovery timer.
     func testSplitWindowCloseRetiresVisibleProxyAndPeerLocks() throws {
+        try assertSplitWindowClose(zones: [.leftHalf, .rightHalf], closedIndex: 0, deliversNotification: true)
+    }
+
+    func testSplitCloseWithStaleAXCensusAndNoNotificationAcrossAllLayouts() throws {
+        let layouts: [[SnapZone]] = [
+            [.leftHalf, .rightHalf], [.leftHalf, .topRight, .bottomRight],
+            [.topLeft, .topRight, .bottomLeft, .bottomRight]
+        ]
+        for zones in layouts {
+            for index in zones.indices {
+                try assertSplitWindowClose(zones: zones, closedIndex: index, deliversNotification: false)
+            }
+        }
+    }
+
+    func testMinimizedMemberRemovesPixelsButPreservesGroupAcrossAllLayouts() throws {
+        for zones: [SnapZone] in [
+            [.leftHalf, .rightHalf], [.leftHalf, .topRight, .bottomRight],
+            [.topLeft, .topRight, .bottomLeft, .bottomRight]
+        ] {
+            try assertSplitWindowClose(zones: zones, closedIndex: zones.count - 1,
+                                       deliversNotification: false, minimizesMember: true)
+        }
+    }
+
+    private func assertSplitWindowClose(zones: [SnapZone], closedIndex: Int,
+                                       deliversNotification: Bool, minimizesMember: Bool = false) throws {
         guard AXIsProcessTrusted() else { throw XCTSkip("Accessibility required") }
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
@@ -66,11 +163,14 @@ final class NativeWindowIntegrationTests: XCTestCase {
         let controller = SnapController()
         controller.isControllerRunning = true
         controller.isReconcilingPlacementMutation = true
-        let windows = (0..<2).map { index -> NSWindow in
-            let window = NSWindow(contentRect: NSRect(x: 120 + index * 360, y: 180, width: 360, height: 280),
-                                  styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        let bounds = CGRect(x: 120, y: 180, width: 720, height: 560)
+        let windows = zones.indices.map { index -> NSWindow in
+            let window = NSWindow(contentRect: zones[index].frame(in: bounds),
+                                  styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
             window.animationBehavior = .none
+            window.tabbingMode = .disallowed
+            window.setFrame(zones[index].frame(in: bounds), display: false)
             window.title = "Tabora owned split fixture \(index)"
             window.backgroundColor = index == 0 ? .systemBlue : .systemOrange
             window.orderFront(nil)
@@ -89,13 +189,12 @@ final class NativeWindowIntegrationTests: XCTestCase {
             return ManagedWindow(element: element, pid: getpid(), title: window.title, appIcon: nil,
                 frame: frame, isMinimized: false, isFullscreen: false, cgWindowID: id)
         }
-        let zones: [SnapZone] = [.leftHalf, .rightHalf]
         let placements = zip(managed, zones).map { window, zone in
             SplitPlacementGeometry(stableIdentity: window.stableIdentity, zone: zone, frame: window.frame)
         }
         let group = try XCTUnwrap(controller.explicitGroupStore.reconcileAfterLayoutMutation(
             preferredMemberID: managed[0].stableIdentity, displayID: CGMainDisplayID(),
-            placements: placements, detachedConnections: []))
+            placements: placements, detachedConnections: []), "Fixture frames: \(managed.map(\.frame)) zones: \(zones)")
         controller.lockedPlacements = Dictionary(uniqueKeysWithValues: zip(managed, zones).map { window, zone in
             (window.stableIdentity, LockedPlacement(element: window.element, pid: window.pid,
                 stableIdentity: window.stableIdentity, cgWindowID: window.cgWindowID, zone: zone,
@@ -133,17 +232,31 @@ final class NativeWindowIntegrationTests: XCTestCase {
             descriptor.windowID, .boundsIgnoreFraming))
         let bitmap = NSBitmapImageRep(cgImage: previewImage)
         let leftColor = try XCTUnwrap(bitmap.colorAt(x: bitmap.pixelsWide / 4,
-            y: bitmap.pixelsHigh / 2)?.usingColorSpace(.deviceRGB))
+            y: bitmap.pixelsHigh / 4)?.usingColorSpace(.deviceRGB))
         let rightColor = try XCTUnwrap(bitmap.colorAt(x: 3 * bitmap.pixelsWide / 4,
-            y: bitmap.pixelsHigh / 2)?.usingColorSpace(.deviceRGB))
+            y: bitmap.pixelsHigh / 4)?.usingColorSpace(.deviceRGB))
         XCTAssertGreaterThan(abs(leftColor.redComponent - rightColor.redComponent), 0.3,
             "The proxy must contain both captured window images, not an empty placeholder")
         if let folder = ProcessInfo.processInfo.environment["TABORA_UI_SNAPSHOT_DIR"],
            let png = bitmap.representation(using: .png, properties: [:]) {
             try png.write(to: URL(fileURLWithPath: folder).appendingPathComponent("split-proxy-before-close.png"))
         }
+        if !deliversNotification { controller.activeWindowObserver.stop() }
         let start = ProcessInfo.processInfo.systemUptime
-        windows[0].performClose(nil)
+        if minimizesMember { windows[closedIndex].miniaturize(nil) }
+        else { windows[closedIndex].performClose(nil) }
+        if !deliversNotification {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+            // Deliberately supply the stale pre-close AX census. The shared
+            // physical-lifetime gate must run before geometry/preservation.
+            let snapshot = managed.indices.filter { $0 != closedIndex }.map {
+                WindowOcclusionSnapshot(windowID: managed[$0].cgWindowID!, pid: getpid(),
+                    frame: managed[$0].frame, zIndex: $0, layer: 0)
+            }
+            let census = minimizesMember ? managed.enumerated().filter { $0.offset != closedIndex }.map(\.element) : managed
+            controller.refreshResizeHandles(using: census, windowServerSnapshot: snapshot,
+                                             windowServerSnapshotCompleteness: .complete)
+        }
         let deadline = start + 0.5
         while proxy.hasPresentation(for: group.id), ProcessInfo.processInfo.systemUptime < deadline {
             RunLoop.main.run(until: Date().addingTimeInterval(0.001))
@@ -151,12 +264,20 @@ final class NativeWindowIntegrationTests: XCTestCase {
         let retired = ProcessInfo.processInfo.systemUptime
         XCTAssertFalse(proxy.hasPresentation(for: group.id))
         XCTAssertFalse(proxyWindow.isVisible)
-        XCTAssertTrue(controller.lockedPlacements.isEmpty)
-        XCTAssertTrue(controller.explicitGroupStore.groups.isEmpty)
-        XCTAssertTrue(windows[1].isVisible)
+        if minimizesMember {
+            XCTAssertEqual(controller.lockedPlacements.count, zones.count)
+            XCTAssertEqual(controller.explicitGroupStore.groups.map(\.id), [group.id])
+        } else {
+            XCTAssertTrue(controller.lockedPlacements.isEmpty)
+            XCTAssertTrue(controller.explicitGroupStore.groups.isEmpty)
+        }
+        for index in zones.indices where index != closedIndex {
+            XCTAssertTrue(windows[index].isVisible)
+        }
+        // AppKit publishes orderOut to Window Server on the next run-loop turn.
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
         let info = CGWindowListCopyWindowInfo(.optionIncludingWindow, descriptor.windowID) as? [[String: Any]]
         XCTAssertFalse(info?.contains { ($0[kCGWindowIsOnscreen as String] as? Bool) == true } ?? false)
-        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
         XCTAssertFalse(proxy.hasPresentation(for: group.id), "Late capture/order callbacks must not resurrect a retired proxy")
         XCTAssertFalse(proxyWindow.isVisible)
         print("SPLIT_CLOSE: proxy retired and WindowServer hidden in \((retired - start) * 1000) ms")

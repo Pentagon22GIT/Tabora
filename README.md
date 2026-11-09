@@ -2,7 +2,7 @@
 
 Taboraは、macOSのウィンドウを画面端・四隅・分割領域へ配置し、接続したウィンドウを共有境界からまとめてリサイズできる、無料・オープンソースのメニューバーアプリです。
 
-**v2.4.0**では、初回セットアップと設定の削除機能を追加し、ウィンドウを閉じたときの応答と画像取得を改善しました。Mission Control内の高解像度での継続更新には、引き続き制約があります。
+**v2.4.1**では、分割グループのウィンドウを閉じても背面に取得画像が残る問題に対し、閉鎖通知に依存しない共通の存在確認と画像破棄を追加しました。2・3・4分割を同じ経路で処理し、最小化時には画像を退避してグループを維持します。Mission Control内の高解像度での継続更新には、引き続き制約があります。
 
 Mission Control内の画像再取得は「試験的機能 → Mission Control内で最新の画像に切り替える」で有効にできます（初期OFF）。OFFでは通常時に取得した画像を使い、Mission Control内部での再取得は行いません。ONでは内部の既存geometry安定判定後に取得しますが、macOSの挙動によって低解像度や余白が生じる場合があります。取得経路の分離は画質問題そのものの解決を意味しません。全サイズ取得にはmacOS内蔵の非公開APIと画面収録権限を使用します。Mission Controlへ入る直前の取得は行いません。
 
@@ -21,7 +21,7 @@ Mission Control内の画像再取得は「試験的機能 → Mission Control内
 既存のビルドと共有キャッシュを保護するため、出力先がすでに存在する場合はビルドスクリプトを停止します。未使用の出力先を指定できます。
 
 ```sh
-TABORA_BUILD_OUTPUT_DIR="$PWD/build/local-2.4.0" ./Scripts/build-community.sh
+TABORA_BUILD_OUTPUT_DIR="$PWD/build/local-2.4.1" ./Scripts/build-community.sh
 ```
 
 `install-community.sh` は新しい専用作業領域でビルドします。既存Community版の置換には対話確認が必要で、以前の本体は `~/Applications/.tabora-previous.*` に保持します。

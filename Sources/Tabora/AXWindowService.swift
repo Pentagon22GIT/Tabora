@@ -2794,6 +2794,30 @@ final class AXWindowService {
         return titleScore - sizeDelta * 6 - originDelta * 2
     }
 
+    /// Exact surface absence alone is insufficient: Window Server can omit a
+    /// minimized window. Read only its minimized state with the passive budget;
+    /// do not depend on the app's AXWindows enumeration or readable geometry.
+    func physicalWindowLiveness(element: AXUIElement, pid: pid_t,
+                                windowID: CGWindowID) -> WindowLiveness {
+        guard let application = NSRunningApplication(processIdentifier: pid),
+              !application.isTerminated else { return .missing }
+        guard !application.isHidden else { return .unknown }
+        guard let descriptions = CGWindowListCopyWindowInfo(
+            .optionIncludingWindow, windowID
+        ) as? [[String: Any]] else { return .unknown }
+        if descriptions.contains(where: { item in
+            (item[kCGWindowNumber as String] as? NSNumber)?.uint32Value == windowID
+                && (item[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid
+        }) { return .alive }
+        return withMessagingTimeout(element, timeout: AXMessagingTimeoutPolicy.passiveObservation) {
+            var value: CFTypeRef?
+            let result = AXUIElementCopyAttributeValue(element, kAXMinimizedAttribute as CFString, &value)
+            if result == .invalidUIElement { return .missing }
+            guard result == .success, let minimized = value as? Bool else { return .unknown }
+            return minimized ? .alive : .missing
+        }
+    }
+
     func windowServerFrame(
         pid: pid_t,
         windowID: CGWindowID

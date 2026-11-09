@@ -179,6 +179,12 @@
 4. Tabora certificate fingerprintが明示設定されていない場合、Official build verificationは失敗しなければならない。
 
 
+## グループの閉鎖と画像破棄
+
+- 管理中メンバーの寿命確認は分割数によらずexact PID + Window IDで行い、AXに座標やroleが残ることだけを生存根拠にしない。on-screen snapshotの欠落だけで解散せず、exact surface照会と最小化状態を区別する。アプリ非表示・最小化・照会不能では構造を保持する。
+- 確認済み閉鎖のcleanupはMission Control、選択、dragなどの画像保持gateやRecoveryのsignature最適化より先に実行する。通常デスクトップで実surfaceの一部が欠ける画像は表示退避し、閉鎖確認が取れるまで構造の退去と混同しない。
+- 構造上の解散では対象メンバーのcacheと適用待ち結果を破棄し、遅れて返る通常画像を旧メンバー認可で適用しない。一時画像とordering callbackは既存session/presentation世代とProxy所有者で失効する。他グループの取得認可を一括で変更しない。
+
 ## v2.4.0: 初回案内・削除・取得境界
 
 - セットアップ完了前にはSnapControllerを開始しない。初回セットアップの途中終了は完了と扱わない。ログイン項目・画面収録の選択は既定OFF。

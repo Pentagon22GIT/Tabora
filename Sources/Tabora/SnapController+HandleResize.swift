@@ -9,6 +9,13 @@ extension SnapController {
         windowServerSnapshotCompleteness providedSnapshotCompleteness:
             WindowDiscoveryCompleteness? = nil
     ) {
+        let lifecycleObservation = providedWindowServerSnapshot == nil
+            && isControllerRunning && isEnabled && isUserSessionActive
+            && !explicitGroupStore.groups.isEmpty
+            ? windowService.windowOcclusionSnapshotObservation() : nil
+        reconcileMissingExplicitGroupWindows(
+            windowServerSnapshot: providedWindowServerSnapshot ?? lifecycleObservation?.snapshot
+        )
         let canMaintainGroupPresentation = isEnabled
             && settings.linkedResizeEnabled
             && isUserSessionActive
@@ -87,6 +94,8 @@ extension SnapController {
                 snapshot: providedWindowServerSnapshot,
                 completeness: providedSnapshotCompleteness ?? .unknown
             )
+        } else if let lifecycleObservation {
+            windowServerObservation = lifecycleObservation
         } else {
             windowServerObservation = windowService
                 .windowOcclusionSnapshotObservation()

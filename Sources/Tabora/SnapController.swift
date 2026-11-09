@@ -2178,6 +2178,14 @@ final class SnapController {
               !isConstraintPermissionPromptActive,
               !isRestoreTransactionActive else { return }
 
+        // Lifetime cleanup cannot depend on AX enumeration, scene-signature
+        // changes, or a Mission Control/drag preservation lease. Reuse this
+        // watchdog rather than adding another timer or AX polling loop.
+        let windowServerObservation = windowService.windowOcclusionSnapshotObservation()
+        reconcileMissingExplicitGroupWindows(
+            windowServerSnapshot: windowServerObservation.snapshot
+        )
+
         // Display-loss recovery may borrow this watchdog only for a tiny,
         // expiring set of groups created by a recent screen-change event. It
         // performs no global topology scan and owns no permanent 1 Hz work.
@@ -2211,8 +2219,6 @@ final class SnapController {
                     expectedDescriptors: lastPresentableResizeHandleDescriptors
                 )
             }
-            let windowServerObservation = windowService
-                .windowOcclusionSnapshotObservation()
             let snapshot = windowServerObservation.snapshot
             let signature = SplitLayoutGeometry.recoverySceneSignature(
                 for: snapshot,

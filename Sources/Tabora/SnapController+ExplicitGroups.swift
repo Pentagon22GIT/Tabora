@@ -1,6 +1,39 @@
 import AppKit
 
 extension SnapController {
+    /// Physical lifetime must be checked before any presentation-preservation
+    /// gate. Some apps retain readable AX elements after closing a window and
+    /// never deliver AXUIElementDestroyed. An on-screen miss alone is not death.
+    func reconcileMissingExplicitGroupWindows(
+        windowServerSnapshot: [WindowOcclusionSnapshot]? = nil,
+        exactLiveness: ((pid_t, CGWindowID) -> WindowLiveness)? = nil
+    ) {
+        guard isControllerRunning, isEnabled, isUserSessionActive,
+              !explicitGroupStore.groups.isEmpty else { return }
+        let snapshot = windowServerSnapshot ?? windowService.windowOcclusionSnapshot()
+        let present = Set(snapshot.map {
+            WindowServerSelectionSnapshot(pid: $0.pid, windowID: $0.windowID)
+        })
+        for group in explicitGroupStore.groups {
+            let hasClosedMember = group.memberIDs.contains { memberID in
+                guard let placement = lockedPlacements[memberID],
+                      let windowID = placement.cgWindowID,
+                      !present.contains(WindowServerSelectionSnapshot(
+                        pid: placement.pid, windowID: windowID
+                      )) else { return false }
+                let liveness = exactLiveness?(placement.pid, windowID)
+                    ?? windowService.physicalWindowLiveness(element: placement.element,
+                        pid: placement.pid, windowID: windowID)
+                return liveness == .missing
+            }
+            if hasClosedMember {
+                _ = retireExplicitGroup(ExplicitGroupDepartureSnapshot(
+                    groupID: group.id, memberIDs: group.memberIDs
+                ))
+            }
+        }
+    }
+
     @discardableResult
     func reconcileExplicitGroupAfterLayoutMutation(
         preferredMemberID: String,
@@ -292,7 +325,7 @@ extension SnapController {
             groupPresentationFailureCountsByGroupID.removeValue(forKey: groupID)
             handleGeometryFailureCountsByGroupID.removeValue(forKey: groupID)
             handleLivenessFailureCountsByGroupID.removeValue(forKey: groupID)
-            missionControlGroupProxyController.hide(groupID: groupID)
+            missionControlGroupProxyController.retire(groupID: groupID, memberIDs: members)
         }
         retireGroupPresentationTransitionState(for: retiredGroupIDs)
 
@@ -636,6 +669,13 @@ extension SnapController {
         windowServerSnapshotCompleteness providedSnapshotCompleteness:
             WindowDiscoveryCompleteness? = nil
     ) {
+        let lifecycleObservation = providedWindowServerSnapshot == nil
+            && isControllerRunning && isEnabled && isUserSessionActive
+            && !explicitGroupStore.groups.isEmpty
+            ? windowService.windowOcclusionSnapshotObservation() : nil
+        reconcileMissingExplicitGroupWindows(
+            windowServerSnapshot: providedWindowServerSnapshot ?? lifecycleObservation?.snapshot
+        )
         guard missionControlGroupPresentationIsEnabled,
               isEnabled,
               isUserSessionActive,
@@ -679,6 +719,8 @@ extension SnapController {
                 snapshot: providedWindowServerSnapshot,
                 completeness: providedSnapshotCompleteness ?? .unknown
             )
+        } else if let lifecycleObservation {
+            windowServerObservation = lifecycleObservation
         } else {
             windowServerObservation = windowService
                 .windowOcclusionSnapshotObservation()
@@ -798,32 +840,18 @@ extension SnapController {
                 continue
             }
 
-            let confirmedClosedMembers = axMissing.filter { memberID in
-                guard let placement = lockedPlacements[memberID] else {
-                    // A group member without its authoritative placement is an
-                    // internal structural inconsistency. It requires repair or
-                    // Recovery evidence, but absence of controller metadata is
-                    // not proof that the live member closed.
-                    return false
-                }
-                return WindowStructuralPolicy.isConfirmedMissing(
-                    windowService.windowLiveness(
-                        element: placement.element,
-                        pid: placement.pid,
-                        messagingTimeout: AXMessagingTimeoutPolicy.passiveObservation
-                    )
-                )
-            }
-            if let closedMemberID = confirmedClosedMembers.first {
-                _ = dissolveExplicitGroupForUserDeparture(
-                    containing: closedMemberID
-                )
-                groupDegradationEvidenceByGroupID.removeValue(
-                    forKey: group.id
-                )
-                groupSpaceSeparationEvidenceByGroupID.removeValue(
-                    forKey: group.id
-                )
+            // Lifetime was reconciled before preservation gates. Do not run a
+            // second AX-only destruction policy here: minimized/hidden windows
+            // can disappear from AX enumeration without a physical departure.
+            guard exactOnScreenMemberCount == group.memberIDs.count else {
+                // A hidden/minimized window may retain both its AX element and
+                // its physical surface. Neither authorizes leaving its pixels
+                // on the normal desktop. Keep membership, retire presentation.
+                presentationSuppressedGroupIDs.insert(group.id)
+                missionControlGroupProxyController.hide(groupID: group.id)
+                groupDegradationEvidenceByGroupID.removeValue(forKey: group.id)
+                presentationRecoveryGroupIDs.insert(group.id)
+                fastPresentationRetryGroupIDs.insert(group.id)
                 continue
             }
 
@@ -837,27 +865,12 @@ extension SnapController {
                 preservedPresentationGroupIDs.insert(group.id)
                 groupDegradationEvidenceByGroupID.removeValue(forKey: group.id)
                 presentationRecoveryGroupIDs.insert(group.id)
-                let physicalMembersAreStillPresent = group.memberIDs.allSatisfy {
-                    memberID in
-                    guard let placement = lockedPlacements[memberID],
-                          let windowID = placement.cgWindowID else {
-                        return false
-                    }
-                    return windowServerSnapshot.contains { surface in
-                        surface.pid == placement.pid
-                            && surface.windowID == windowID
-                            && surface.layer == 0
-                    }
-                }
-                if !physicalMembersAreStillPresent
-                    || !missionControlGroupProxyController.hasPresentation(
+                if !missionControlGroupProxyController.hasPresentation(
                         for: group.id
                     ) {
-                    // Initial presentation and true physical uncertainty get
-                    // the bounded fast-retry burst. Once a validated proxy
-                    // exists and physical members remain present, AX-only
-                    // unavailability is liveness debt for the 1 Hz watchdog;
-                    // it must not drive a global high-frequency refresh loop.
+                    // Physical presence was verified above. Once a validated
+                    // proxy exists, AX-only unavailability belongs to the 1 Hz
+                    // watchdog rather than a high-frequency refresh loop.
                     fastPresentationRetryGroupIDs.insert(group.id)
                 }
                 continue

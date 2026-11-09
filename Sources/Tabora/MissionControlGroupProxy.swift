@@ -2061,6 +2061,27 @@ final class MissionControlGroupProxyController {
         windowsByGroupID.removeValue(forKey: groupID)?.retire()
     }
 
+    /// Structural retirement also revokes pixels, including results completing
+    /// after the window disappears. Presentation-only hide must keep its cache.
+    func retire(groupID: SnapGroupID, memberIDs: Set<String>) {
+        hide(groupID: groupID)
+        structuralPreviewMemberIDs.subtract(memberIDs)
+        knownPreviewMemberIDs.subtract(memberIDs)
+        activePreviewKeys = activePreviewKeys.filter { !memberIDs.contains($0.stableIdentity) }
+        cachedPreviews = cachedPreviews.filter { !memberIDs.contains($0.key.stableIdentity) }
+        pendingPreviewResults = pendingPreviewResults.filter { !memberIDs.contains($0.key.stableIdentity) }
+        pendingCaptureReasons = pendingCaptureReasons.filter { !memberIDs.contains($0.key.stableIdentity) }
+        pendingCaptureEnqueueOrders = pendingCaptureEnqueueOrders.filter { !memberIDs.contains($0.key.stableIdentity) }
+        for memberID in memberIDs {
+            // Revoke in-flight geometry without changing unrelated groups'
+            // global capture generation.
+            geometryRevisionByPhysicalIdentity[memberID, default: 0] &+= 1
+            geometryConfirmationCandidates.removeValue(forKey: memberID)
+            deferredCaptureReasonsByMemberID.removeValue(forKey: memberID)
+            deferredCaptureEnqueueOrdersByMemberID.removeValue(forKey: memberID)
+        }
+    }
+
     func requireOrderingRevalidation() {
         requireOrderingRevalidation(groupIDs: Set(windowsByGroupID.keys))
     }

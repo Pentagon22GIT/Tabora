@@ -28,6 +28,7 @@ swift test
 その後、SnapFlow Final Baselineで使用したfunctional suiteと同等以上の確認を行います。最低限:
 
 - 2 / 3 / 4 split
+- 各分割の全位置でウィンドウを閉じ、破棄通知あり／通知なし・古いAX情報ありの両方で背面画像と共有ハンドルが消えること。最小化とアプリ非表示は閉鎖と区別し、遅い画像取得完了でProxyが再表示されないこと。Discord実ウィンドウ、Mission Control、別Spaceの組み合わせも配布前に確認すること
 - linked / shared resize
 - 正当なnative-resize departure
 - active / inactive replacement snap

@@ -34,18 +34,39 @@ struct PreviewFullSizeRequest {
 /// A full-sized transparent canvas is not a usable full-sized window capture.
 /// A bounded alpha reduction checks occupancy without retaining another image.
 enum PreviewImageContentPolicy {
-    static func hasVisiblePixels(_ image: CGImage) -> Bool {
-        let side = 32
+    static func windowContent(in image: CGImage, expectedSize: CGSize) -> CGImage? {
+        let side = 96
         var pixels = [UInt8](repeating: 0, count: side * side * 4)
         return pixels.withUnsafeMutableBytes { buffer in
             guard let context = CGContext(data: buffer.baseAddress, width: side, height: side,
-                bitsPerComponent: 8, bytesPerRow: side * 4,
-                space: CGColorSpaceCreateDeviceRGB(),
-                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-                    | CGBitmapInfo.byteOrder32Big.rawValue) else { return false }
+                bitsPerComponent: 8, bytesPerRow: side * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue) else { return nil }
             context.interpolationQuality = .low
             context.draw(image, in: CGRect(x: 0, y: 0, width: side, height: side))
-            return stride(from: 3, to: buffer.count, by: 4).contains { buffer[$0] > 0 }
+            var minX = side, minY = side, maxX = -1, maxY = -1, occupied = 0
+            for y in 0..<side {
+                for x in 0..<side where buffer[(y * side + x) * 4 + 3] >= 8 {
+                    minX = min(minX, x)
+                    maxX = max(maxX, x)
+                    minY = min(minY, y)
+                    maxY = max(maxY, y)
+                    occupied += 1
+                }
+            }
+            guard occupied > 0 else { return nil }
+            let width = maxX - minX + 1, height = maxY - minY + 1
+            // A rectangular window tile surrounded by transparent padding on
+            // both axes. Keep full-span and intentionally sparse surfaces intact.
+            guard max(width, height) < side * 7 / 8,
+                  occupied >= width * height * 9 / 10 else { return image }
+            let sx = CGFloat(image.width) / CGFloat(side)
+            let sy = CGFloat(image.height) / CGFloat(side)
+            let bounds = CGRect(x: CGFloat(minX) * sx, y: CGFloat(minY) * sy,
+                width: CGFloat(width) * sx, height: CGFloat(height) * sy).integral
+            guard MissionControlTransientPreviewValidationPolicy.aspectRatioIsCompatible(
+                capturedSize: bounds.size, expectedSize: expectedSize
+            ) else { return nil }
+            return image.cropping(to: bounds)
         }
     }
 }
@@ -66,10 +87,14 @@ enum PreviewCaptureRoutingPolicy {
             let original = legacy()
             return shouldCapture() ? original : nil
         }
-        let candidate = fullSize()
+        let captured = fullSize()
+        guard shouldCapture() else { return nil }
+        let candidate = captured.flatMap {
+            PreviewImageContentPolicy.windowContent(in: $0, expectedSize: request.windowSize)
+        }
         guard shouldCapture() else { return nil }
         let candidateIsCompatible = candidate.map {
-            request.hasCompatibleAspect($0) && PreviewImageContentPolicy.hasVisiblePixels($0)
+            request.hasCompatibleAspect($0)
         } ?? false
         if let candidate, candidateIsCompatible,
            request.hasSufficientPixelDimensions(candidate) {
@@ -80,7 +105,7 @@ enum PreviewCaptureRoutingPolicy {
         // The fallback can also become transparent while WindowServer changes
         // scenes. Do not let its larger canvas replace a usable candidate.
         let original = fallback.flatMap {
-            PreviewImageContentPolicy.hasVisiblePixels($0) ? $0 : nil
+            PreviewImageContentPolicy.windowContent(in: $0, expectedSize: request.windowSize)
         }
         let selected: CGImage?
         if let candidate, candidateIsCompatible {
@@ -92,9 +117,9 @@ enum PreviewCaptureRoutingPolicy {
                 selected = candidate
             }
         } else {
-            selected = original
+            selected = original.flatMap { request.hasCompatibleAspect($0) ? $0 : nil }
         }
-        return selected
+        return shouldCapture() ? selected : nil
     }
 }
 

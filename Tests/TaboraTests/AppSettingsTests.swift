@@ -7,6 +7,7 @@ final class AppSettingsTests: XCTestCase {
             SettingsCategory.allCases.map(\.title),
             [
                 L10n.text("settings.category.general"),
+                L10n.text("settings.ratio.title"),
                 L10n.text("settings.category.commands"),
                 L10n.text("settings.category.constraints"),
                 L10n.text("settings.category.experimental")
@@ -86,8 +87,28 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertFalse(defaults.bool(forKey: "experimentalAssistLayoutSwitchingEnabled"))
     }
 
-    func testAssistLayoutSwitchingRemainsOptIn() {
-        XCTAssertFalse(AppSettings.defaultAssistLayoutSwitchingEnabled)
+    func testAssistDefaultsAndUpgradeRespectStoredChoices() throws {
+        let name = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        let settings = AppSettings(defaults: defaults)
+        XCTAssertTrue(settings.assistLayoutSwitchingEnabled)
+        settings.initializeAssistPreference(newInstallation: false)
+        XCTAssertFalse(settings.assistLayoutSwitchingEnabled)
+        settings.initializeAssistPreference(newInstallation: true)
+        XCTAssertFalse(settings.assistLayoutSwitchingEnabled)
+        settings.assistLayoutSwitchingEnabled = true
+        settings.initializeAssistPreference(newInstallation: false)
+        XCTAssertTrue(settings.assistLayoutSwitchingEnabled)
+    }
+
+    func testGestureRequiresOneReleaseBeforeAssistUsesOption() {
+        let press = GestureOptionPress()
+        XCTAssertFalse(press.permitsAssist(optionDown: true))
+        press.observe(optionDown: false)
+        XCTAssertTrue(press.permitsAssist(optionDown: true))
+        XCTAssertFalse(press.permitsAssist(optionDown: false))
+        XCTAssertTrue(press.permitsAssist(optionDown: true))
     }
 
     func testMissionControlGroupMigrationIsExperimentalByDefault() {

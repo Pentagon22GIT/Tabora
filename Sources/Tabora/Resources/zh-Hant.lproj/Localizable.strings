@@ -249,3 +249,15 @@
 "cleanup.operation_error" = "無法處理「%@」（錯誤代碼 %d）。";
 
 "setup.back" = "返回";
+"settings.ratio.title" = "預設分割比例";
+"settings.ratio.left" = "左 : 右";
+"settings.ratio.top" = "上 : 下";
+"settings.gesture.snap" = "Option + 雙指滑動吸附（八個方向）";
+"settings.gesture.unavailable" = "無法接收輸入事件。請檢查 Tabora 的輔助使用權限。";
+"settings.replace.occupied" = "符合條件時取代已佔用位置的視窗";
+"settings.replace.note" = "當目標群組從操作開始一直位於最前方且指定位置已被佔用時取代。";
+"settings.ratio.disconnected" = "顯示已連接的顯示器。重新連接後會還原其分割比例。";
+"cleanup.ratios" = "只刪除所有顯示器的分割比例並結束";
+"settings.gesture.title" = "觸控式軌跡板手勢";
+"settings.gesture.note" = "按住 Option 鍵，用兩指往上下左右或對角方向滑動，即可將目前的視窗吸附到對應位置。";
+"settings.gesture.maximize" = "向上滑動時，將視窗最大化而不吸附到上方";

@@ -6,6 +6,8 @@ private final class MemoryInstallationDefaults: UserDefaults {
     var values: [String: Any] = [:]
     override func persistentDomain(forName domainName: String) -> [String: Any]? { values }
     override func removePersistentDomain(forName domainName: String) { values.removeAll() }
+    override func removeObject(forKey defaultName: String) { values.removeValue(forKey: defaultName) }
+    override func object(forKey defaultName: String) -> Any? { values[defaultName] }
     override func synchronize() -> Bool { true }
     override func set(_ value: Any?, forKey defaultName: String) { values[defaultName] = value }
 }
@@ -78,6 +80,15 @@ final class InstallationLifecycleTests: XCTestCase {
             XCTAssertEqual(defaults.values[AppInformationNotice.viewedRevisionKey] as? String,
                 presentation == .informationUpdate ? AppInformationNotice.currentRevision : nil)
         }
+    }
+
+    func testRatioOnlyRemovalIncludesDisconnectedDisplaysAndPreservesOtherSettings() throws {
+        let defaults = MemoryInstallationDefaults()
+        let domain = "dev.pent.Tabora.community"
+        defaults.values = ["splitRatio.internal": ["left": 70], "splitRatio.offline": ["top": 35],
+                           "occupiedReplacementEnabled": true, AppInformationNotice.viewedRevisionKey: "seen"]
+        try AppRemoval.removeDisplayRatios(domain: domain, defaults: defaults)
+        XCTAssertEqual(Set(defaults.values.keys), ["occupiedReplacementEnabled", AppInformationNotice.viewedRevisionKey])
     }
 
     func testSettingsResetPreservesOnlyActuallyViewedRevisionAndUninstallClearsIt() throws {

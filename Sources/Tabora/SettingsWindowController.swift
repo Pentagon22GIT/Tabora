@@ -3,6 +3,7 @@ import CoreGraphics
 
 enum SettingsCategory: Int, CaseIterable {
     case general
+    case ratios
     case commands
     case tabRecords
     case experimental
@@ -10,6 +11,7 @@ enum SettingsCategory: Int, CaseIterable {
     var title: String {
         switch self {
         case .general: return L10n.text("settings.category.general")
+        case .ratios: return L10n.text("settings.ratio.title")
         case .commands: return L10n.text("settings.category.commands")
         case .tabRecords: return L10n.text("settings.category.constraints")
         case .experimental: return L10n.text("settings.category.experimental")
@@ -221,7 +223,48 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         onVisibilityChange?(true)
     }
 
+    private let displayRatios = NSStackView()
+    private let gestureToggle = NSButton(checkboxWithTitle: L10n.text("settings.gesture.snap"), target: nil, action: nil)
+
+    private let gestureMaximizeToggle = NSButton(checkboxWithTitle: L10n.text("settings.gesture.maximize"), target: nil, action: nil)
+
+    private func refreshGestureOptions() {
+        let settings = AppSettings.shared
+        gestureToggle.state = settings.gestureSnapEnabled ? .on : .off
+        gestureMaximizeToggle.isEnabled = settings.gestureSnapEnabled
+        gestureMaximizeToggle.state = settings.gestureSnapEnabled && settings.maximizeOnUpwardGesture ? .on : .off
+    }
+
+    @objc private func changeGestureMaximize() {
+        guard AppSettings.shared.gestureSnapEnabled else { return }
+        AppSettings.shared.maximizeOnUpwardGesture = gestureMaximizeToggle.state == .on
+    }
+
+    @objc private func refreshDisplayRatios() {
+        for row in displayRatios.arrangedSubviews { row.removeFromSuperview() }
+        for screen in NSScreen.screens {
+            guard let key = DefaultSplitRatio.displayKey(screen) else { continue }
+            displayRatios.addArrangedSubview(DisplaySplitRatioView(screen: screen, key: key))
+        }
+    }
+
+    @objc private func changeOccupiedReplacement(_ sender: NSButton) {
+        AppSettings.shared.occupiedReplacementEnabled = sender.state == .on
+    }
+
+    @objc private func changeGesture() {
+        let requested = gestureToggle.state == .on
+        AppSettings.shared.gestureSnapEnabled = requested
+        refreshGestureOptions()
+        if requested && gestureToggle.state == .off {
+            let alert = NSAlert()
+            alert.messageText = L10n.text("settings.gesture.unavailable")
+            alert.runModal()
+        }
+    }
+
     func show() {
+        refreshDisplayRatios()
         pendingLanguage = L10n.language
         refresh()
         refreshExperimentalWorkspaceState()
@@ -263,6 +306,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
         categoryViews = [
             .general: makeGeneralSettingsView(),
+            .ratios: makeRatioSettingsView(),
             .commands: makeCommandSettingsView(),
             .tabRecords: makeTabRecordSettingsView(),
             .experimental: makeExperimentalSettingsView()
@@ -275,6 +319,25 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 14
+        return stack
+    }
+
+    private func note(_ key: String) -> NSTextField {
+        let field = NSTextField(wrappingLabelWithString: L10n.text(key))
+        field.textColor = .secondaryLabelColor
+        field.font = .systemFont(ofSize: 11)
+        return field
+    }
+
+    private func makeRatioSettingsView() -> NSView {
+        let stack = makeSettingsStack()
+        displayRatios.orientation = .vertical
+        displayRatios.alignment = .leading
+        stack.addArrangedSubview(displayRatios)
+        stack.addArrangedSubview(note("settings.ratio.disconnected"))
+        refreshDisplayRatios()
+        NotificationCenter.default.addObserver(self, selector: #selector(refreshDisplayRatios),
+            name: NSApplication.didChangeScreenParametersNotification, object: nil)
         return stack
     }
 
@@ -331,6 +394,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         stack.addArrangedSubview(removal)
         stack.addArrangedSubview(separator())
         stack.addArrangedSubview(sectionTitle(L10n.text("settings.general.window_movement")))
+        let replacement = NSButton(checkboxWithTitle: L10n.text("settings.replace.occupied"),
+            target: self, action: #selector(changeOccupiedReplacement(_:)))
+        replacement.state = AppSettings.shared.occupiedReplacementEnabled ? .on : .off
+        stack.addArrangedSubview(replacement)
+        stack.addArrangedSubview(note("settings.replace.note"))
         restoreSizeOnMoveCheckbox.target = self
         restoreSizeOnMoveCheckbox.action = #selector(toggleRestoreSizeOnMove)
         stack.addArrangedSubview(restoreSizeOnMoveCheckbox)
@@ -697,6 +765,18 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         stack.addArrangedSubview(missionControlGroupMigrationRuntimeStatus)
         stack.addArrangedSubview(separator())
 
+        let gestureTitle = NSTextField(labelWithString: L10n.text("settings.gesture.title"))
+        gestureTitle.font = .systemFont(ofSize: 13, weight: .medium)
+        stack.addArrangedSubview(gestureTitle)
+        gestureToggle.target = self
+        gestureToggle.action = #selector(changeGesture)
+        stack.addArrangedSubview(gestureToggle)
+        stack.addArrangedSubview(note("settings.gesture.note"))
+        gestureMaximizeToggle.target = self
+        gestureMaximizeToggle.action = #selector(changeGestureMaximize)
+        stack.addArrangedSubview(gestureMaximizeToggle)
+        stack.addArrangedSubview(separator())
+
         let latestPreviewTitle = NSTextField(
             labelWithString: L10n.text("settings.experimental.latest_preview.title")
         )
@@ -877,6 +957,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func refresh() {
+        refreshGestureOptions()
         if let index = AppLanguage.allCases.firstIndex(of: pendingLanguage) {
             languagePopup.selectItem(at: index)
         }

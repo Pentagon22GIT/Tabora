@@ -162,14 +162,37 @@ final class WindowPreviewCaptureTests: XCTestCase {
             bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
         let transparent = try XCTUnwrap(context.makeImage())
-        XCTAssertFalse(PreviewImageContentPolicy.hasVisiblePixels(transparent))
+        XCTAssertNil(PreviewImageContentPolicy.windowContent(in: transparent, expectedSize: request.windowSize))
         let visible = try image(160, 100)
-        XCTAssertTrue(PreviewImageContentPolicy.hasVisiblePixels(visible))
+        XCTAssertNotNil(PreviewImageContentPolicy.windowContent(in: visible, expectedSize: request.windowSize))
         let result = PreviewCaptureRoutingPolicy.capture(fullSizeRequest: request,
             shouldCapture: { true }, legacy: { visible }, fullSize: { transparent })
         XCTAssertTrue(result === visible)
         XCTAssertNil(PreviewCaptureRoutingPolicy.capture(fullSizeRequest: request,
             shouldCapture: { true }, legacy: { nil }, fullSize: { transparent }))
+    }
+
+    func testReducedTileOnNominalCanvasCannotReplaceUsableSource() throws {
+        let ctx = try XCTUnwrap(CGContext(data: nil, width: 800, height: 500,
+            bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        ctx.setFillColor(CGColor(gray: 1, alpha: 1))
+        ctx.fill(CGRect(x: 17, y: 112, width: 551, height: 366))
+        let tile = try XCTUnwrap(ctx.makeImage())
+        let good = try image(800, 500)
+        XCTAssertTrue(PreviewCaptureRoutingPolicy.capture(fullSizeRequest: request,
+            shouldCapture: { true }, legacy: { good }, fullSize: { tile }) === good)
+        let recovered = try XCTUnwrap(PreviewCaptureRoutingPolicy.capture(fullSizeRequest: request,
+            shouldCapture: { true }, legacy: { tile }, fullSize: { tile }))
+        XCTAssertEqual(Double(recovered.width), 551, accuracy: 17)
+        XCTAssertEqual(Double(recovered.height), 366, accuracy: 11)
+        var alpha = [UInt8](repeating: 0, count: 32 * 32 * 4)
+        try alpha.withUnsafeMutableBytes { buffer in
+            let check = try XCTUnwrap(CGContext(data: buffer.baseAddress, width: 32, height: 32,
+                bitsPerComponent: 8, bytesPerRow: 128, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue))
+            check.draw(recovered, in: CGRect(x: 0, y: 0, width: 32, height: 32))
+        }
+        XCTAssertGreaterThan(stride(from: 3, to: alpha.count, by: 4).filter { alpha[$0] > 200 }.count, 950)
     }
 
     func testTransparentFallbackCannotReplaceVisibleReducedCandidate() throws {

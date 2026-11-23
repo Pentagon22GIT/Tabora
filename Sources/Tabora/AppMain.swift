@@ -9,6 +9,7 @@ final class TaboraApp: NSObject, NSApplicationDelegate {
     private var setupWindow: InitialSetupWindowController?
     private var statusItem: NSStatusItem!
     private lazy var controller = SnapController()
+    private let gestures = TrackpadSnapMonitor()
     private let shortcutManager = GlobalShortcutManager()
     private var settingsWindowIsVisible = false
     private lazy var settingsWindow: SettingsWindowController = {
@@ -39,6 +40,7 @@ final class TaboraApp: NSObject, NSApplicationDelegate {
         controller.onRemoval = { [weak self] choice in self?.removeApplicationData(choice) }
         return controller
     }()
+    private var gestureObserver: NSObjectProtocol?
     private var settingsObserver: NSObjectProtocol?
     private var groupSpaceMigrationAPIAlertIsPresented = false
 
@@ -52,6 +54,9 @@ final class TaboraApp: NSObject, NSApplicationDelegate {
         let needsSetup = InstallationLifecycle.needsSetup(
             domain: domain, hasExistingRecords: FileManager.default.fileExists(atPath: recordURL.path)
         )
+        if let domain, InstallationLifecycle.domains.contains(domain) {
+            AppSettings.shared.initializeAssistPreference(newInstallation: needsSetup)
+        }
         let delegate = TaboraApp()
         delegate.needsInitialSetup = needsSetup
         delegate.needsAppInformationNotice = AppInformationNotice.needsPresentation(domain: domain)
@@ -90,6 +95,18 @@ final class TaboraApp: NSObject, NSApplicationDelegate {
     private func startApplication() {
         guard !applicationHasStarted else { return }
         applicationHasStarted = true
+        gestures.target = { [weak self] in
+            guard let c = self?.controller, c.canAcceptGestureSnap else { return nil }
+            return c.windowService.windowServerSelectionSnapshot()
+        }
+        gestures.snap = { [weak self] zone, selection, press in
+            guard let destination = AppSettings.shared.gestureDestination(for: zone) else { return }
+            self?.controller.snapFocusedWindow(to: destination, input: .gesture, expecting: selection, optionPress: press)
+        }
+        gestureObserver = NotificationCenter.default.addObserver(
+            forName: AppSettings.gestureDidChange, object: nil, queue: .main
+        ) { [weak self] _ in self?.configureGesture() }
+        configureGesture()
         configureStatusItem()
         configureShortcuts()
         controller.onGroupSpaceMigrationAPIUnavailable = { [weak self] notice in
@@ -105,6 +122,8 @@ final class TaboraApp: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         if let settingsObserver { NotificationCenter.default.removeObserver(settingsObserver) }
+        gestures.stop()
+        if let gestureObserver { NotificationCenter.default.removeObserver(gestureObserver) }
         if applicationHasStarted { controller.stop() }
     }
 
@@ -145,13 +164,21 @@ final class TaboraApp: NSObject, NSApplicationDelegate {
         statusItem.menu = menu
     }
 
+    private func configureGesture() {
+        if AppSettings.shared.gestureSnapEnabled {
+            if !gestures.start() { AppSettings.shared.gestureSnapEnabled = false }
+        } else {
+            gestures.stop()
+        }
+    }
+
     private func configureShortcuts() {
         shortcutManager.register(bindings: AppSettings.shared.shortcuts) { [weak self] action in
             guard let self else { return }
             if action == .restoreLast {
                 self.controller.restoreLast()
             } else if let zone = action.zone {
-                self.controller.snapFocusedWindow(to: zone)
+                self.controller.snapFocusedWindow(to: zone, input: .shortcut)
             }
         }
     }
@@ -195,15 +222,15 @@ final class TaboraApp: NSObject, NSApplicationDelegate {
             : L10n.text("menu.resume")
     }
 
-    @objc private func snapLeft() { controller.snapFocusedWindow(to: .leftHalf) }
-    @objc private func snapRight() { controller.snapFocusedWindow(to: .rightHalf) }
-    @objc private func snapTop() { controller.snapFocusedWindow(to: .topHalf) }
-    @objc private func snapBottom() { controller.snapFocusedWindow(to: .bottomHalf) }
-    @objc private func snapTopLeft() { controller.snapFocusedWindow(to: .topLeft) }
-    @objc private func snapTopRight() { controller.snapFocusedWindow(to: .topRight) }
-    @objc private func snapBottomLeft() { controller.snapFocusedWindow(to: .bottomLeft) }
-    @objc private func snapBottomRight() { controller.snapFocusedWindow(to: .bottomRight) }
-    @objc private func maximize() { controller.snapFocusedWindow(to: .maximize) }
+    @objc private func snapLeft() { controller.snapFocusedWindow(to: .leftHalf, input: .menu) }
+    @objc private func snapRight() { controller.snapFocusedWindow(to: .rightHalf, input: .menu) }
+    @objc private func snapTop() { controller.snapFocusedWindow(to: .topHalf, input: .menu) }
+    @objc private func snapBottom() { controller.snapFocusedWindow(to: .bottomHalf, input: .menu) }
+    @objc private func snapTopLeft() { controller.snapFocusedWindow(to: .topLeft, input: .menu) }
+    @objc private func snapTopRight() { controller.snapFocusedWindow(to: .topRight, input: .menu) }
+    @objc private func snapBottomLeft() { controller.snapFocusedWindow(to: .bottomLeft, input: .menu) }
+    @objc private func snapBottomRight() { controller.snapFocusedWindow(to: .bottomRight, input: .menu) }
+    @objc private func maximize() { controller.snapFocusedWindow(to: .maximize, input: .menu) }
     @objc private func restoreLast() { controller.restoreLast() }
     @objc private func clearLocks() { controller.clearLocks() }
     @objc private func detachFocusedWindowFromGroup() {
@@ -238,6 +265,8 @@ final class TaboraApp: NSObject, NSApplicationDelegate {
             alert.runModal()
             return
         }
+        gestures.stop()
+        if let gestureObserver { NotificationCenter.default.removeObserver(gestureObserver) }
         shortcutManager.clear()
         if let settingsObserver { NotificationCenter.default.removeObserver(settingsObserver) }
         settingsObserver = nil

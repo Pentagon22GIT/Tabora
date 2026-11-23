@@ -249,3 +249,15 @@
 "cleanup.operation_error" = "「%@」を処理できませんでした（エラーコード %d）。";
 
 "setup.back" = "戻る";
+"settings.ratio.title" = "デフォルト分割率";
+"settings.ratio.left" = "左：右";
+"settings.ratio.top" = "上：下";
+"settings.gesture.snap" = "Option＋2本指のスワイプでスナップ（8方向）";
+"settings.gesture.unavailable" = "入力イベントを取得できません。Taboraのアクセシビリティ権限を確認してください。";
+"settings.replace.occupied" = "条件を満たしたとき、スナップ先のウィンドウを置き換える";
+"settings.replace.note" = "操作前から最前面にあるグループで、指定した枠が使用中のときに置き換えます。";
+"settings.ratio.disconnected" = "接続中の画面を表示します。取り外した画面の分割率は、再接続時に復元されます。";
+"cleanup.ratios" = "全ディスプレイの分割率だけを削除して終了";
+"settings.gesture.title" = "トラックパッドジェスチャー";
+"settings.gesture.note" = "Option（⌥）を押しながら2本指で上下左右または斜めにスワイプすると、操作中のウィンドウをその方向に配置します。";
+"settings.gesture.maximize" = "上スワイプの動作を上側へのスナップから最大化に変更";

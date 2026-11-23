@@ -3,9 +3,9 @@ import Darwin
 import ServiceManagement
 
 enum AppRemovalChoice: Int, CaseIterable {
-    case settings, constraints, everything
+    case settings, constraints, ratios, everything
     var title: String {
-        L10n.text(["cleanup.settings", "cleanup.records", "cleanup.all"][rawValue])
+        L10n.text(["cleanup.settings", "cleanup.records", "cleanup.ratios", "cleanup.all"][rawValue])
     }
 }
 
@@ -120,10 +120,19 @@ enum AppRemoval {
         defaults.removePersistentDomain(forName: domain)
         if preservingInstallationState {
             defaults.set(true, forKey: InstallationLifecycle.completionKey)
+            AppSettings(defaults: defaults).initializeAssistPreference(newInstallation: true)
             // Preserve only the information revision actually viewed, not the current revision.
             if let viewedRevision {
                 defaults.set(viewedRevision, forKey: AppInformationNotice.viewedRevisionKey)
             }
+        }
+        guard defaults.synchronize() else { throw AppRemovalError.operation(domain, EIO) }
+    }
+
+    static func removeDisplayRatios(domain: String, defaults: UserDefaults = .standard) throws {
+        try validateDomain(domain)
+        for key in (defaults.persistentDomain(forName: domain) ?? [:]).keys where key.hasPrefix(AppSettings.splitRatioPrefix) {
+            defaults.removeObject(forKey: key)
         }
         guard defaults.synchronize() else { throw AppRemovalError.operation(domain, EIO) }
     }
@@ -136,6 +145,10 @@ enum AppRemoval {
         guard Bundle.main.bundleIdentifier == domain,
               Bundle.main.bundleURL == applicationURL else {
             throw AppRemovalError.unsafeTarget(domain)
+        }
+        if choice == .ratios {
+            try removeDisplayRatios(domain: domain)
+            return
         }
         if choice == .everything {
             try validateApplication(applicationURL, domain: domain, home: home)

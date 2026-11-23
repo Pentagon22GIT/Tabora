@@ -14,6 +14,23 @@ struct SnapOuterEdges: OptionSet {
     static let all: SnapOuterEdges = [.left, .right, .top, .bottom]
 }
 
+struct DefaultSplitRatio: Equatable {
+    var left = 50
+    var top = 50
+
+    static func displayKey(_ screen: NSScreen) -> String? {
+        guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
+              let uuid = CGDisplayCreateUUIDFromDisplayID(number.uint32Value)?.takeRetainedValue()
+        else { return nil }
+        return CFUUIDCreateString(nil, uuid) as String
+    }
+
+    static func forScreen(_ screen: NSScreen) -> Self {
+        guard let key = displayKey(screen) else { return Self() }
+        return AppSettings.shared.splitRatio(for: key)
+    }
+}
+
 enum SnapZone: String, Equatable, CaseIterable, Codable {
     case leftHalf, rightHalf
     case topHalf, bottomHalf
@@ -35,12 +52,12 @@ enum SnapZone: String, Equatable, CaseIterable, Codable {
     }
 
     func frame(in screen: NSScreen) -> CGRect {
-        frame(in: screen.visibleFrame)
+        frame(in: screen.visibleFrame, ratio: .forScreen(screen))
     }
 
-    func frame(in f: CGRect) -> CGRect {
-        let halfW = floor(f.width / 2)
-        let halfH = floor(f.height / 2)
+    func frame(in f: CGRect, ratio: DefaultSplitRatio = .init()) -> CGRect {
+        let halfW = floor(f.width * CGFloat(ratio.left) / 100)
+        let halfH = floor(f.height * CGFloat(100 - ratio.top) / 100)
 
         switch self {
         case .leftHalf:
@@ -110,6 +127,23 @@ enum SnapZone: String, Equatable, CaseIterable, Codable {
         }
     }
 
+    var occupiedQuarters: Set<SnapZone> {
+        switch self {
+        case .leftHalf:
+            return [.topLeft, .bottomLeft]
+        case .rightHalf:
+            return [.topRight, .bottomRight]
+        case .topHalf:
+            return [.topLeft, .topRight]
+        case .bottomHalf:
+            return [.bottomLeft, .bottomRight]
+        case .topLeft, .topRight, .bottomLeft, .bottomRight:
+            return [self]
+        case .maximize:
+            return []
+        }
+    }
+
     var verticalSibling: SnapZone {
         switch self {
         case .topLeft: return .bottomLeft
@@ -172,8 +206,8 @@ enum SnapPlacementLayerPolicy {
         if existing == .maximize {
             return true
         }
-        return !logicalCells(for: existing).isDisjoint(
-            with: logicalCells(for: incoming)
+        return !existing.occupiedQuarters.isDisjoint(
+            with: incoming.occupiedQuarters
         )
     }
 
@@ -190,32 +224,17 @@ enum SnapPlacementLayerPolicy {
         }
         var existingCells: Set<SnapZone> = []
         for zone in existingZones {
-            let cells = logicalCells(for: zone)
+            let cells = zone.occupiedQuarters
             // Exact-cover replacement is an authorization boundary. Reject
             // malformed/overlapping source layouts instead of letting a union
             // operation hide duplicate ownership of the same logical cell.
             guard existingCells.isDisjoint(with: cells) else { return false }
             existingCells.formUnion(cells)
         }
-        return existingCells == logicalCells(for: incoming)
+        return existingCells == incoming.occupiedQuarters
     }
 
-    private static func logicalCells(for zone: SnapZone) -> Set<SnapZone> {
-        switch zone {
-        case .leftHalf:
-            return [.topLeft, .bottomLeft]
-        case .rightHalf:
-            return [.topRight, .bottomRight]
-        case .topHalf:
-            return [.topLeft, .topRight]
-        case .bottomHalf:
-            return [.bottomLeft, .bottomRight]
-        case .topLeft, .topRight, .bottomLeft, .bottomRight:
-            return [zone]
-        case .maximize:
-            return []
-        }
-    }
+
 }
 
 enum AssistLayoutPolicy {

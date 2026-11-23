@@ -249,3 +249,15 @@
 "cleanup.operation_error" = "Could not process “%@” (error code %d).";
 
 "setup.back" = "Back";
+"settings.ratio.title" = "Default split proportions";
+"settings.ratio.left" = "Left : Right";
+"settings.ratio.top" = "Top : Bottom";
+"settings.gesture.snap" = "Snap with Option + two-finger swipe (8 directions)";
+"settings.gesture.unavailable" = "Input monitoring is unavailable. Check Accessibility access for Tabora.";
+"settings.replace.occupied" = "Replace the window in an occupied slot when eligible";
+"settings.replace.note" = "Replaces an occupied slot when its group stays frontmost throughout the snap.";
+"settings.ratio.disconnected" = "Connected displays are shown. Each display retains its proportions when disconnected.";
+"cleanup.ratios" = "Delete only split proportions for all displays and quit";
+"settings.gesture.title" = "Trackpad gestures";
+"settings.gesture.note" = "Hold Option and swipe with two fingers in any of eight directions to snap the focused window in that direction.";
+"settings.gesture.maximize" = "Change swipe up from snapping to the top to maximizing the window";

@@ -249,3 +249,15 @@
 "cleanup.operation_error" = "无法处理“%@”（错误代码 %d）。";
 
 "setup.back" = "返回";
+"settings.ratio.title" = "默认分割比例";
+"settings.ratio.left" = "左 : 右";
+"settings.ratio.top" = "上 : 下";
+"settings.gesture.snap" = "Option + 双指轻扫吸附（八个方向）";
+"settings.gesture.unavailable" = "无法接收输入事件。请检查 Tabora 的辅助功能权限。";
+"settings.replace.occupied" = "满足条件时替换已占用位置的窗口";
+"settings.replace.note" = "当目标组从操作开始一直位于最前方且目标位置已被占用时替换。";
+"settings.ratio.disconnected" = "仅显示已连接的显示器。重新连接后会恢复其分割比例。";
+"cleanup.ratios" = "仅删除所有显示器的分割比例并退出";
+"settings.gesture.title" = "触控板手势";
+"settings.gesture.note" = "按住 Option 键，用双指向上下左右或对角方向轻扫，即可将当前窗口贴靠到相应位置。";
+"settings.gesture.maximize" = "向上轻扫时，将窗口最大化而不贴靠到上方";

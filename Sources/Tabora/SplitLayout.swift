@@ -10,8 +10,8 @@ enum PointerInteractionPolicy {
 }
 
 enum ExpandedSideSelectionPolicy {
-    static func zone(relativeY: CGFloat, isLeftEdge: Bool) -> SnapZone {
-        let usesTopHalf = relativeY.isFinite && relativeY >= 0.5
+    static func zone(relativeY: CGFloat, divider: CGFloat = 0.5, isLeftEdge: Bool) -> SnapZone {
+        let usesTopHalf = relativeY.isFinite && relativeY >= divider
         switch (isLeftEdge, usesTopHalf) {
         case (true, true): return .topLeft
         case (true, false): return .bottomLeft
@@ -213,7 +213,7 @@ enum SplitLayoutGeometry {
         // different structure here.
         var occupiedCells = Set<SnapZone>()
         for member in members {
-            let cells = logicalQuarterCells(for: member.zone)
+            let cells = member.zone.occupiedQuarters
             guard !cells.isEmpty, occupiedCells.isDisjoint(with: cells) else {
                 return .indeterminate
             }
@@ -357,7 +357,7 @@ enum SplitLayoutGeometry {
 
         var occupiedCells = Set<SnapZone>()
         for member in members {
-            let cells = logicalQuarterCells(for: member.zone)
+            let cells = member.zone.occupiedQuarters
             guard !cells.isEmpty, occupiedCells.isDisjoint(with: cells) else {
                 return .indeterminate
             }
@@ -597,24 +597,13 @@ enum SplitLayoutGeometry {
               !zonesByIdentity.values.contains(.maximize) else { return false }
         var occupiedCells = Set<SnapZone>()
         for zone in zonesByIdentity.values {
-            let cells = logicalQuarterCells(for: zone)
+            let cells = zone.occupiedQuarters
             guard !cells.isEmpty, occupiedCells.isDisjoint(with: cells) else {
                 return false
             }
             occupiedCells.formUnion(cells)
         }
         return logicalCellsAreConnected(occupiedCells)
-    }
-
-    private static func logicalQuarterCells(for zone: SnapZone) -> Set<SnapZone> {
-        switch zone {
-        case .leftHalf: return [.topLeft, .bottomLeft]
-        case .rightHalf: return [.topRight, .bottomRight]
-        case .topHalf: return [.topLeft, .topRight]
-        case .bottomHalf: return [.bottomLeft, .bottomRight]
-        case .topLeft, .topRight, .bottomLeft, .bottomRight: return [zone]
-        case .maximize: return []
-        }
     }
 
     private static func logicalCellsAreConnected(_ cells: Set<SnapZone>) -> Bool {
@@ -1144,10 +1133,6 @@ enum SplitLayoutGeometry {
         zonesByIdentity: [String: SnapZone],
         in visibleFrame: CGRect
     ) -> [SplitResizeHandleGeometry] {
-        struct Cell: Hashable {
-            let column: Int
-            let row: Int
-        }
         struct AtomicBoundary {
             let axis: SplitAxis
             let coordinate: CGFloat
@@ -1155,36 +1140,13 @@ enum SplitLayoutGeometry {
             let participantIDs: Set<String>
         }
 
-        func cells(for zone: SnapZone) -> Set<Cell> {
-            switch zone {
-            case .leftHalf:
-                return [Cell(column: 0, row: 0), Cell(column: 0, row: 1)]
-            case .rightHalf:
-                return [Cell(column: 1, row: 0), Cell(column: 1, row: 1)]
-            case .topHalf:
-                return [Cell(column: 0, row: 1), Cell(column: 1, row: 1)]
-            case .bottomHalf:
-                return [Cell(column: 0, row: 0), Cell(column: 1, row: 0)]
-            case .topLeft:
-                return [Cell(column: 0, row: 1)]
-            case .topRight:
-                return [Cell(column: 1, row: 1)]
-            case .bottomLeft:
-                return [Cell(column: 0, row: 0)]
-            case .bottomRight:
-                return [Cell(column: 1, row: 0)]
-            case .maximize:
-                return []
-            }
-        }
-
-        var owners: [Cell: [String]] = [:]
+        var owners: [SnapZone: [String]] = [:]
         for (identity, zone) in zonesByIdentity where zone != .maximize {
-            for cell in cells(for: zone) {
+            for cell in zone.occupiedQuarters {
                 owners[cell, default: []].append(identity)
             }
         }
-        func uniqueOwner(_ cell: Cell) -> String? {
+        func uniqueOwner(_ cell: SnapZone) -> String? {
             guard let values = owners[cell], values.count == 1 else { return nil }
             return values[0]
         }
@@ -1194,8 +1156,8 @@ enum SplitLayoutGeometry {
         var atomic: [AtomicBoundary] = []
 
         for row in 0...1 {
-            let left = Cell(column: 0, row: row)
-            let right = Cell(column: 1, row: row)
+            let left: SnapZone = row == 0 ? .bottomLeft : .topLeft
+            let right: SnapZone = row == 0 ? .bottomRight : .topRight
             if let leftOwner = uniqueOwner(left),
                let rightOwner = uniqueOwner(right),
                leftOwner != rightOwner {
@@ -1212,8 +1174,8 @@ enum SplitLayoutGeometry {
         }
 
         for column in 0...1 {
-            let bottom = Cell(column: column, row: 0)
-            let top = Cell(column: column, row: 1)
+            let bottom: SnapZone = column == 0 ? .bottomLeft : .bottomRight
+            let top: SnapZone = column == 0 ? .topLeft : .topRight
             if let bottomOwner = uniqueOwner(bottom),
                let topOwner = uniqueOwner(top),
                bottomOwner != topOwner {
@@ -1565,10 +1527,11 @@ enum SplitLayoutGeometry {
         for zone: SnapZone,
         in visibleFrame: CGRect,
         placements: [SplitPlacementGeometry],
+        ratio: DefaultSplitRatio = .init(),
         excluding excludedIdentity: String? = nil
     ) -> CGRect {
         guard zone != .maximize else { return visibleFrame }
-        var target = zone.frame(in: visibleFrame)
+        var target = zone.frame(in: visibleFrame, ratio: ratio)
         let nominal = target
         let candidates = placements.filter {
             $0.stableIdentity != excludedIdentity
@@ -1581,13 +1544,15 @@ enum SplitLayoutGeometry {
                 axis: .horizontal,
                 targetZone: zone,
                 placements: candidates,
-                visibleFrame: visibleFrame
+                visibleFrame: visibleFrame,
+                fallback: zone == .topLeft || zone == .bottomLeft ? nominal.maxX : nominal.minX
             )
             let yDivider = preferredQuarterDividerCoordinate(
                 axis: .vertical,
                 targetZone: zone,
                 placements: candidates,
-                visibleFrame: visibleFrame
+                visibleFrame: visibleFrame,
+                fallback: zone == .topLeft || zone == .topRight ? nominal.minY : nominal.maxY
             )
             return canonicalFrame(
                 for: zone,
@@ -1669,11 +1634,12 @@ enum SplitLayoutGeometry {
         axis: SplitAxis,
         targetZone: SnapZone,
         placements: [SplitPlacementGeometry],
-        visibleFrame: CGRect
+        visibleFrame: CGRect,
+        fallback: CGFloat
     ) -> CGFloat {
         guard let targetColumn = quarterColumn(targetZone),
               let targetRow = quarterRow(targetZone) else {
-            return axis == .horizontal ? visibleFrame.midX : visibleFrame.midY
+            return fallback
         }
         let ranked = placements.compactMap { placement
             -> (rank: Int, coordinate: CGFloat)? in
@@ -1698,12 +1664,12 @@ enum SplitLayoutGeometry {
             return (3, coordinate)
         }
         guard let bestRank = ranked.map(\.rank).min() else {
-            return axis == .horizontal ? visibleFrame.midX : visibleFrame.midY
+            return fallback
         }
         let coordinates = ranked.filter { $0.rank == bestRank }
             .map(\.coordinate)
         guard !coordinates.isEmpty else {
-            return axis == .horizontal ? visibleFrame.midX : visibleFrame.midY
+            return fallback
         }
         let average = coordinates.reduce(0, +) / CGFloat(coordinates.count)
         switch axis {

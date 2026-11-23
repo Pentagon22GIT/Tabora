@@ -133,7 +133,7 @@ final class AppSettings {
     static let missionControlPreviewMemoryLimitRange = 16...128
     static let missionControlPreviewMemoryLimitStep = 16
     static let defaultMissionControlLatestPreviewEnabled = false
-    static let defaultAssistLayoutSwitchingEnabled = false
+    static let defaultAssistLayoutSwitchingEnabled = true
     static let defaultMissionControlGroupMigrationEnabled = false
 
     static func normalizedResizeCursorAdornmentDistance(_ value: Double) -> Double {
@@ -199,6 +199,47 @@ final class AppSettings {
         return min(max(value, range.lowerBound), range.upperBound)
     }
 
+    static let splitRatioPrefix = "splitRatio."
+
+    func splitRatio(for key: String) -> DefaultSplitRatio {
+        let values = defaults.dictionary(forKey: Self.splitRatioPrefix + key) as? [String: Int] ?? [:]
+        func percent(_ axis: String) -> Int {
+            guard let value = values[axis], (1...99).contains(value) else { return 50 }
+            return value
+        }
+        return DefaultSplitRatio(left: percent("left"), top: percent("top"))
+    }
+
+    func setSplitRatio(_ ratio: DefaultSplitRatio, for key: String) {
+        guard (1...99).contains(ratio.left), (1...99).contains(ratio.top) else { return }
+        defaults.set(["left": ratio.left, "top": ratio.top], forKey: Self.splitRatioPrefix + key)
+    }
+
+    static let gestureDidChange = Notification.Name("TaboraGestureSnapDidChange")
+
+    var occupiedReplacementEnabled: Bool {
+        get { defaults.bool(forKey: "occupiedReplacementEnabled") }
+        set { defaults.set(newValue, forKey: "occupiedReplacementEnabled") }
+    }
+
+    var maximizeOnUpwardGesture: Bool {
+        get { defaults.bool(forKey: "maximizeOnUpwardGesture") }
+        set { defaults.set(newValue, forKey: "maximizeOnUpwardGesture") }
+    }
+
+    func gestureDestination(for direction: SnapZone) -> SnapZone? {
+        guard gestureSnapEnabled else { return nil }
+        return direction == .topHalf && maximizeOnUpwardGesture ? .maximize : direction
+    }
+
+    var gestureSnapEnabled: Bool {
+        get { defaults.bool(forKey: "gestureSnapEnabled") }
+        set {
+            defaults.set(newValue, forKey: "gestureSnapEnabled")
+            NotificationCenter.default.post(name: Self.gestureDidChange, object: self)
+        }
+    }
+
     var constraintRecordingPromptsEnabled: Bool {
         get {
             guard defaults.object(
@@ -238,6 +279,11 @@ final class AppSettings {
             defaults.set(newValue, forKey: missionControlLatestPreviewEnabledKey)
             notify()
         }
+    }
+
+    func initializeAssistPreference(newInstallation: Bool) {
+        guard defaults.object(forKey: assistLayoutSwitchingEnabledKey) == nil else { return }
+        defaults.set(newInstallation && Self.defaultAssistLayoutSwitchingEnabled, forKey: assistLayoutSwitchingEnabledKey)
     }
 
     var assistLayoutSwitchingEnabled: Bool {

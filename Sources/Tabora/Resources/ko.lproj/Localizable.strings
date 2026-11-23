@@ -249,3 +249,15 @@
 "cleanup.operation_error" = "“%@” 항목을 처리하지 못했습니다(오류 코드 %d).";
 
 "setup.back" = "뒤로";
+"settings.ratio.title" = "기본 분할 비율";
+"settings.ratio.left" = "왼쪽 : 오른쪽";
+"settings.ratio.top" = "위 : 아래";
+"settings.gesture.snap" = "Option + 두 손가락 쓸어넘기기로 스냅 (8방향)";
+"settings.gesture.unavailable" = "입력 이벤트를 받을 수 없습니다. Tabora의 손쉬운 사용 권한을 확인하세요.";
+"settings.replace.occupied" = "조건을 충족하면 스냅 위치의 창 교체";
+"settings.replace.note" = "스냅 전부터 맨 앞에 있는 그룹에서 지정한 칸이 사용 중이면 교체합니다.";
+"settings.ratio.disconnected" = "연결된 화면을 표시합니다. 연결을 해제해도 분할 비율은 유지됩니다.";
+"cleanup.ratios" = "모든 화면의 분할 비율만 삭제하고 종료";
+"settings.gesture.title" = "트랙패드 제스처";
+"settings.gesture.note" = "Option을 누른 채 두 손가락으로 상하좌우 또는 대각선으로 쓸어넘기면 사용 중인 윈도우가 해당 방향에 배치됩니다.";
+"settings.gesture.maximize" = "위로 쓸어넘기면 상단에 배치하는 대신 윈도우 최대화";

@@ -20,6 +20,7 @@ final class ActiveWindowObserver {
         let observer: AXObserver
         let application: AXUIElement
         var focusNotifications: [CFString] = []
+        var unsupportedFocus: Set<String> = []
         var targets: [String: ManagedTarget] = [:]
     }
     var onFocusedWindowChange: ((pid_t) -> Void)?
@@ -36,7 +37,8 @@ final class ActiveWindowObserver {
             nextPID = application.processIdentifier
         } else { nextPID = nil }
         if nextPID == focusedPID {
-            if let nextPID, registrations[nextPID]?.focusNotifications.isEmpty == false { return }
+            if let nextPID, let registration = registrations[nextPID],
+               registration.focusNotifications.count + registration.unsupportedFocus.count == 2 { return }
             if nextPID == nil { return }
         }
         focusedPID = nextPID
@@ -71,12 +73,17 @@ final class ActiveWindowObserver {
                     AXObserverRemoveNotification(registration.observer, registration.application, name)
                 }
                 registration.focusNotifications.removeAll()
-            } else if registration.focusNotifications.isEmpty {
+                registration.unsupportedFocus.removeAll()
+            } else {
                 for name in [kAXFocusedWindowChangedNotification, kAXMainWindowChangedNotification] {
+                    guard !registration.unsupportedFocus.contains(name),
+                          !registration.focusNotifications.contains(where: { CFEqual($0, name as CFString) }) else { continue }
                     let result = AXObserverAddNotification(registration.observer, registration.application,
                         name as CFString, Unmanaged.passUnretained(self).toOpaque())
                     if result == .success || result == .notificationAlreadyRegistered {
                         registration.focusNotifications.append(name as CFString)
+                    } else if result == .notificationUnsupported {
+                        registration.unsupportedFocus.insert(name)
                     }
                 }
             }
@@ -91,7 +98,7 @@ final class ActiveWindowObserver {
                     kAXUIElementDestroyedNotification as CFString, Unmanaged.passUnretained(self).toOpaque())
                 if result == .success { registration.targets[identity] = target }
             }
-            if registration.targets.isEmpty && registration.focusNotifications.isEmpty {
+            if registration.targets.isEmpty && registration.focusNotifications.isEmpty && registration.unsupportedFocus.isEmpty {
                 CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(registration.observer), .commonModes)
                 registrations.removeValue(forKey: pid)
             } else { registrations[pid] = registration }

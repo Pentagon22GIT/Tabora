@@ -38,6 +38,7 @@ enum SettingsScrollGeometry {
 }
 
 final class SettingsWindowController: NSWindowController, NSWindowDelegate {
+    var gestureRegistrationPending: (() -> Bool)?
     var onVisibilityChange: ((Bool) -> Void)?
     var onConstraintMeasurementWillBegin: (() -> Bool)?
     var onConstraintMeasurementDidEnd: (() -> Void)?
@@ -256,7 +257,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let requested = gestureToggle.state == .on
         AppSettings.shared.gestureSnapEnabled = requested
         refreshGestureOptions()
-        if requested && gestureToggle.state == .off {
+        if requested && gestureRegistrationPending?() == true {
             let alert = NSAlert()
             alert.messageText = L10n.text("settings.gesture.unavailable")
             alert.runModal()

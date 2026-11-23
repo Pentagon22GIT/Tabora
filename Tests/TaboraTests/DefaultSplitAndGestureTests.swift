@@ -82,6 +82,9 @@ final class DefaultSplitAndGestureTests: XCTestCase {
         XCTAssertTrue(send(.ended))
         XCTAssertTrue(send(.began))
         XCTAssertTrue(send(.cancelled))
+        XCTAssertTrue(send([], momentum: .began))
+        XCTAssertTrue(send([], momentum: .cancelled))
+        XCTAssertFalse(send([], momentum: .changed))
         let drained = expectation(description: "main queue drained")
         DispatchQueue.main.async { drained.fulfill() }
         wait(for: [drained], timeout: 1)

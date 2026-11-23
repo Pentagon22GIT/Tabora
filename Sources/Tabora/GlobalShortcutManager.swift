@@ -19,8 +19,12 @@ final class GlobalShortcutManager {
 
     init(signature: OSType = OSType(0x534E4150)) {
         self.signature = signature
+    }
+
+    private func ensureEventHandler() -> Bool {
+        if eventHandler != nil { return true }
         var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: OSType(kEventHotKeyPressed))
-        InstallEventHandler(GetApplicationEventTarget(), { _, event, userData in
+        let status = InstallEventHandler(GetApplicationEventTarget(), { _, event, userData in
             guard let event, let userData else { return noErr }
             let manager = Unmanaged<GlobalShortcutManager>.fromOpaque(userData).takeUnretainedValue()
             var id = EventHotKeyID()
@@ -39,6 +43,7 @@ final class GlobalShortcutManager {
             action()
             return noErr
         }, 1, &eventType, Unmanaged.passUnretained(self).toOpaque(), &eventHandler)
+        return status == noErr && eventHandler != nil
     }
 
     deinit {
@@ -46,20 +51,46 @@ final class GlobalShortcutManager {
         if let eventHandler { RemoveEventHandler(eventHandler) }
     }
 
+    private var desiredBindings: [ShortcutAction: ShortcutBinding] = [:]
+    private var shortcutHandler: ((ShortcutAction) -> Void)?
+    private var nextRetry: TimeInterval = 0
+    private var retryDelay: TimeInterval = 1
+
     func register(bindings: [ShortcutAction: ShortcutBinding], handler: @escaping (ShortcutAction) -> Void) {
+        if bindings == desiredBindings {
+            shortcutHandler = handler
+            return
+        }
         clear()
-        var identifier: UInt32 = 1
-        for action in ShortcutAction.allCases {
-            guard let binding = bindings[action] else { continue }
-            var hotKey: EventHotKeyRef?
-            let id = EventHotKeyID(signature: signature, id: identifier)
-            let status = RegisterEventHotKey(binding.keyCode, carbonModifiers(from: binding.modifiers), id, GetApplicationEventTarget(), 0, &hotKey)
-            if status == noErr, let hotKey {
-                hotKeys.append(hotKey)
-                actions[identifier] = { handler(action) }
-                identifier += 1
+        desiredBindings = bindings
+        shortcutHandler = handler
+        registerMissingBindings()
+    }
+
+    func retryMissingBindingsIfDue() {
+        guard actions.count < desiredBindings.count,
+              ProcessInfo.processInfo.systemUptime >= nextRetry else { return }
+        registerMissingBindings()
+    }
+
+    private func registerMissingBindings() {
+        guard actions.count < desiredBindings.count else { return }
+        if ensureEventHandler() {
+            for (index, action) in ShortcutAction.allCases.enumerated() {
+                let identifier = UInt32(index + 1)
+                guard actions[identifier] == nil, let binding = desiredBindings[action] else { continue }
+                var hotKey: EventHotKeyRef?
+                let id = EventHotKeyID(signature: signature, id: identifier)
+                let status = RegisterEventHotKey(binding.keyCode, carbonModifiers(from: binding.modifiers),
+                    id, GetApplicationEventTarget(), 0, &hotKey)
+                if status == noErr, let hotKey {
+                    hotKeys.append(hotKey)
+                    actions[identifier] = { [weak self] in self?.shortcutHandler?(action) }
+                }
             }
         }
+        nextRetry = ProcessInfo.processInfo.systemUptime + retryDelay
+        retryDelay = min(retryDelay * 2, 60)
     }
 
     /// Registers one session-local hot key. A separate signature prevents the
@@ -70,6 +101,7 @@ final class GlobalShortcutManager {
         handler: @escaping () -> Void
     ) -> Bool {
         clear()
+        guard ensureEventHandler() else { return false }
         var hotKey: EventHotKeyRef?
         let identifier: UInt32 = 1
         let id = EventHotKeyID(signature: signature, id: identifier)
@@ -91,6 +123,10 @@ final class GlobalShortcutManager {
         hotKeys.forEach { UnregisterEventHotKey($0) }
         hotKeys.removeAll()
         actions.removeAll()
+        desiredBindings.removeAll()
+        shortcutHandler = nil
+        nextRetry = 0
+        retryDelay = 1
     }
 
     private func carbonModifiers(from raw: UInt32) -> UInt32 {

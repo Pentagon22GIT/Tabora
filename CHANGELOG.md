@@ -1,6 +1,12 @@
 # 更新履歴
 
-## 3.0.0（Build 24）
+## 3.0.1
+
+- 起動時にジェスチャーの入力監視を登録できなかった場合も、有効設定を保持します。アクセシビリティ権限を利用できる状態になると、既存の復旧処理から再登録します。
+- 一時的に登録できなかったグローバルショートカットと前面ウィンドウの変更通知を再登録するようにしました。
+- ジェスチャー待機中の通常スクロールでは、AppKitのイベント変換を省略します。慣性スクロールがキャンセルされた場合も、その操作の入力抑制を解除します。
+
+## 3.0.0
 
 - ディスプレイ別の分割率を専用の設定タブにまとめ、分割率だけを削除できるようにしました。
 - Optionジェスチャーでスナップした後は、Optionを一度離して押し直すと3分割候補に切り替わります。新規インストールではこの候補切り替えが初期状態で有効です。
@@ -13,7 +19,7 @@
 - 2・3・4分割に共通する閉鎖確認を追加しました。アプリから破棄通知が届かず、AXに閉じたウィンドウの情報が残る場合も、PIDとWindow IDによる存在確認を画像保持の判定より先に行います。既存の1秒間隔のRecoveryでも、画面構成の変化や画像更新待ちの有無に依存せず確認します。
 - ウィンドウが画面上にないだけで閉鎖と判断せず、アプリの非表示、最小化、照会失敗を区別します。最小化などで一部の実ウィンドウが表示されない場合は、通常デスクトップの古い画像を退避し、構造上のグループは維持します。
 - グループ解散時に、表示だけでなく対象メンバーの画像キャッシュ・適用待ち画像・取得待ち要求を破棄し、完了が遅れた取得結果の適用を拒否します。他グループの画像取得を一括で取り消す処理は追加していません。
-- Versionを2.4.1、Buildを23へ更新しました。全481テストとReleaseビルドが成功し、検証・監査結果を既存の性能検証文書へ統合しました。Discord実ウィンドウや実際の別Space移動による再現確認は未実施です。
+- 全481テストとReleaseビルドが成功し、検証・監査結果を既存の性能検証文書へ統合しました。Discord実ウィンドウや実際の別Space移動による再現確認は未実施です。
 
 ## 2.4.0
 
@@ -42,7 +48,7 @@
 
 - Preview取得・Mission Control安定判定のデバッグ診断機能と、診断専用の取得時間計測をプロジェクトから削除。Debug / Releaseともに統合ログへ出力しない。画像取得・選択・取消・安定判定、設定保存、公開ツールのログは維持する。取得タイミングと描画rectは変更せず、入場直前取得・強制crop・拡大補正は導入しない。
 - 取得方式の選択をWindowPreviewCaptureへ集約し、通常経路の維持、補完選択、補完失敗、取消、無効入力、派生画像budgetを6件の回帰テストで扱う。既存テストを削除せず、禁止していない小さい画像の非拡大テストも維持する。
-- README、Architecture、Privacy、Security、Release、性能記録を現行実装へ同期。Versionは2.3.0、Buildは20から21へ更新。
+- README、Architecture、Privacy、Security、Release、性能記録を現行実装へ同期。
 - macOSビルド・XCTest実行・26/27実機の画質比較と操作回帰は未完了。全サイズ指定は公開保証のないSPIであり、今回のOS内部原因や改善・高速化を確認済みとはしない。正式配布の可否はRELEASE_PROCESSの実機確認を完了して判断する。
 
 ## 2.2.3 — 2026-09-07
@@ -56,7 +62,7 @@
 ### Release / documentation
 
 - v2.2.2の変更内容は履歴として本CHANGELOGに保持する一方、同版で追加した非同期操作の恒久仕様は現行仕様から撤回した。Architecture、Security Invariants、Foreground、Migration、Release、Performance文書をv2.2.1の実装境界へ同期した。
-- Versionを`2.2.3`、build numberを`20`へ更新した。実動コードと常駐処理はv2.2.1から変更していないため、v2.2.3について新しい性能値や改善率は主張しない。
+- 実動コードと常駐処理はv2.2.1から変更していないため、v2.2.3について新しい性能値や改善率は主張しない。
 
 ## 2.2.2 — 2026-09-06（撤回）
 
@@ -77,8 +83,7 @@
 ### Documentation / performance
 
 - 非同期window mutationの所有者、世代失効、復元へのhandoff、遅延callbackの扱いを`Documentation/ASYNC_TRANSACTION_OWNERSHIP.md`へ恒久仕様として追加し、Architecture、Security Invariants、Foreground、Migration、Release文書を同期した。
-- Versionを`2.2.2`、build numberを`19`へ更新した。
-- v2.2.2は既存の非同期処理に所有権確認と取消順序を追加する安定化であり、常駐timer、polling、画像取得trigger、Recovery頻度、Window Server / AXの常時観測を変更しない。したがって、バージョン変更による平常時常駐性能への影響はなく、正式な性能基準はv2.2.0 Build 17の値を維持する。
+- v2.2.2は既存の非同期処理に所有権確認と取消順序を追加する安定化であり、常駐timer、polling、画像取得trigger、Recovery頻度、Window Server / AXの常時観測を変更しない。したがって、バージョン変更による平常時常駐性能への影響はなく、正式な性能基準はv2.2.0の値を維持する。
 
 ## 2.2.1 — 2026-09-05
 
@@ -101,7 +106,7 @@
 ### Documentation / performance
 
 - Architecture、Security Invariants、Foreground、Release、Migration、Privacy、Performance記録をv2.2.1の実装境界へ同期した。active documentationは一時的な検証環境やcollector固有diagnosticではなく、再現可能な仕様、検証条件、実測値を正本とする構成へ整理した。
-- 常駐性能の最終計測基準は**v2.2.0 Build 17 / 2026-09-05**を維持する。v2.2.1の変更はwindow click、foreground transition、occlusion、Space/display遷移、Snap操作で発火するevent-driven経路であり、無操作R0〜R6計測では変更箇所を直接評価しないため再計測しない。v2.2.1について新しい常駐性能値や改善率は主張しない。
+- 常駐性能の最終計測基準は**v2.2.0 / 2026-09-05**を維持する。v2.2.1の変更はwindow click、foreground transition、occlusion、Space/display遷移、Snap操作で発火するevent-driven経路であり、無操作R0〜R6計測では変更箇所を直接評価しないため再計測しない。v2.2.1について新しい常駐性能値や改善率は主張しない。
 
 ## 2.2.0 — 2026-09-03
 
@@ -128,7 +133,7 @@
 - queue overflow、同一/複数displayの公平性、後着trigger、HOT/COLDのunknown保持、cooldown、Mission Control transform gate、cache上限をsourceとpolicy testで再監査した。
 - 試験的機能のMission Control画像メモリ上限は、通常cacheとtransient cacheを合わせた合計値を表示するようにした。保存値、既存UserDefaults key、各cacheの実上限は変更せず、初期表示64 MiBの半分を通常cache、残り半分をMission Control中だけの一時cacheとして明記した。
 - 2026-09-05の同一R0〜R6形式による再計測へ性能記録を更新し、それ以前のv2.2.0暫定値は比較・結論・基準から除外した。
-- Versionは`2.2.0`、build numberは`17`。MC transient / Display topology追加は常駐1 Hzへ恒久処理を追加しない境界として文書化し、常駐性能基準は2026-09-05再計測を使用する。
+- MC transient / Display topology追加は常駐1 Hzへ恒久処理を追加しない境界として文書化し、常駐性能基準は2026-09-05再計測を使用する。
 
 ## 2.1.0 — 2026-09-01
 
@@ -143,7 +148,7 @@
 ### Compatibility / documentation
 
 - Snap / Group / Resize / Recovery / AX / Mission Control migrationの処理ロジックと安全不変条件は変更していない。
-- Versionを`2.1.0`、build numberを`16`へ更新し、README、Architecture、Privacy、Release、性能・移送の最終確認点、第三者通知を現行実装へ同期した。
+- README、Architecture、Privacy、Release、性能・移送の最終確認点、第三者通知を現行実装へ同期した。
 
 ## 2.0.1 — 2026-09-01
 
@@ -368,7 +373,7 @@
 - SnapFlow Final v1.3.0を凍結Baselineとして、新規製品Taboraへ移行。
 - Product / executable / package / test targetを`Tabora`へ変更。
 - Official Bundle IDを`dev.pent.Tabora`、Community Bundle IDを`dev.pent.Tabora.community`へ分離。
-- Taboraを新しいproject lineageとしてversionを`1.0.0`、build numberを`1`から開始。
+- Taboraを新しいproject lineageとしてversionを`1.0.0`から開始。
 - SnapFlowの公式署名証明書を引き継がず、Tabora専用Official Code Signing identityを作成・設定。
 
 ### Documentation / Repository

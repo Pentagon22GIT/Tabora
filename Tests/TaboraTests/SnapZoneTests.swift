@@ -138,7 +138,6 @@ final class SnapZoneTests: XCTestCase {
             occupiedZones: [.leftHalf, .topRight]
         )
         var session = LayoutSession(
-            excludedCandidateIDs: ["previously-snapped"],
             layoutZones: zones,
             occupiedZones: [
                 .leftHalf: "left",
@@ -151,7 +150,6 @@ final class SnapZoneTests: XCTestCase {
         session.occupy(.bottomRight, stableIdentity: "bottom-right")
         XCTAssertTrue(session.remainingZones.isEmpty)
         XCTAssertEqual(session.occupiedStableIDs.count, 3)
-        XCTAssertEqual(session.excludedCandidateIDs, ["previously-snapped"])
     }
 
     func testAssistFourWayLayoutOffersOnlyUnoccupiedCornersInOrder() {

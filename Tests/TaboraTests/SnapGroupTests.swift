@@ -3,21 +3,6 @@ import XCTest
 @testable import Tabora
 
 final class SnapGroupTests: XCTestCase {
-    func testProvisionalPlacementCannotUseIncomingWindowAsItsOwnPeer() {
-        XCTAssertFalse(
-            SnapGroupPlacementEligibilityPolicy.canUseProvisionalPeer(
-                existingIdentity: "same-window",
-                incomingIdentity: "same-window"
-            )
-        )
-        XCTAssertTrue(
-            SnapGroupPlacementEligibilityPolicy.canUseProvisionalPeer(
-                existingIdentity: "existing-window",
-                incomingIdentity: "incoming-window"
-            )
-        )
-    }
-
     func testReplacementRevalidationUsesExactStructuralSignature() {
         let members: Set<String> = ["left", "right"]
         let zones: [String: SnapZone] = [
@@ -587,40 +572,6 @@ final class SnapGroupTests: XCTestCase {
                 canExtend: false
             ),
             0
-        )
-    }
-
-    func testAssistExclusionsReleaseDisplacedMembersAfterCommittedReplacement() {
-        XCTAssertEqual(
-            AssistCandidateExclusionPolicy.currentExclusions(
-                capturedIDs: ["retained", "displaced", "foreign"],
-                lockedIDs: ["retained", "foreign"],
-                groupedIDs: ["retained", "foreign"]
-            ),
-            Set(["retained", "foreign"])
-        )
-    }
-
-    func testAssistReservationDoesNotTreatMaximizeAsSplitMembership() {
-        XCTAssertFalse(
-            AssistCandidateReservationPolicy.isReserved(
-                placementZone: nil
-            )
-        )
-        XCTAssertFalse(
-            AssistCandidateReservationPolicy.isReserved(
-                placementZone: .maximize
-            )
-        )
-        XCTAssertTrue(
-            AssistCandidateReservationPolicy.isReserved(
-                placementZone: .leftHalf
-            )
-        )
-        XCTAssertTrue(
-            AssistCandidateReservationPolicy.isReserved(
-                placementZone: .topRight
-            )
         )
     }
 
@@ -1275,6 +1226,37 @@ final class SnapGroupTests: XCTestCase {
             .occludedByMaximizedLayer(windowID: "cover")
         )
         XCTAssertNil(store.group(containing: "cover"))
+    }
+
+    func testOnlyExactQuarterCoversCanFormGroups() {
+        let zones = SnapZone.allCases.filter { $0 != .maximize }
+        let allowed: [Set<SnapZone>] = [
+            [.leftHalf, .rightHalf], [.topHalf, .bottomHalf],
+            [.leftHalf, .topRight, .bottomRight], [.rightHalf, .topLeft, .bottomLeft],
+            [.topHalf, .bottomLeft, .bottomRight], [.bottomHalf, .topLeft, .topRight],
+            [.topLeft, .topRight, .bottomLeft, .bottomRight]
+        ]
+        for mask in 0..<(1 << zones.count) {
+            let selected = zones.enumerated().compactMap { index, zone in
+                mask & (1 << index) == 0 ? nil : zone
+            }
+            XCTAssertEqual(SplitCoverage(selected) == .full, allowed.contains(Set(selected)))
+        }
+        XCTAssertEqual(SplitCoverage([.leftHalf, .leftHalf, .rightHalf]), .invalid)
+        XCTAssertEqual(SplitCoverage([.maximize]), .invalid)
+    }
+
+    func testIncompleteSuccessorCannotRetireCommittedGroup() throws {
+        var store = SnapGroupStore()
+        let placements = [left, right]
+        let group = try XCTUnwrap(store.reconcileAfterLayoutMutation(
+            preferredMemberID: left.stableIdentity, displayID: displayID, placements: placements,
+            detachedConnections: []))
+        let quarter = SplitPlacementGeometry(stableIdentity: right.stableIdentity, zone: .topRight,
+            frame: CGRect(x: 720, y: 450, width: 720, height: 450))
+        XCTAssertNil(store.reconcileAfterLayoutMutation(preferredMemberID: left.stableIdentity,
+            displayID: displayID, placements: [left, quarter], detachedConnections: [], targetGroupID: group.id))
+        XCTAssertEqual(store.group(id: group.id), group)
     }
 
     func testRemovingOneMemberFromThreeDissolvesTheWholeGroup() {

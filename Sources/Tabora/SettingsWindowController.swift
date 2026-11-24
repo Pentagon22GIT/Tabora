@@ -249,6 +249,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    @objc private func changeGroupSubdivision(_ sender: NSButton) {
+        AppSettings.shared.groupSubdivisionEnabled = sender.state == .on
+    }
+
     @objc private func changeOccupiedReplacement(_ sender: NSButton) {
         AppSettings.shared.occupiedReplacementEnabled = sender.state == .on
     }
@@ -400,6 +404,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         replacement.state = AppSettings.shared.occupiedReplacementEnabled ? .on : .off
         stack.addArrangedSubview(replacement)
         stack.addArrangedSubview(note("settings.replace.note"))
+        let subdivision = NSButton(checkboxWithTitle: L10n.text("settings.subdivide.title"),
+            target: self, action: #selector(changeGroupSubdivision(_:)))
+        subdivision.state = AppSettings.shared.groupSubdivisionEnabled ? .on : .off
+        stack.addArrangedSubview(subdivision)
+        stack.addArrangedSubview(note("settings.subdivide.note"))
         restoreSizeOnMoveCheckbox.target = self
         restoreSizeOnMoveCheckbox.action = #selector(toggleRestoreSizeOnMove)
         stack.addArrangedSubview(restoreSizeOnMoveCheckbox)

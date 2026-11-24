@@ -261,3 +261,6 @@
 "settings.gesture.title" = "Trackpad gestures";
 "settings.gesture.note" = "Hold Option and swipe with two fingers in any of eight directions to snap the focused window in that direction.";
 "settings.gesture.maximize" = "Change swipe up from snapping to the top to maximizing the window";
+
+"settings.subdivide.title" = "Subdivide a group slot";
+"settings.subdivide.note" = "Snap to a corner within the original slot to keep the other windows in place and choose a window for the vacant slot. Cancel to dissolve the group.";

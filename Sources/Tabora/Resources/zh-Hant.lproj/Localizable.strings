@@ -261,3 +261,6 @@
 "settings.gesture.title" = "觸控式軌跡板手勢";
 "settings.gesture.note" = "按住 Option 鍵，用兩指往上下左右或對角方向滑動，即可將目前的視窗吸附到對應位置。";
 "settings.gesture.maximize" = "向上滑動時，將視窗最大化而不吸附到上方";
+
+"settings.subdivide.title" = "進一步分割群組內的區域";
+"settings.subdivide.note" = "將視窗貼齊原區域內的角落時，其他視窗會留在原位，可選擇一個視窗填入空位。取消將解散群組。";

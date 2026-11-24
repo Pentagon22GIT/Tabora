@@ -422,36 +422,14 @@ enum DetachedWindowSurfaceSelectionPolicy {
     }
 }
 
-enum StagedGroupContinuationPolicy {
-    /// A drag-stage is structural evidence for the captured member set, but it
-    /// does not force those members to remain grouped after an unrelated drop.
-    /// Continue the staged group only when the incoming zone and the persisted
-    /// peer zones still form one connected logical split topology.
-    static func canContinue(
-        draggedIdentity: String,
-        memberIDs: Set<String>,
-        zonesByMemberID: [String: SnapZone],
-        incomingZone: SnapZone,
-        visibleFrame: CGRect
-    ) -> Bool {
-        guard memberIDs.count >= 2,
-              memberIDs.contains(draggedIdentity),
-              memberIDs.allSatisfy({ zonesByMemberID[$0] != nil }) else {
-            return false
-        }
-        var proposedZones = Dictionary(
-            uniqueKeysWithValues: memberIDs.compactMap { identity in
-                zonesByMemberID[identity].map { (identity, $0) }
-            }
-        )
-        proposedZones[draggedIdentity] = incomingZone
-        _ = visibleFrame // retained for API compatibility with existing callers/tests
-        return SplitLayoutGeometry
-            .logicalSplitTopologyIsConnectedAndNonOverlapping(
-                zonesByIdentity: proposedZones
-            )
+enum GroupSubdivisionPolicy {
+    static func vacantCorner(afterMovingFrom source: SnapZone, to destination: SnapZone) -> SnapZone? {
+        let corners = source.occupiedQuarters
+        guard corners.count == 2, corners.contains(destination) else { return nil }
+        return corners.first { $0 != destination }
     }
 }
+
 enum DetachedWindowAdoptionPolicy {
     static func canAdopt(
         candidatePID: pid_t,

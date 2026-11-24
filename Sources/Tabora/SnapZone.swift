@@ -194,6 +194,23 @@ enum SnapZone: String, Equatable, CaseIterable, Codable {
     }
 }
 
+enum SplitCoverage: Equatable {
+    case incomplete, full, invalid
+
+    init<S: Sequence>(_ zones: S) where S.Element == SnapZone {
+        var covered = Set<SnapZone>()
+        for zone in zones {
+            let cells = zone.occupiedQuarters
+            guard !cells.isEmpty, covered.isDisjoint(with: cells) else {
+                self = .invalid
+                return
+            }
+            covered.formUnion(cells)
+        }
+        self = covered.count == 4 ? .full : .incomplete
+    }
+}
+
 enum SnapPlacementLayerPolicy {
     /// A maximized snap is a non-connected upper layer. It replaces only an
     /// earlier maximized snap on the same display and preserves the one split

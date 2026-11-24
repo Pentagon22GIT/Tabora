@@ -200,7 +200,7 @@ struct HandleResizeSession {
     var boundaries: [HandleResizeBoundary]
 }
 
-struct LayoutSession {
+struct LayoutSession: Equatable {
     var groupID: SnapGroupID? = nil
     let displayID: CGDirectDisplayID?
     var layoutZones: [SnapZone]
@@ -251,6 +251,7 @@ struct SnapPlacementContext {
     let memberIDs: Set<String>
     let displayID: CGDirectDisplayID
     var authorizedSplitDisplacements = Set<String>()
+    var assistSession: LayoutSession?
     var subdivisionSource: [String: SnapZone]?
     var exchange: GroupSlotExchange?
     let multiMemberReplacementPlan: MultiMemberReplacementPlan?
@@ -3570,7 +3571,7 @@ final class SnapController {
             }
             placementContext.exchange = exchange
         }
-        if settings.occupiedReplacementEnabled {
+        if placementContext.exchange == nil, settings.occupiedReplacementEnabled {
             placementContext.authorizedSplitDisplacements = Set(placementContext.memberIDs.filter { id in
                 guard id != window.stableIdentity, let peer = lockedPlacements[id] else { return false }
                 return SnapPlacementLayerPolicy.conflicts(existing: peer.zone, incoming: zone)
@@ -4181,6 +4182,18 @@ final class SnapController {
         }
     }
 
+    private func canPlaceAssistCandidate(_ id: String, in zone: SnapZone, session: LayoutSession,
+                                         displayID: CGDirectDisplayID) -> Bool {
+        guard activeSession == session, session.displayID == displayID, session.remainingZones.contains(zone),
+              !session.occupiedStableIDs.contains(id), explicitGroupStore.group(containing: id) == nil else {
+            return false
+        }
+        return session.occupiedZones.allSatisfy { occupied, member in
+            lockedPlacements[member]?.zone == occupied && lockedPlacements[member]?.displayID == displayID
+                && explicitGroupStore.group(containing: member)?.id == session.groupID
+        }
+    }
+
     private func snapPlacementContext(
         for window: ManagedWindow,
         zone: SnapZone,
@@ -4196,7 +4209,7 @@ final class SnapController {
             let groupMembers = session.groupID.flatMap {
                 explicitGroupStore.group(id: $0)?.memberIDs
             } ?? []
-            return SnapPlacementContext(
+            var context = SnapPlacementContext(
                 targetGroupID: session.groupID,
                 departingGroupID: nil,
                 memberIDs: groupMembers
@@ -4204,7 +4217,14 @@ final class SnapController {
                     .union([window.stableIdentity]),
                 displayID: currentDisplayID
             )
+            if input == .assist {
+                guard canPlaceAssistCandidate(window.stableIdentity, in: zone, session: session,
+                                              displayID: currentDisplayID) else { return nil }
+                context.assistSession = session
+            }
+            return context
         }
+        if input == .assist { return nil }
 
         let identity = window.stableIdentity
         let existing = explicitGroupStore.group(containing: identity)
@@ -4216,6 +4236,11 @@ final class SnapController {
                   SplitCoverage(zones.values) == .full,
                   existing.map({ $0.layout.zonesByMemberID == zones }) ?? true else { return nil }
             if placements.values.allSatisfy({ $0.displayID == currentDisplayID }) {
+                if input == .gesture, let existing,
+                   zones.contains(where: { $0.key != identity && $0.value == zone }) {
+                    return SnapPlacementContext(targetGroupID: existing.id, departingGroupID: nil,
+                        memberIDs: members, displayID: currentDisplayID)
+                }
                 if settings.groupSubdivisionEnabled,
                    GroupSubdivisionPolicy.vacantCorner(afterMovingFrom: original, to: zone) != nil {
                     var context = SnapPlacementContext(targetGroupID: nil, departingGroupID: existing?.id,
@@ -4226,11 +4251,9 @@ final class SnapController {
                 let targetsPeer = existing != nil && zones.contains { id, peer in
                     id != identity && SnapPlacementLayerPolicy.conflicts(existing: peer, incoming: zone)
                 }
-                // When subdivision is off, retain the ordinary occupied-slot authorization
-                // for every input. Only a gesture can turn that placement into an exchange.
-                let keepOccupiedRoute = targetsPeer && (!settings.groupSubdivisionEnabled
-                    || (input == .gesture && original.occupiedQuarters.count == zone.occupiedQuarters.count))
-                if original == zone || keepOccupiedRoute || (zone == .maximize && existing != nil) {
+                let keepOccupiedRoute = !settings.groupSubdivisionEnabled && targetsPeer
+                if (input != .gesture && (original == zone || keepOccupiedRoute))
+                    || (zone == .maximize && existing != nil) {
                     return SnapPlacementContext(targetGroupID: existing?.id, departingGroupID: nil,
                         memberIDs: members, displayID: currentDisplayID)
                 }
@@ -4718,9 +4741,6 @@ final class SnapController {
             picker.hide()
             return
         }
-        let observationScene = makeSnapObservationScene(
-            visibleWindows: assistVisibleWindows
-        )
         let assistMemberScope = session.groupID.flatMap {
             explicitGroupStore.group(id: $0)?.memberIDs
         }?.union(session.occupiedStableIDs) ?? session.occupiedStableIDs
@@ -4736,8 +4756,7 @@ final class SnapController {
             let fourWindowCandidates = assistCandidatesByZone(
                 zones: fourWindowRemaining,
                 candidates: candidates,
-                on: screen,
-                observationScene: observationScene
+                occupiedZones: occupiedZones
             )
             let fourWindowAssignmentCount = AssistCandidateAssignmentPolicy
                 .maximumDistinctAssignmentCount(
@@ -4752,8 +4771,7 @@ final class SnapController {
             let threeWindowCandidates = assistCandidatesByZone(
                 zones: threeWindowRemaining,
                 candidates: candidates,
-                on: screen,
-                observationScene: observationScene
+                occupiedZones: occupiedZones
             )
             let mergedHalfCandidateCount = Set(
                 threeWindowCandidates.values.flatMap {
@@ -4794,8 +4812,7 @@ final class SnapController {
             let twoWindowCandidates = assistCandidatesByZone(
                 zones: twoWindowRemaining,
                 candidates: candidates,
-                on: screen,
-                observationScene: observationScene
+                occupiedZones: occupiedZones
             )
             let oppositeHalfCandidateCount = Set(
                 twoWindowCandidates.values.flatMap {
@@ -4808,8 +4825,7 @@ final class SnapController {
             let splitCandidates = assistCandidatesByZone(
                 zones: splitRemaining,
                 candidates: candidates,
-                on: screen,
-                observationScene: observationScene
+                occupiedZones: occupiedZones
             )
             let splitAssignmentCount = AssistCandidateAssignmentPolicy
                 .maximumDistinctAssignmentCount(
@@ -4841,8 +4857,7 @@ final class SnapController {
             candidatesByZone = assistCandidatesByZone(
                 zones: remaining,
                 candidates: candidates,
-                on: screen,
-                observationScene: observationScene
+                occupiedZones: occupiedZones
             )
         }
 
@@ -4859,11 +4874,8 @@ final class SnapController {
 
         activeSession = session
         startEscapeMonitoring()
-        // Candidate-specific constraint plans answer only whether that candidate
-        // may be selected. They must not own the picker panel's bounds: using
-        // the largest predicted candidate frame makes one app's minimum size
-        // stretch the shared UI into neighboring zones. Both selectable zones
-        // and non-selectable vacant blur use this single structural partition.
+        // All cards in a vacant slot share its structural bounds. Apply the
+        // selected candidate's limits to the whole layout when placing it.
         let presentationFramesByZone: [SnapZone: CGRect] = Dictionary(
             uniqueKeysWithValues: remaining.map { remainingZone in
                 let resolved = recordedSnapFrame(
@@ -4937,6 +4949,30 @@ final class SnapController {
                         self.isAssistPlacementPending = false
                         self.picker.allowAnotherSelection()
                         self.updateAssistLayoutModifierMonitoringState()
+                        return
+                    }
+                    guard let display = self.displayID(for: screen),
+                          self.canPlaceAssistCandidate(readyWindow.stableIdentity, in: targetZone,
+                                                       session: session, displayID: display) else {
+                        self.isAssistPlacementPending = false
+                        if let current = self.activeSession, let currentDisplay = current.displayID,
+                           let currentScreen = self.screen(withDisplayID: currentDisplay) {
+                            self.presentAssist(session: current, on: currentScreen)
+                        } else {
+                            self.discardIncompleteAssistGroup()
+                            self.picker.hide()
+                            self.stopEscapeMonitoring()
+                            self.updateAssistLayoutModifierMonitoringState()
+                        }
+                        return
+                    }
+                    let prediction = self.snapPrediction(for: targetZone, on: screen, window: readyWindow,
+                                                         observationScene: self.makeSnapObservationScene())
+                    guard prediction.ready else {
+                        self.isAssistPlacementPending = false
+                        self.picker.allowAnotherSelection()
+                        self.updateAssistLayoutModifierMonitoringState()
+                        if prediction.confirmedInfeasible { NSSound.beep() }
                         return
                     }
                     // Readiness ownership ends here. Hand presentation to the
@@ -5022,20 +5058,13 @@ final class SnapController {
     private func assistCandidatesByZone(
         zones: [SnapZone],
         candidates: [ManagedWindow],
-        on screen: NSScreen,
-        observationScene: SnapObservationScene
+        occupiedZones: Set<SnapZone>
     ) -> [SnapZone: [ManagedWindow]] {
         var result: [SnapZone: [ManagedWindow]] = [:]
-        for zone in zones {
-            for candidate in candidates {
-                guard assistPredictedSnapFrame(
-                    for: zone,
-                    on: screen,
-                    window: candidate,
-                    observationScene: observationScene
-                ) != nil else { continue }
-                result[zone, default: []].append(candidate)
-            }
+        for zone in zones where SplitLayoutGeometry.logicalSplitTopologyIsConnectedAndNonOverlapping(
+            zones: Array(occupiedZones) + [zone]
+        ) {
+            result[zone] = candidates
         }
         return result
     }
@@ -5243,23 +5272,12 @@ final class SnapController {
         snapPrediction(for: zone, on: screen, window: window, observationScene: observationScene).frame
     }
 
-    private func assistPredictedSnapFrame(
-        for zone: SnapZone,
-        on screen: NSScreen,
-        window: ManagedWindow,
-        observationScene: SnapObservationScene
-    ) -> CGRect? {
-        let prediction = snapPrediction(for: zone, on: screen, window: window, observationScene: observationScene)
-        return prediction.confirmedInfeasible ? nil : prediction.frame
-    }
-
-    /// Drag always has a guide. Assist hides only confirmed-infeasible targets.
     private func snapPrediction(
         for zone: SnapZone,
         on screen: NSScreen,
         window: ManagedWindow?,
         observationScene: SnapObservationScene?
-    ) -> (frame: CGRect, confirmedInfeasible: Bool) {
+    ) -> (frame: CGRect, ready: Bool, confirmedInfeasible: Bool) {
         let context: SnapPlacementContext?
         let memberScope: Set<String>?
         if let window {
@@ -5286,7 +5304,7 @@ final class SnapController {
             excluding: window?.stableIdentity,
             memberScope: memberScope
         )
-        guard let window, let context else { return (resolved, false) }
+        guard let window, let context else { return (resolved, false, false) }
         switch initialConstraintSnapPlan(
             candidate: window,
             desiredFrame: resolved,
@@ -5295,9 +5313,9 @@ final class SnapController {
             context: context,
             observationScene: observationScene
         ) {
-        case .ready(let plan): return (plan.candidateTargetFrame ?? resolved, false)
-        case .confirmedInfeasible: return (resolved, true)
-        case .indeterminate: return (resolved, false)
+        case .ready(let plan): return (plan.candidateTargetFrame ?? resolved, true, false)
+        case .confirmedInfeasible: return (resolved, false, true)
+        case .indeterminate: return (resolved, false, false)
         }
     }
 
@@ -5481,6 +5499,10 @@ final class SnapController {
             return false
         }
         if let context, context.displayID != currentDisplayID {
+            return false
+        }
+        if let session = context?.assistSession,
+           !canPlaceAssistCandidate(window.stableIdentity, in: zone, session: session, displayID: currentDisplayID) {
             return false
         }
         if let plan = context?.multiMemberReplacementPlan,

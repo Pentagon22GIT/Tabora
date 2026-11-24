@@ -186,6 +186,7 @@ enum SplitLayoutGeometry {
     static func canonicalConstraintPartition(
         members: [CanonicalSplitPartitionMember],
         incomingIdentity: String,
+        preferredIncomingFrame: CGRect? = nil,
         in visibleFrame: CGRect
     ) -> CanonicalSplitPartitionResolution {
         guard !members.isEmpty,
@@ -286,13 +287,17 @@ enum SplitLayoutGeometry {
         let existingMembers = members.filter { $0.stableIdentity != incomingIdentity }
         let incoming = members.first { $0.stableIdentity == incomingIdentity }
 
-        let xReference = dividerReferenceCoordinate(
+        let xReference = preferredIncomingFrame.flatMap { frame in
+            incoming.flatMap { partitionBoundaryCoordinate(axis: .horizontal, zone: $0.zone, frame: frame) }
+        } ?? dividerReferenceCoordinate(
             axis: .horizontal,
             members: existingMembers,
             fallbackMember: incoming,
             visibleFrame: visibleFrame
         )
-        let yReference = dividerReferenceCoordinate(
+        let yReference = preferredIncomingFrame.flatMap { frame in
+            incoming.flatMap { partitionBoundaryCoordinate(axis: .vertical, zone: $0.zone, frame: frame) }
+        } ?? dividerReferenceCoordinate(
             axis: .vertical,
             members: existingMembers,
             fallbackMember: incoming,
@@ -323,13 +328,8 @@ enum SplitLayoutGeometry {
         return .ready(frames: frames)
     }
 
-    /// Plans a split from the logical shared-boundary graph. The incoming
-    /// half/quarter geometry is the preferred coordinate for every shared
-    /// boundary it actually participates in; known constraints may clamp that
-    /// coordinate, while unrelated existing boundaries preserve their current
-    /// geometry. Only participants on a solved shared boundary are resized.
-    /// A completed four-quarter layout shares both divider axes so every
-    /// adjacent edge remains continuous and no central step can survive.
+    /// Prefer a single intersection across occupied cells. If their bounds
+    /// cannot share both dividers, try the admissible shared-edge topologies.
     static func adaptiveConstraintPartition(
         members: [CanonicalSplitPartitionMember],
         incomingIdentity: String,
@@ -353,6 +353,15 @@ enum SplitLayoutGeometry {
             return frameSatisfiesLimits(visibleFrame, limits: incoming.limits)
                 ? .ready(frames: [incomingIdentity: visibleFrame])
                 : .confirmedInfeasible
+        }
+
+        // Share divider coordinates even when the opposite cells are still vacant.
+        // If the limits preclude a common intersection, try the existing segmented layout.
+        if members.count > 1,
+           case .ready(let frames) = canonicalConstraintPartition(members: members,
+               incomingIdentity: incomingIdentity, preferredIncomingFrame: preferredIncomingFrame,
+               in: visibleFrame) {
+            return .ready(frames: frames)
         }
 
         var occupiedCells = Set<SnapZone>()
@@ -593,10 +602,13 @@ enum SplitLayoutGeometry {
     static func logicalSplitTopologyIsConnectedAndNonOverlapping(
         zonesByIdentity: [String: SnapZone]
     ) -> Bool {
-        guard zonesByIdentity.count >= 2,
-              !zonesByIdentity.values.contains(.maximize) else { return false }
+        logicalSplitTopologyIsConnectedAndNonOverlapping(zones: Array(zonesByIdentity.values))
+    }
+
+    static func logicalSplitTopologyIsConnectedAndNonOverlapping(zones: [SnapZone]) -> Bool {
+        guard zones.count >= 2, !zones.contains(.maximize) else { return false }
         var occupiedCells = Set<SnapZone>()
-        for zone in zonesByIdentity.values {
+        for zone in zones {
             let cells = zone.occupiedQuarters
             guard !cells.isEmpty, occupiedCells.isDisjoint(with: cells) else {
                 return false

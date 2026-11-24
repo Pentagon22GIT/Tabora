@@ -177,7 +177,20 @@ final class NativeWindowIntegrationTests: XCTestCase {
             return window
         }
         defer { controller.stop(); windows.forEach { $0.close() } }
-        RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+        // WindowServer may temporarily report compositor-scaled bounds for our
+        // windows. Establish the physical fixture before exercising closure.
+        let service = controller.windowService
+        let expected = zones.map { $0.frame(in: bounds) }
+        let layoutDeadline = Date().addingTimeInterval(2)
+        var observed: [CGRect?]
+        repeat {
+            observed = windows.map { service.windowServerFrame(pid: getpid(), windowID: CGWindowID($0.windowNumber)) }
+            if zip(observed, expected).allSatisfy({ $0 == $1 }) { break }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.03))
+        } while Date() < layoutDeadline
+        guard zip(observed, expected).allSatisfy({ $0 == $1 }) else {
+            return XCTFail("Before closure: expected fixture frames \(expected), observed \(observed)")
+        }
         var raw: CFTypeRef?
         XCTAssertEqual(AXUIElementCopyAttributeValue(AXUIElementCreateApplication(getpid()),
             kAXWindowsAttribute as CFString, &raw), .success)

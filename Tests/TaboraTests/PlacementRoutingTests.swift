@@ -69,6 +69,10 @@ final class PlacementRoutingTests: XCTestCase {
         try exercisePlacement(threeSlots: true)
     }
 
+    func testConstrainedExchangeRejectsExternallyMovedPeerAndCanRetry() throws {
+        try exercisePlacement(threeSlots: false, constrained: true, movePeerBeforeExchange: true)
+    }
+
     func testConstrainedExchangeKeepsNewDividerAndRejectsInfeasibleSwap() throws {
         try exercisePlacement(threeSlots: false, constrained: true)
     }
@@ -101,7 +105,15 @@ final class PlacementRoutingTests: XCTestCase {
         try exercisePlacement(threeSlots: false, subdivision: .bottomLeft, stageDrag: true)
     }
 
-    private func exercisePlacement(threeSlots: Bool, constrained: Bool = false, overlapping: Bool = false, cancelPartial: Bool = false, candidatesExhausted: Bool = false, subdivision: SnapZone? = nil, stageDrag: Bool = false) throws {
+    func testGestureToOwnSlotStartsIndependentAssist() throws {
+        try exercisePlacement(threeSlots: false, ownSlot: true)
+    }
+
+    func testLaterAssistWindowWithUnrecordedMinimumWidensExistingQuarter() throws {
+        try exercisePlacement(threeSlots: false, wideMinimum: true)
+    }
+
+    private func exercisePlacement(threeSlots: Bool, constrained: Bool = false, overlapping: Bool = false, cancelPartial: Bool = false, candidatesExhausted: Bool = false, subdivision: SnapZone? = nil, stageDrag: Bool = false, ownSlot: Bool = false, wideMinimum: Bool = false, movePeerBeforeExchange: Bool = false) throws {
         guard AXIsProcessTrusted() else { throw XCTSkip("Accessibility required") }
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -116,6 +128,7 @@ final class PlacementRoutingTests: XCTestCase {
         process.executableURL = executable
         process.arguments = overlapping ? ["overlap"] : (threeSlots ? ["three"] : [])
         let expectedCount = threeSlots && subdivision != nil ? 4 : 3
+        if wideMinimum { process.arguments?.append("wide-minimum") }
         if expectedCount == 4 { process.arguments?.append("four") }
         try process.run()
         defer { if process.isRunning { process.terminate(); process.waitUntilExit() } }
@@ -163,13 +176,72 @@ final class PlacementRoutingTests: XCTestCase {
         let placements = zip(windows, zones).map { window, zone in
             SplitPlacementGeometry(stableIdentity: window.stableIdentity, zone: zone, frame: window.frame)
         }
-        func perform(_ window: ManagedWindow, _ zone: SnapZone, success: Bool = true, assist: Bool = false, input: SnapInput? = nil) {
+        @discardableResult
+        func perform(_ window: ManagedWindow, _ zone: SnapZone, success: Bool = true, assist: Bool = false, input: SnapInput? = nil, file: StaticString = #filePath, line: UInt = #line) -> Bool {
+            var matched = false
             let done = expectation(description: "snap committed")
             controller.snap(window, to: zone, on: screen, continueAssist: assist, input: input ?? (stageDrag ? .drag : .gesture)) {
-                XCTAssertEqual($0, success)
+                matched = $0 == success
+                if !matched {
+                    let slots = windows.map { item in
+                        let lock = controller.lockedPlacements[item.stableIdentity]
+                        return "\(item.title): group=\(String(describing: controller.explicitGroupStore.group(containing: item.stableIdentity)?.id)), lock=\(String(describing: lock?.appliedFrame)), observed=\(String(describing: controller.windowService.windowServerFrame(item)))"
+                    }
+                    XCTFail("Snap to \(zone): expected \(success), got \($0). \(slots)", file: file, line: line)
+                }
                 done.fulfill()
             }
             wait(for: [done], timeout: 8)
+            return matched
+        }
+        if wideMinimum {
+            settings.constraintRecordingPromptsEnabled = false
+            settings.assistLayoutSwitchingEnabled = false
+            perform(windows[0], .topLeft, assist: true)
+            let initial = try XCTUnwrap(controller.windowService.windowServerFrame(windows[0]))
+            let session = try XCTUnwrap(controller.activeSession)
+            perform(windows[0], .bottomLeft, success: false, input: .assist)
+            perform(windows[1], .topLeft, success: false, input: .assist)
+            XCTAssertEqual(controller.activeSession, session)
+            let app = try XCTUnwrap(controller.resolveAppConstraintIdentity(for: windows[1]))
+            registry.applyExplicitMeasurement([.minWidth: screen.visibleFrame.width + 100],
+                identity: app.identity, displayName: app.displayName)
+            controller.presentIncompleteAssist(session: session, on: screen, visibleWindows: windows)
+            let slot = SnapZone.bottomLeft.frame(in: screen)
+            let panel = try XCTUnwrap(NSApp.windows.first {
+                $0 is NSPanel && $0.isVisible && $0.frame.contains(CGPoint(x: slot.midX, y: slot.midY))
+            })
+            func candidateCard(in view: NSView) -> NSButton? {
+                if let button = view as? NSButton, button.subviews.contains(where: {
+                    ($0 as? NSTextField)?.stringValue == windows[1].title
+                }) { return button }
+                return view.subviews.lazy.compactMap(candidateCard).first
+            }
+            let card = try XCTUnwrap(panel.contentView.flatMap(candidateCard))
+            XCTAssertTrue(card.sendAction(card.action, to: card.target))
+            let readinessDeadline = Date().addingTimeInterval(8)
+            while controller.isAssistPlacementPending && Date() < readinessDeadline {
+                RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+            }
+            XCTAssertFalse(controller.isAssistPlacementPending)
+            XCTAssertTrue(controller.picker.isVisible)
+            XCTAssertEqual(controller.activeSession, session)
+            XCTAssertEqual(controller.windowService.windowServerFrame(windows[0]), initial)
+            registry.deleteRecord(identity: app.identity)
+            card.performClick(nil)
+            let deadline = Date().addingTimeInterval(8)
+            while controller.activeSession?.occupiedZones[.bottomLeft] != windows[1].stableIdentity && Date() < deadline {
+                RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+            }
+            XCTAssertEqual(controller.activeSession?.occupiedZones[.bottomLeft], windows[1].stableIdentity)
+            let top = try XCTUnwrap(controller.windowService.windowServerFrame(windows[0]))
+            let bottom = try XCTUnwrap(controller.windowService.windowServerFrame(windows[1]))
+            XCTAssertGreaterThan(top.width, initial.width)
+            XCTAssertGreaterThanOrEqual(bottom.width, ceil(screen.visibleFrame.width * 0.60) - 1)
+            XCTAssertEqual(top.maxX, bottom.maxX, accuracy: 1)
+            XCTAssertEqual(top.minY, bottom.maxY, accuracy: 1)
+            XCTAssertEqual(controller.lockedPlacements[windows[0].stableIdentity]?.appliedFrame, top)
+            return
         }
         if cancelPartial {
             settings.assistLayoutSwitchingEnabled = false
@@ -239,10 +311,23 @@ final class PlacementRoutingTests: XCTestCase {
                 preferredMemberID: windows[0].stableIdentity, displayID: display,
                 placements: placements, detachedConnections: []))
         }
+        if ownSlot {
+            settings.occupiedReplacementEnabled = true
+            perform(windows[0], .leftHalf, assist: true)
+            XCTAssertNil(controller.explicitGroupStore.group(id: group.id))
+            XCTAssertNil(controller.stagedGroupDeparture)
+            XCTAssertNil(controller.lockedPlacements[windows[1].stableIdentity])
+            let session = try XCTUnwrap(controller.activeSession)
+            XCTAssertNil(session.groupID)
+            XCTAssertEqual(session.occupiedZones, [.leftHalf: windows[0].stableIdentity])
+            controller.picker.hide(notifyCancel: true)
+            XCTAssertNil(controller.activeSession)
+            XCTAssertTrue(controller.explicitGroupStore.groups.isEmpty)
+            return
+        }
         if let subdivision {
             settings.constraintRecordingPromptsEnabled = false
-            XCTAssertFalse(settings.groupSubdivisionEnabled)
-            settings.groupSubdivisionEnabled = true
+            XCTAssertTrue(settings.groupSubdivisionEnabled)
             if stageDrag {
                 XCTAssertTrue(controller.stageExplicitGroupDepartureForDrag(containing: windows[0].stableIdentity))
                 controller.isSnapPlacementInProgress = true
@@ -268,6 +353,11 @@ final class PlacementRoutingTests: XCTestCase {
                     perform(windows[expectedCount - 1], sibling)
                     XCTAssertEqual(controller.explicitGroupStore.groups.first?.memberIDs, Set(windows.map(\.stableIdentity)))
                     if threeSlots {
+                        let source = try XCTUnwrap(controller.windowService.windowServerFrame(windows[0]))
+                        perform(windows[0].replacingFrame(source), .bottomRight)
+                        let swapped = try XCTUnwrap(controller.explicitGroupStore.group(containing: windows[0].stableIdentity))
+                        XCTAssertEqual(swapped.layout.zonesByMemberID[windows[0].stableIdentity], .bottomRight)
+                        XCTAssertEqual(swapped.layout.zonesByMemberID[windows[2].stableIdentity], subdivision)
                         let frame = try XCTUnwrap(controller.windowService.windowServerFrame(windows[0]))
                         perform(windows[0].replacingFrame(frame), .leftHalf, assist: true)
                         XCTAssertTrue(controller.explicitGroupStore.groups.isEmpty)
@@ -282,10 +372,29 @@ final class PlacementRoutingTests: XCTestCase {
             let minimum = floor(screen.visibleFrame.width * 0.46)
             registry.applyExplicitMeasurement([.minWidth: minimum], identity: identity.identity,
                 displayName: identity.displayName)
-            perform(windows[0], .rightHalf)
+            guard perform(windows[0], .rightHalf) else { return }
             let right = try XCTUnwrap(controller.lockedPlacements[windows[0].stableIdentity]?.appliedFrame)
             XCTAssertEqual(right.width, minimum, accuracy: 1)
-            perform(windows[0].replacingFrame(right), .leftHalf)
+            if movePeerBeforeExchange {
+                let peer = windows[1]
+                let recorded = try XCTUnwrap(controller.lockedPlacements[peer.stableIdentity]?.appliedFrame)
+                func movePeer(to frame: CGRect) throws {
+                    XCTAssertTrue(controller.windowService.setFrame(frame, for: peer.element))
+                    let deadline = Date().addingTimeInterval(2)
+                    while controller.windowService.windowServerFrame(peer) != frame && Date() < deadline {
+                        RunLoop.main.run(until: Date().addingTimeInterval(0.03))
+                    }
+                    XCTAssertEqual(controller.windowService.windowServerFrame(peer), frame)
+                }
+                let moved = recorded.insetBy(dx: 24, dy: 24)
+                try movePeer(to: moved)
+                guard perform(windows[0].replacingFrame(right), .leftHalf, success: false) else { return }
+                XCTAssertEqual(controller.explicitGroupStore.group(id: group.id)?.layout.zonesByMemberID[peer.stableIdentity], .leftHalf)
+                XCTAssertEqual(controller.windowService.windowServerFrame(windows[0]), right)
+                XCTAssertEqual(controller.windowService.windowServerFrame(peer), moved)
+                try movePeer(to: recorded)
+            }
+            guard perform(windows[0].replacingFrame(right), .leftHalf) else { return }
             let left = try XCTUnwrap(controller.lockedPlacements[windows[0].stableIdentity]?.appliedFrame)
             XCTAssertEqual(left.width, screen.visibleFrame.width - minimum, accuracy: 1)
             XCTAssertNotEqual(left.width, windows[0].frame.width)
@@ -301,10 +410,13 @@ final class PlacementRoutingTests: XCTestCase {
             let completed = try XCTUnwrap(controller.explicitGroupStore.group(id: group.id))
             XCTAssertEqual(completed.memberIDs.count, 3)
             XCTAssertEqual(completed.layout.zonesByMemberID[windows[2].stableIdentity], .bottomRight)
+            settings.groupSubdivisionEnabled = false
+            XCTAssertFalse(AppSettings(defaults: defaults).groupSubdivisionEnabled)
             for input in [SnapInput.shortcut, .menu] {
                 perform(windows[0], .topRight, success: false, input: input)
                 XCTAssertEqual(controller.explicitGroupStore.group(id: group.id)?.layout, completed.layout)
             }
+            settings.groupSubdivisionEnabled = true
             perform(windows[0], .topRight)
             let exchanged = try XCTUnwrap(controller.explicitGroupStore.group(id: group.id))
             XCTAssertEqual(exchanged.memberIDs, completed.memberIDs)
@@ -313,8 +425,13 @@ final class PlacementRoutingTests: XCTestCase {
                 windows[2].stableIdentity: .bottomRight])
             settings.occupiedReplacementEnabled = true
             let current = try XCTUnwrap(controller.lockedPlacements[windows[0].stableIdentity]?.appliedFrame)
-            perform(windows[0].replacingFrame(current), .rightHalf, success: false)
-            XCTAssertEqual(controller.explicitGroupStore.group(id: group.id)?.layout, exchanged.layout)
+            settings.groupSubdivisionEnabled = false
+            perform(windows[0].replacingFrame(current), .leftHalf)
+            XCTAssertEqual(controller.explicitGroupStore.group(id: group.id)?.layout, completed.layout)
+            let restored = try XCTUnwrap(controller.lockedPlacements[windows[0].stableIdentity]?.appliedFrame)
+            perform(windows[0].replacingFrame(restored), .rightHalf, assist: true)
+            XCTAssertNil(controller.explicitGroupStore.group(id: group.id))
+            XCTAssertEqual(controller.activeSession?.occupiedStableIDs, [windows[0].stableIdentity])
             return
         }
         perform(windows[0], .rightHalf)

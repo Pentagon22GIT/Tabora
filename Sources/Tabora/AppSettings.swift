@@ -218,7 +218,7 @@ final class AppSettings {
     static let gestureDidChange = Notification.Name("TaboraGestureSnapDidChange")
 
     var groupSubdivisionEnabled: Bool {
-        get { defaults.bool(forKey: "groupSubdivisionEnabled") }
+        get { defaults.object(forKey: "groupSubdivisionEnabled") as? Bool ?? true }
         set { defaults.set(newValue, forKey: "groupSubdivisionEnabled") }
     }
 

@@ -202,20 +202,17 @@ struct HandleResizeSession {
 
 struct LayoutSession {
     var groupID: SnapGroupID? = nil
-    let excludedCandidateIDs: Set<String>
     let displayID: CGDirectDisplayID?
     var layoutZones: [SnapZone]
     var occupiedZones: [SnapZone: String]
 
     init(
         groupID: SnapGroupID? = nil,
-        excludedCandidateIDs: Set<String> = [],
         displayID: CGDirectDisplayID? = nil,
         layoutZones: [SnapZone],
         occupiedZones: [SnapZone: String]
     ) {
         self.groupID = groupID
-        self.excludedCandidateIDs = excludedCandidateIDs
         self.displayID = displayID
         self.layoutZones = layoutZones
         self.occupiedZones = occupiedZones
@@ -252,7 +249,6 @@ struct SnapPlacementContext {
     let targetGroupID: SnapGroupID?
     let departingGroupID: SnapGroupID?
     let memberIDs: Set<String>
-    let excludedAssistCandidateIDs: Set<String>
     let displayID: CGDirectDisplayID
     var authorizedSplitDisplacements = Set<String>()
     var exchange: GroupSlotExchange?
@@ -262,14 +258,12 @@ struct SnapPlacementContext {
         targetGroupID: SnapGroupID?,
         departingGroupID: SnapGroupID?,
         memberIDs: Set<String>,
-        excludedAssistCandidateIDs: Set<String>,
         displayID: CGDirectDisplayID,
         multiMemberReplacementPlan: MultiMemberReplacementPlan? = nil
     ) {
         self.targetGroupID = targetGroupID
         self.departingGroupID = departingGroupID
         self.memberIDs = memberIDs
-        self.excludedAssistCandidateIDs = excludedAssistCandidateIDs
         self.displayID = displayID
         self.multiMemberReplacementPlan = multiMemberReplacementPlan
     }
@@ -2733,29 +2727,6 @@ final class SnapController {
         )
     }
 
-    private func windowServerFrontmostEvaluation(
-        memberIDs: Set<String>,
-        snapshot providedSnapshot: [WindowOcclusionSnapshot]? = nil,
-        displayFrame: CGRect? = nil
-    ) -> GroupFrontmostEvaluation {
-        guard !memberIDs.isEmpty else { return .indeterminate }
-        let bindings = persistedManagedWindowBindings.map(\.identity)
-        let selections = Set(bindings.compactMap { binding
-            -> WindowServerSelectionSnapshot? in
-            guard memberIDs.contains(binding.stableIdentity) else { return nil }
-            return WindowServerSelectionSnapshot(
-                pid: binding.pid,
-                windowID: binding.windowID
-            )
-        })
-        guard selections.count == memberIDs.count else { return .indeterminate }
-        return GroupFrontmostEvaluationPolicy.evaluate(
-            memberSelections: selections,
-            snapshot: providedSnapshot ?? windowService.windowOcclusionSnapshot(),
-            displayFrame: displayFrame
-        )
-    }
-
     private func adoptDetachedWindowIfNeeded(
         at point: CGPoint,
         allowImmediate: Bool,
@@ -4199,13 +4170,6 @@ final class SnapController {
         guard let currentDisplayID = displayID(for: screen) else {
             return nil
         }
-        let initiallyLockedIDs = Set(lockedPlacements.compactMap {
-            identity, placement in
-            AssistCandidateReservationPolicy.isReserved(
-                placementZone: placement.zone
-            ) ? identity : nil
-        })
-
         if let session = activeSession {
             let groupMembers = session.groupID.flatMap {
                 explicitGroupStore.group(id: $0)?.memberIDs
@@ -4216,8 +4180,6 @@ final class SnapController {
                 memberIDs: groupMembers
                     .union(session.occupiedStableIDs)
                     .union([window.stableIdentity]),
-                excludedAssistCandidateIDs:
-                    session.excludedCandidateIDs,
                 displayID: currentDisplayID
             )
         }
@@ -4229,16 +4191,11 @@ final class SnapController {
                 targetGroupID: existing.id,
                 departingGroupID: nil,
                 memberIDs: existing.memberIDs.union([window.stableIdentity]),
-                excludedAssistCandidateIDs: initiallyLockedIDs,
                 displayID: currentDisplayID
             )
         }
 
         let scene = observationScene ?? makeSnapObservationScene()
-        let visibleWindows = scene.visibleWindows
-        let comparisonWindows = visibleWindows.filter {
-            $0.stableIdentity != window.stableIdentity
-        }
         if let stagedGroupDeparture,
            stagedGroupDeparture.draggedIdentity == window.stableIdentity {
             // The stage itself is the gesture-bound structural snapshot. A
@@ -4268,7 +4225,6 @@ final class SnapController {
                     targetGroupID: nil,
                     departingGroupID: nil,
                     memberIDs: stagedGroupDeparture.memberIDs,
-                    excludedAssistCandidateIDs: initiallyLockedIDs,
                     displayID: currentDisplayID
                 )
             }
@@ -4467,7 +4423,6 @@ final class SnapController {
                 targetGroupID: targetGroup.id,
                 departingGroupID: nil,
                 memberIDs: targetGroup.memberIDs.union([window.stableIdentity]),
-                excludedAssistCandidateIDs: initiallyLockedIDs,
                 displayID: currentDisplayID,
                 multiMemberReplacementPlan: target.3
             )
@@ -4477,117 +4432,12 @@ final class SnapController {
         }
 
 
-        // A previously snapped single window is not yet an explicit group,
-        // but a later complementary snap must still be able to finish it.
-        // Persistent locks enumerate structural candidates; Window Server owns
-        // frontmost qualification; AX broad discovery is only a cache and an
-        // exact persisted binding is resolved before the placement can use it.
-        struct ProvisionalPlacementCandidate {
-            let placement: LockedPlacement
-            let zIndex: Int
-        }
-        var provisionalCandidates: [ProvisionalPlacementCandidate] = []
-        for (identity, placement) in lockedPlacements {
-            guard SnapGroupPlacementEligibilityPolicy.canUseProvisionalPeer(
-                      existingIdentity: identity,
-                      incomingIdentity: window.stableIdentity
-                  ),
-                  placement.displayID == currentDisplayID,
-                  placement.zone != .maximize,
-                  explicitGroupStore.group(containing: identity) == nil,
-                  !(stagedGroupDeparture?.memberIDs.contains(identity) ?? false)
-            else { continue }
-
-            let conflicts = SnapPlacementLayerPolicy.conflicts(
-                existing: placement.zone,
-                incoming: zone
-            )
-            guard OccupiedSplitPolicy.permits(existing: placement.zone, incoming: zone,
-                replacementEnabled: replacementEnabled) else { continue }
-            var proposedZones = [identity: placement.zone]
-            proposedZones[window.stableIdentity] = zone
-            let logicalHandles = SplitLayoutGeometry.proposedResizeHandleGeometries(
-                zonesByIdentity: proposedZones,
-                in: screen.visibleFrame
-            )
-            let isAdjacent = SplitLayoutGeometry.connectedParticipantIDs(
-                startingWith: window.stableIdentity,
-                handles: logicalHandles
-            ).contains(identity)
-            guard conflicts || isAdjacent else { continue }
-
-            switch windowServerFrontmostEvaluation(
-                memberIDs: [identity],
-                snapshot: scene.windowServerSnapshot,
-                displayFrame: screen.frame
-            ) {
-            case .occluded:
-                continue
-            case .indeterminate:
-                // This lock could still be the structure the user is extending.
-                // Unknown frontmost evidence cannot authorize falling through
-                // to a materially different independent-group result.
-                return nil
-            case .verifiedFrontmost:
-                break
-            }
-
-            guard let physicalID = placement.cgWindowID else {
-                return nil
-            }
-            let zIndex = scene.windowServerSnapshot.firstIndex { surface in
-                surface.pid == placement.pid && surface.windowID == physicalID
-            } ?? Int.max
-            provisionalCandidates.append(ProvisionalPlacementCandidate(
-                placement: placement,
-                zIndex: zIndex
-            ))
-        }
-        provisionalCandidates.sort { lhs, rhs in
-            if lhs.zIndex != rhs.zIndex { return lhs.zIndex < rhs.zIndex }
-            return lhs.placement.stableIdentity < rhs.placement.stableIdentity
-        }
-
-        if let provisionalCandidate = provisionalCandidates.first {
-            let placement = provisionalCandidate.placement
-            if !comparisonWindows.contains(where: {
-                $0.stableIdentity == placement.stableIdentity
-            }) {
-                switch windowService.refreshedPersistedWindow(
-                    element: placement.element,
-                    pid: placement.pid,
-                    expectedStableIdentity: placement.stableIdentity,
-                    cgWindowID: placement.cgWindowID,
-                    messagingTimeout: AXMessagingTimeoutPolicy.interactiveOperation
-                ) {
-                case .available:
-                    break
-                case .missing, .unknown:
-                    // Confirmed AX absence conflicts with still-frontmost Window
-                    // Server evidence; unknown is likewise unresolved. Neither
-                    // authorizes an unrelated structural fallback here.
-                    return nil
-                }
-            }
-            return SnapPlacementContext(
-                targetGroupID: nil,
-                departingGroupID: nil,
-                memberIDs: [
-                    placement.stableIdentity,
-                    window.stableIdentity
-                ],
-                excludedAssistCandidateIDs: initiallyLockedIDs,
-                displayID: currentDisplayID
-            )
-        }
-
         // No complete frontmost group can absorb this placement. Leave every
         // existing group untouched and begin an independent split.
         return SnapPlacementContext(
             targetGroupID: nil,
             departingGroupID: nil,
             memberIDs: [window.stableIdentity],
-            excludedAssistCandidateIDs: initiallyLockedIDs,
             displayID: currentDisplayID
         )
     }
@@ -4840,23 +4690,7 @@ final class SnapController {
         let assistVisibleWindows = managedVisibleWindows()
         let candidates = assistVisibleWindows.filter { candidate in
             !session.occupiedStableIDs.contains(candidate.stableIdentity)
-                &&
-            // Selecting a member of another split would silently destroy or
-            // merge that group. A user can still transfer it explicitly by
-            // dragging it out first, which runs the normal departure path.
-            // Maximize remains recorded for restore and occlusion, but it is
-            // not split membership. Selecting it hands the window to the same
-            // Snap transaction that clears the maximized layer on commit.
-            !AssistCandidateReservationPolicy.isReserved(
-                placementZone:
-                    lockedPlacements[candidate.stableIdentity]?.zone
-            )
-                && !session.excludedCandidateIDs.contains(
-                    candidate.stableIdentity
-                )
-                && explicitGroupStore.group(
-                    containing: candidate.stableIdentity
-                ) == nil
+                && explicitGroupStore.group(containing: candidate.stableIdentity) == nil
         }
         guard !candidates.isEmpty else {
             activeSession = nil
@@ -5270,29 +5104,6 @@ final class SnapController {
         observedAssistLayoutModifierIsPressed = nil
     }
 
-    private func currentAssistCandidateExclusions(
-        from capturedIDs: Set<String>
-    ) -> Set<String> {
-        // A placement-start snapshot is not authoritative after replacement.
-        // Keep excluding only windows that are still structurally reserved now;
-        // displaced members whose lock/group was committed away must become
-        // eligible Assist candidates immediately.
-        let groupedIDs = explicitGroupStore.groups.reduce(into: Set<String>()) {
-            result, group in
-            result.formUnion(group.memberIDs)
-        }
-        return AssistCandidateExclusionPolicy.currentExclusions(
-            capturedIDs: capturedIDs,
-            lockedIDs: Set(lockedPlacements.compactMap {
-                identity, placement in
-                AssistCandidateReservationPolicy.isReserved(
-                    placementZone: placement.zone
-                ) ? identity : nil
-            }),
-            groupedIDs: groupedIDs
-        )
-    }
-
     private func makeSession(startingWith zone: SnapZone, window: ManagedWindow, screen: NSScreen) -> LayoutSession {
         let group = explicitGroupStore.group(
             containing: window.stableIdentity
@@ -5313,10 +5124,6 @@ final class SnapController {
         guard let currentDisplayID = displayID(for: screen) else {
             return LayoutSession(
                 groupID: group?.id,
-                excludedCandidateIDs: currentAssistCandidateExclusions(
-                    from: activeSnapPlacementContext?
-                        .excludedAssistCandidateIDs ?? []
-                ),
                 displayID: nil,
                 layoutZones: [],
                 occupiedZones: [:]
@@ -5331,10 +5138,6 @@ final class SnapController {
         guard !layoutZones.isEmpty else {
             return LayoutSession(
                 groupID: group?.id,
-                excludedCandidateIDs: currentAssistCandidateExclusions(
-                    from: activeSnapPlacementContext?
-                        .excludedAssistCandidateIDs ?? []
-                ),
                 displayID: currentDisplayID,
                 layoutZones: [],
                 occupiedZones: [:]
@@ -5349,10 +5152,6 @@ final class SnapController {
         occupied[zone] = window.stableIdentity
         return LayoutSession(
             groupID: group?.id,
-            excludedCandidateIDs: currentAssistCandidateExclusions(
-                from: activeSnapPlacementContext?
-                    .excludedAssistCandidateIDs ?? []
-            ),
             displayID: currentDisplayID,
             layoutZones: layoutZones,
             occupiedZones: occupied

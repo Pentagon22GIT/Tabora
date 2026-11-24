@@ -23,7 +23,9 @@ int main(void) {
                 backing:NSBackingStoreBuffered defer:NO];
             window.tabbingMode = NSWindowTabbingModeDisallowed;
             window.title = [NSString stringWithFormat:@"Tabora placement fixture %lu", i];
-            [window setFrame:frames[i].rectValue display:YES];
+            BOOL overlap = [NSProcessInfo.processInfo.arguments containsObject:@"overlap"];
+            if (overlap) window.title = @"Identical fixture";
+            [window setFrame:overlap ? loose : frames[i].rectValue display:YES];
             [window orderFront:nil];
             [windows addObject:window];
         }

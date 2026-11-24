@@ -61,7 +61,7 @@
 
 ## Group integrity
 
-- connected Groupのforeground判定はstrict orderingを維持し、同一Displayの外部surfaceまたは実際にDisplayを跨いで競合するsurfaceをraise根拠から除外してはいけない。一方、共有Window Server geometryの1 pt境界許容だけで隣接Displayのsurfaceをoccluderにしてはいけない。対象Groupのphysical display frameへscopeした同じ判定をplain-click foregroundとprovisional Snap peerへ適用し、cross-display誤mutationを防ぎながら既存raise条件を維持する。
+- connected Groupのforeground判定はstrict orderingを維持し、同一Displayの外部surfaceまたは実際にDisplayを跨いで競合するsurfaceをraise根拠から除外してはいけない。一方、共有Window Server geometryの1 pt境界許容だけで隣接Displayのsurfaceをoccluderにしてはいけない。対象Groupのphysical display frameへscopeした同じ判定をplain-click foregroundへ適用し、cross-display誤mutationを防ぎながら既存raise条件を維持する。
 1. unknown observation stateだけでgroupをretireしてはいけない。
 2. 正当なnative resize、正当なdrag departure、confirmed member closureは有効なdeparture pathとして維持する。
 3. passive geometry mismatchだけからuser departureを捏造してはいけない。

@@ -73,7 +73,11 @@ final class PlacementRoutingTests: XCTestCase {
         try exercisePlacement(threeSlots: false, constrained: true)
     }
 
-    private func exercisePlacement(threeSlots: Bool, constrained: Bool = false) throws {
+    func testOverlappingWindowsWithIdenticalTitlesKeepTheirPhysicalIDs() throws {
+        try exercisePlacement(threeSlots: false, overlapping: true)
+    }
+
+    private func exercisePlacement(threeSlots: Bool, constrained: Bool = false, overlapping: Bool = false) throws {
         guard AXIsProcessTrusted() else { throw XCTSkip("Accessibility required") }
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -86,7 +90,7 @@ final class PlacementRoutingTests: XCTestCase {
         }
         let process = Process()
         process.executableURL = executable
-        process.arguments = threeSlots ? ["three"] : []
+        process.arguments = overlapping ? ["overlap"] : (threeSlots ? ["three"] : [])
         try process.run()
         defer { if process.isRunning { process.terminate(); process.waitUntilExit() } }
         let domain = UUID().uuidString
@@ -115,6 +119,18 @@ final class PlacementRoutingTests: XCTestCase {
         }.sorted { $0.title < $1.title }
         XCTAssertEqual(windows.count, 3)
         guard windows.count == 3 else { return }
+        if overlapping {
+            let candidates = controller.managedVisibleWindows().filter { $0.pid == process.processIdentifier }
+            XCTAssertEqual(Set(candidates.compactMap(\.cgWindowID)), Set(windows.compactMap(\.cgWindowID)))
+            for (index, window) in windows.enumerated() {
+                XCTAssertEqual(candidates.first { $0.stableIdentity == window.stableIdentity }?.cgWindowID, window.cgWindowID)
+                let conflicting = window.replacingCGWindowID(windows[(index + 1) % windows.count].cgWindowID)
+                XCTAssertNil(controller.windowService.resolvingWindowServerIdentity(conflicting).cgWindowID)
+                let unresolved = window.replacingCGWindowID(nil)
+                XCTAssertEqual(controller.windowService.resolvingWindowServerIdentity(unresolved).cgWindowID, window.cgWindowID)
+            }
+            return
+        }
         let screen = try XCTUnwrap(NSScreen.screens.first { $0.visibleFrame.contains(CGPoint(x: windows[0].frame.midX, y: windows[0].frame.midY)) })
         let display = try XCTUnwrap(controller.displayID(for: screen))
         let zones: [SnapZone] = [.leftHalf, threeSlots ? .topRight : .rightHalf]
@@ -128,9 +144,9 @@ final class PlacementRoutingTests: XCTestCase {
                 pid: window.pid, stableIdentity: window.stableIdentity, cgWindowID: window.cgWindowID,
                 zone: zone, displayID: display, appliedFrame: window.frame)
         }
-        func perform(_ window: ManagedWindow, _ zone: SnapZone, success: Bool = true) {
+        func perform(_ window: ManagedWindow, _ zone: SnapZone, success: Bool = true, assist: Bool = false) {
             let done = expectation(description: "snap committed")
-            controller.snap(window, to: zone, on: screen, continueAssist: false, input: .gesture) {
+            controller.snap(window, to: zone, on: screen, continueAssist: assist, input: .gesture) {
                 XCTAssertEqual($0, success)
                 done.fulfill()
             }
@@ -199,7 +215,37 @@ final class PlacementRoutingTests: XCTestCase {
         perform(windows[2].replacingFrame(placed.appliedFrame), .maximize)
         XCTAssertEqual(controller.lockedPlacements[windows[2].stableIdentity]?.appliedFrame, screen.visibleFrame)
         XCTAssertNil(controller.explicitGroupStore.group(containing: windows[2].stableIdentity))
-        XCTAssertFalse(AssistCandidateReservationPolicy.isReserved(placementZone: controller.lockedPlacements[windows[2].stableIdentity]?.zone))
+        for (index, zone) in [(0, SnapZone.rightHalf), (1, .leftHalf)] {
+            let frame = try XCTUnwrap(controller.windowService.windowServerFrame(windows[index]))
+            perform(windows[index].replacingFrame(frame), zone, assist: true)
+            XCTAssertNil(controller.explicitGroupStore.group(containing: windows[index].stableIdentity))
+            XCTAssertTrue(controller.picker.isVisible)
+            if index == 0 {
+                controller.picker.hide(notifyCancel: true)
+                XCTAssertNil(controller.activeSession)
+                XCTAssertEqual(controller.lockedPlacements[windows[0].stableIdentity]?.zone, .rightHalf)
+            }
+        }
+        func candidateButton(in view: NSView) -> NSButton? {
+            if let button = view as? NSButton, button.subviews.contains(where: {
+                ($0 as? NSTextField)?.stringValue == windows[0].title
+            }) { return button }
+            for child in view.subviews {
+                if let button = candidateButton(in: child) { return button }
+            }
+            return nil
+        }
+        let card = try XCTUnwrap(NSApp.windows.filter(\.isVisible).compactMap { panel in
+            panel.contentView.flatMap(candidateButton)
+        }.first)
+        card.performClick(nil)
+        let deadlineForSelection = Date().addingTimeInterval(8)
+        while controller.explicitGroupStore.group(containing: windows[0].stableIdentity) == nil,
+              Date() < deadlineForSelection {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        }
+        XCTAssertEqual(controller.explicitGroupStore.group(containing: windows[0].stableIdentity)?.memberIDs,
+                       [windows[0].stableIdentity, windows[1].stableIdentity])
     }
     private func buildFixture(in folder: URL) throws -> URL {
         let contents = folder.appendingPathComponent("PlacementFixture.app/Contents")

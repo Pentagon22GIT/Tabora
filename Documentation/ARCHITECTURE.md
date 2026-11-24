@@ -23,6 +23,7 @@
 
 - ディスプレイUUIDごとの左右・上下比率は、新しいスナップの希望枠に使用します。既存の仕切りとアプリのサイズ制約を共通の配置計算に渡します。
 - ドラッグ、コマンド、メニュー、ジェスチャーは同じ配置トランザクションへ進みます。ジェスチャーはOption付き精密スクロールの開始時に対象を固定し、終了時にPIDとウィンドウIDを再照合します。入力監視は設定ONの間だけ登録します。登録失敗時は設定を保持し、有効かつアクティブなセッションで既存の1 Hz Recoveryから再登録します。権限確認後も登録失敗が続く場合は再試行間隔を最大60秒まで延ばし、登録成功または設定OFFで再試行を解除します。開始時のOptionを一度離すまでAssistの修飾キーとして扱いません。
+- Assistを閉じた単独配置はその位置に残り、別の単独配置とは自動結合しません。次のAssistでは現在のセッションで使用中のウィンドウと成立済みグループのメンバーを除き、単独配置も選択できます。
 - 外部からの占有枠の置き換えは明示設定で許可します。グループ内のジェスチャー交換は移動元・相手の現在枠から計画し、確定時にもグループ世代と両者のゾーンを検証します。
 
 - `SnapController.swift` はdrag観測、snap選択、Assist、restore state、Recovery、高位アプリstateを統括します。
@@ -69,7 +70,7 @@
 
 ## ForegroundとMission Control
 
-- connected Groupのforeground判定はPreviewのsemantic HOT/COLDとは分離し、従来のstrict Group orderingを維持します。Group member間に同一Display上の外部surfaceが挟まる場合や、外部windowが実際にGroupのDisplayへ跨ぐ場合は引き続きraise対象です。一方、共有1 pt境界許容だけで隣接Displayのwindowが交差したように見えるケースは、対象Groupの`screen.frame`内へgeometryをclipして除外します。plain click時のwhole-group raiseとprovisional Snap peer前面判定は同じphysical Display scopeを使用し、条件を緩めず不要なcross-display mutationだけを防ぎます。
+- connected Groupのforeground判定はPreviewのsemantic HOT/COLDとは分離し、従来のstrict Group orderingを維持します。Group member間に同一Display上の外部surfaceが挟まる場合や、外部windowが実際にGroupのDisplayへ跨ぐ場合は引き続きraise対象です。一方、共有1 pt境界許容だけで隣接Displayのwindowが交差したように見えるケースは、対象Groupの`screen.frame`内へgeometryをclipして除外します。plain click時のwhole-group raiseは対象のphysical Display scopeを使用し、条件を緩めず不要なcross-display mutationだけを防ぎます。
 
 - v2.0.0のSpace関連処理は`WindowSpaces`、`GroupSpaceMigration`、`TaboraSkyLightBridge`へ分離します。`SnapController`は既存状態との接続点だけを保持し、private symbol、selector、ABIを直接参照しません。
 - `SkyLightWindowSpaceBackend`はWindow→Space観測とbridged move dispatchだけを担当します。dispatch成功を物理移送成功とはみなさず、`GroupSpaceMigrationLine`が全memberのdestination membershipを再観測します。Proxy dropのdestinationとexact member/layoutはMission Control内でgroup単位にcaptureしますが、private moveはMission Control自身のmanaged-window transform終了を2回・0.15秒以上確認してからFIFOで一件ずつ発行します。対象groupがSpace分離していても少なくとも1 memberの通常geometryを強い終了証拠にでき、全memberが非activeならActive Space通知なしに推測しません。複数groupを同じMission Control sessionで受け付けてもWindowServer operation、membership検証、AX layoutは並列化しません。

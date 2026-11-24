@@ -152,13 +152,6 @@ enum SnapGroupPlacementEligibilityPolicy {
         let identityCounts: [String: Int]
     }
 
-    static func canUseProvisionalPeer(
-        existingIdentity: String,
-        incomingIdentity: String
-    ) -> Bool {
-        existingIdentity != incomingIdentity
-    }
-
     static func frontmostGroupIDs(
         groups: [SnapGroup],
         draggedSurface: WindowServerSelectionSnapshot?,
@@ -277,25 +270,6 @@ enum SnapGroupPlacementEligibilityPolicy {
         }
         if canExtend { return 1 }
         return nil
-    }
-}
-
-enum AssistCandidateExclusionPolicy {
-    static func currentExclusions(
-        capturedIDs: Set<String>,
-        lockedIDs: Set<String>,
-        groupedIDs: Set<String>
-    ) -> Set<String> {
-        capturedIDs.intersection(lockedIDs.union(groupedIDs))
-    }
-}
-
-enum AssistCandidateReservationPolicy {
-    /// Maximize is a reversible visual/restore layer. Only split placements
-    /// reserve a window from Assist candidate selection.
-    static func isReserved(placementZone: SnapZone?) -> Bool {
-        guard let placementZone else { return false }
-        return placementZone != .maximize
     }
 }
 

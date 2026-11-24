@@ -578,17 +578,18 @@ final class AXWindowService {
         allowsExactIdentityWithTransformedGeometry: Bool = false
     ) -> ManagedWindow {
         let records = onscreenWindowRecords()
-        if let windowID = window.cgWindowID,
-           records.contains(where: { record in
-               guard record.id == windowID, record.pid == window.pid else {
-                   return false
-               }
-               return allowsExactIdentityWithTransformedGeometry
-                   || visibleGeometryMatches(axWindow: window, cgWindow: record)
-           }) {
-            return window
-        }
         let unresolved = window.replacingCGWindowID(nil)
+        let observedID = runtimeWindowIDResolver.resolve(window.element)
+        if let cachedID = window.cgWindowID, let observedID, cachedID != observedID {
+            return unresolved
+        }
+        if let id = observedID ?? window.cgWindowID {
+            if records.contains(where: { record in
+                record.pid == window.pid && record.id == id &&
+                    (allowsExactIdentityWithTransformedGeometry || visibleGeometryMatches(axWindow: window, cgWindow: record))
+            }) { return window.replacingCGWindowID(id) }
+            if observedID != nil { return unresolved }
+        }
         let candidates = records.filter {
             $0.pid == unresolved.pid
                 && visibleGeometryMatches(axWindow: unresolved, cgWindow: $0)
@@ -2601,8 +2602,15 @@ final class AXWindowService {
         let appCGWindows = cgWindows
             .filter { $0.pid == pid }
             .sorted { $0.zIndex < $1.zIndex }
-        let scoreMatrix: [[CGFloat?]] = baseWindows.map { window in
+        let exactIDs = baseWindows.map { runtimeWindowIDResolver.resolve($0.element) }
+        let claimedIDs = Set(exactIDs.compactMap { $0 })
+        let scoreMatrix: [[CGFloat?]] = zip(baseWindows, exactIDs).map { window, exactID in
             appCGWindows.map { record in
+                if let exactID {
+                    guard record.id == exactID else { return nil }
+                } else if claimedIDs.contains(record.id) {
+                    return nil
+                }
                 guard visibleGeometryMatches(
                     axWindow: window,
                     cgWindow: record

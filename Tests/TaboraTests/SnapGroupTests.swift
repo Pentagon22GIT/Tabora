@@ -3,21 +3,6 @@ import XCTest
 @testable import Tabora
 
 final class SnapGroupTests: XCTestCase {
-    func testProvisionalPlacementCannotUseIncomingWindowAsItsOwnPeer() {
-        XCTAssertFalse(
-            SnapGroupPlacementEligibilityPolicy.canUseProvisionalPeer(
-                existingIdentity: "same-window",
-                incomingIdentity: "same-window"
-            )
-        )
-        XCTAssertTrue(
-            SnapGroupPlacementEligibilityPolicy.canUseProvisionalPeer(
-                existingIdentity: "existing-window",
-                incomingIdentity: "incoming-window"
-            )
-        )
-    }
-
     func testReplacementRevalidationUsesExactStructuralSignature() {
         let members: Set<String> = ["left", "right"]
         let zones: [String: SnapZone] = [
@@ -587,40 +572,6 @@ final class SnapGroupTests: XCTestCase {
                 canExtend: false
             ),
             0
-        )
-    }
-
-    func testAssistExclusionsReleaseDisplacedMembersAfterCommittedReplacement() {
-        XCTAssertEqual(
-            AssistCandidateExclusionPolicy.currentExclusions(
-                capturedIDs: ["retained", "displaced", "foreign"],
-                lockedIDs: ["retained", "foreign"],
-                groupedIDs: ["retained", "foreign"]
-            ),
-            Set(["retained", "foreign"])
-        )
-    }
-
-    func testAssistReservationDoesNotTreatMaximizeAsSplitMembership() {
-        XCTAssertFalse(
-            AssistCandidateReservationPolicy.isReserved(
-                placementZone: nil
-            )
-        )
-        XCTAssertFalse(
-            AssistCandidateReservationPolicy.isReserved(
-                placementZone: .maximize
-            )
-        )
-        XCTAssertTrue(
-            AssistCandidateReservationPolicy.isReserved(
-                placementZone: .leftHalf
-            )
-        )
-        XCTAssertTrue(
-            AssistCandidateReservationPolicy.isReserved(
-                placementZone: .topRight
-            )
         )
     }
 

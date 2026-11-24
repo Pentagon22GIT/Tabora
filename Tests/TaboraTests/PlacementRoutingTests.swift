@@ -198,6 +198,8 @@ final class PlacementRoutingTests: XCTestCase {
         let placed = try XCTUnwrap(controller.lockedPlacements[windows[2].stableIdentity])
         perform(windows[2].replacingFrame(placed.appliedFrame), .maximize)
         XCTAssertEqual(controller.lockedPlacements[windows[2].stableIdentity]?.appliedFrame, screen.visibleFrame)
+        XCTAssertNil(controller.explicitGroupStore.group(containing: windows[2].stableIdentity))
+        XCTAssertFalse(AssistCandidateReservationPolicy.isReserved(placementZone: controller.lockedPlacements[windows[2].stableIdentity]?.zone))
     }
     private func buildFixture(in folder: URL) throws -> URL {
         let contents = folder.appendingPathComponent("PlacementFixture.app/Contents")

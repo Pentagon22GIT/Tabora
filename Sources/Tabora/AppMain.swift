@@ -14,6 +14,9 @@ final class TaboraApp: NSObject, NSApplicationDelegate {
     private var settingsWindowIsVisible = false
     private lazy var settingsWindow: SettingsWindowController = {
         let controller = SettingsWindowController()
+        controller.gestureRegistrationPending = { [weak self] in
+            self?.controller.retryGestureRegistration != nil
+        }
         controller.onVisibilityChange = { [weak self] isVisible in
             self?.settingsWindowIsVisible = isVisible
             self?.controller.setApplicationUIVisible(isVisible)
@@ -106,7 +109,7 @@ final class TaboraApp: NSObject, NSApplicationDelegate {
         gestureObserver = NotificationCenter.default.addObserver(
             forName: AppSettings.gestureDidChange, object: nil, queue: .main
         ) { [weak self] _ in self?.configureGesture() }
-        configureGesture()
+        controller.recoverShortcutRegistration = { [weak self] in self?.shortcutManager.retryMissingBindingsIfDue() }
         configureStatusItem()
         configureShortcuts()
         controller.onGroupSpaceMigrationAPIUnavailable = { [weak self] notice in
@@ -118,6 +121,7 @@ final class TaboraApp: NSObject, NSApplicationDelegate {
             queue: .main
         ) { [weak self] _ in self?.configureShortcuts() }
         controller.start()
+        configureGesture()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -165,16 +169,29 @@ final class TaboraApp: NSObject, NSApplicationDelegate {
     }
 
     private func configureGesture() {
-        if AppSettings.shared.gestureSnapEnabled {
-            if !gestures.start() { AppSettings.shared.gestureSnapEnabled = false }
-        } else {
+        controller.retryGestureRegistration = nil
+        guard AppSettings.shared.gestureSnapEnabled else {
             gestures.stop()
+            return
+        }
+        guard !gestures.start() else { return }
+        var nextAttempt: TimeInterval = 0
+        var retryDelay: TimeInterval = 1
+        controller.retryGestureRegistration = { [weak self] in
+            let now = ProcessInfo.processInfo.systemUptime
+            guard let self, now >= nextAttempt, AXIsProcessTrusted() else { return }
+            if self.gestures.start() {
+                self.controller.retryGestureRegistration = nil
+            } else {
+                nextAttempt = now + retryDelay
+                retryDelay = min(retryDelay * 2, 60)
+            }
         }
     }
 
     private func configureShortcuts() {
         shortcutManager.register(bindings: AppSettings.shared.shortcuts) { [weak self] action in
-            guard let self else { return }
+            guard let self, self.controller.isControllerRunning, self.controller.isUserSessionActive else { return }
             if action == .restoreLast {
                 self.controller.restoreLast()
             } else if let zone = action.zone {

@@ -1,4 +1,5 @@
 import AppKit
+import OSLog
 
 /// Tracks the particular Option press that completed a gesture, including the
 /// interval before the asynchronous placement opens Assist.
@@ -17,6 +18,7 @@ final class GestureOptionPress {
 
 /// Own a precise scroll sequence only when Option was held at its beginning.
 final class TrackpadSnapMonitor {
+    private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Tabora", category: "GestureSnap")
     var target: (() -> WindowServerSelectionSnapshot?)?
     var snap: ((SnapZone, WindowServerSelectionSnapshot, GestureOptionPress) -> Void)?
     private weak var gesturePress: GestureOptionPress?
@@ -48,12 +50,18 @@ final class TrackpadSnapMonitor {
                        flags.intersection([.maskAlternate, .maskControl, .maskShift, .maskCommand]) != .maskAlternate {
                         monitor.cancelled = true
                     }
-                } else if type == .scrollWheel, let scroll = NSEvent(cgEvent: event),
+                } else if type == .scrollWheel,
+                          event.flags.contains(.maskAlternate) || monitor.selection != nil || monitor.suppressMomentum,
+                          let scroll = NSEvent(cgEvent: event),
                           monitor.consume(scroll) { return nil }
                 return Unmanaged.passUnretained(event)
             }, userInfo: Unmanaged.passUnretained(self).toOpaque()) else { return false }
+        guard let source = CFMachPortCreateRunLoopSource(nil, port, 0) else {
+            CFMachPortInvalidate(port)
+            return false
+        }
         tap = port
-        source = CFMachPortCreateRunLoopSource(nil, port, 0)
+        self.source = source
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: port, enable: true)
         return true
@@ -89,13 +97,16 @@ final class TrackpadSnapMonitor {
         guard precise else { return false }
         if !momentum.isEmpty {
             let suppress = suppressMomentum
-            if momentum.contains(.ended) { suppressMomentum = false }
+            if !momentum.intersection([.ended, .cancelled]).isEmpty { suppressMomentum = false }
             return suppress
         }
         let optionOnly = modifiers.intersection([.option, .control, .shift, .command]) == .option
         if phase.contains(.began) {
             suppressMomentum = false
             selection = optionOnly ? target?() : nil
+            if optionOnly && selection == nil {
+                logger.debug("Gesture start rejected: no eligible selection")
+            }
             distance = .zero
             cancelled = false
         }
@@ -112,7 +123,11 @@ final class TrackpadSnapMonitor {
                 gesturePress = press
                 let acceptedGeneration = generation
                 DispatchQueue.main.async { [weak self] in
-                    guard let self, self.generation == acceptedGeneration, self.target?() == selection else { return }
+                    guard let self, self.generation == acceptedGeneration else { return }
+                    guard self.target?() == selection else {
+                        self.logger.debug("Gesture completion rejected: selection changed or unavailable")
+                        return
+                    }
                     self.snap?(zone, selection, press)
                 }
             }

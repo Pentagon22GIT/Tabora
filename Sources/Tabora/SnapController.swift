@@ -2173,6 +2173,9 @@ final class SnapController {
         }
     }
 
+    var recoverShortcutRegistration: (() -> Void)?
+    var retryGestureRegistration: (() -> Void)?
+
     private func recoverIfNeeded() {
         updateSelectionMonitoringState()
         guard isEnabled else { return }
@@ -2184,6 +2187,8 @@ final class SnapController {
         // inactive. AX census, preview capture and presentation rebuilding are
         // derived desktop work and resume from fresh evidence on activation.
         guard isUserSessionActive else { return }
+        recoverShortcutRegistration?()
+        retryGestureRegistration?()
         activeWindowObserver.observeFrontmostApplication()
         // Explicit constraint measurement owns the external window mutation
         // until its restore completion. Recovery may keep its monitors armed,

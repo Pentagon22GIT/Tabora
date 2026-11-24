@@ -163,7 +163,10 @@ final class NativeWindowIntegrationTests: XCTestCase {
         let controller = SnapController()
         controller.isControllerRunning = true
         controller.isReconcilingPlacementMutation = true
-        let bounds = CGRect(x: 120, y: 180, width: 720, height: 560)
+        let visible = try XCTUnwrap(NSScreen.screens.first).visibleFrame.insetBy(dx: 24, dy: 24)
+        let bounds = CGRect(x: ceil(visible.minX), y: ceil(visible.minY),
+                            width: 2 * floor(min(720, visible.width) / 2),
+                            height: 2 * floor(min(560, visible.height) / 2))
         let windows = zones.indices.map { index -> NSWindow in
             let window = NSWindow(contentRect: zones[index].frame(in: bounds),
                                   styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)

@@ -163,7 +163,10 @@ final class NativeWindowIntegrationTests: XCTestCase {
         let controller = SnapController()
         controller.isControllerRunning = true
         controller.isReconcilingPlacementMutation = true
-        let bounds = CGRect(x: 120, y: 180, width: 720, height: 560)
+        let visible = try XCTUnwrap(NSScreen.screens.first).visibleFrame.insetBy(dx: 24, dy: 24)
+        let bounds = CGRect(x: ceil(visible.minX), y: ceil(visible.minY),
+                            width: 2 * floor(min(720, visible.width) / 2),
+                            height: 2 * floor(min(560, visible.height) / 2))
         let windows = zones.indices.map { index -> NSWindow in
             let window = NSWindow(contentRect: zones[index].frame(in: bounds),
                                   styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
@@ -177,7 +180,20 @@ final class NativeWindowIntegrationTests: XCTestCase {
             return window
         }
         defer { controller.stop(); windows.forEach { $0.close() } }
-        RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+        // WindowServer may temporarily report compositor-scaled bounds for our
+        // windows. Establish the physical fixture before exercising closure.
+        let service = controller.windowService
+        let expected = zones.map { $0.frame(in: bounds) }
+        let layoutDeadline = Date().addingTimeInterval(2)
+        var observed: [CGRect?]
+        repeat {
+            observed = windows.map { service.windowServerFrame(pid: getpid(), windowID: CGWindowID($0.windowNumber)) }
+            if zip(observed, expected).allSatisfy({ $0 == $1 }) { break }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.03))
+        } while Date() < layoutDeadline
+        guard zip(observed, expected).allSatisfy({ $0 == $1 }) else {
+            return XCTFail("Before closure: expected fixture frames \(expected), observed \(observed)")
+        }
         var raw: CFTypeRef?
         XCTAssertEqual(AXUIElementCopyAttributeValue(AXUIElementCreateApplication(getpid()),
             kAXWindowsAttribute as CFString, &raw), .success)

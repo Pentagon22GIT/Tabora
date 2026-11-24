@@ -865,6 +865,24 @@ final class SplitLayoutTests: XCTestCase {
         XCTAssertEqual(frames["bottom-right"]?.height ?? -1, 400, accuracy: 0.001)
     }
 
+    func testLaterQuarterMaximumHeightMovesBothTopWindowsToOneDivider() throws {
+        let screen = CGRect(x: -1200, y: 40, width: 1000, height: 800)
+        let left = CGRect(x: -1200, y: 440, width: 500, height: 400)
+        let right = CGRect(x: -700, y: 440, width: 500, height: 400)
+        var limits = AppConstraintLimits.unknown
+        limits.maxHeight = 300
+        let result = SplitLayoutGeometry.adaptiveConstraintPartition(members: [
+            .init(stableIdentity: "left", zone: .topLeft, referenceFrame: left, limits: .unknown),
+            .init(stableIdentity: "right", zone: .topRight, referenceFrame: right, limits: limits)
+        ], incomingIdentity: "right", preferredIncomingFrame: right, in: screen)
+        guard case .ready(let frames) = result else { return XCTFail("Expected a shared divider") }
+        for id in ["left", "right"] {
+            let frame = try XCTUnwrap(frames[id])
+            XCTAssertEqual(frame.height, 300)
+            XCTAssertEqual(frame.maxY, screen.maxY)
+        }
+    }
+
     func testAdaptiveConstraintPartitionFourQuarterTopologyUnifiesBothAxes() {
         let frame = CGRect(x: 0, y: 0, width: 1000, height: 1000)
         var topRightLimits = AppConstraintLimits.unknown

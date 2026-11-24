@@ -21,8 +21,8 @@ final class TaboraApp: NSObject, NSApplicationDelegate {
             self?.settingsWindowIsVisible = isVisible
             self?.controller.setApplicationUIVisible(isVisible)
         }
-        controller.onConstraintMeasurementWillBegin = { [weak self] in
-            self?.controller.beginConstraintMeasurement() ?? false
+        controller.onConstraintMeasurementWillBegin = { [weak self] identity in
+            self?.controller.beginConstraintMeasurement(windowIdentity: identity) ?? false
         }
         controller.onConstraintMeasurementDidEnd = { [weak self] in
             self?.controller.endConstraintMeasurement()

@@ -275,6 +275,7 @@ enum ExplicitGroupDepartureReason: Equatable {
     case nativeResizeDeparture
     case userDragDeparture
     case explicitDetach
+    case constraintMeasurement
     case confirmedConstraintRejection
     case confirmedMemberClosure
     case confirmedSpaceSeparation
@@ -828,6 +829,7 @@ final class SnapController {
     var lastValidatedRecoveryInteractionRegions: [CGRect] = []
     private var shouldRestoreHandlesAfterPointerInteraction = false
     var isApplicationUIVisible = false
+    var measuredGroup: ExplicitGroupDepartureSnapshot?
     var isConstraintMeasurementActive = false
     var isConstraintPermissionPromptActive = false
     var isRestoreTransactionActive = false
@@ -1033,6 +1035,7 @@ final class SnapController {
         if permissionConstraintMeasurementIsActive {
             permissionConstraintMeasurementIsActive = false
             permissionConstraintMeasurementEngine.cancel { [weak self] _ in
+                self?.finishMeasuredGroup()
                 self?.isConstraintMeasurementActive = false
             }
         }
@@ -1320,7 +1323,7 @@ final class SnapController {
     }
 
     @discardableResult
-    func beginConstraintMeasurement() -> Bool {
+    func beginConstraintMeasurement(windowIdentity: String? = nil) -> Bool {
         guard !isConstraintMeasurementActive,
               !isConstraintPermissionPromptActive,
               !isRestoreTransactionActive,
@@ -1335,12 +1338,22 @@ final class SnapController {
             return false
         }
         isConstraintMeasurementActive = true
+        measuredGroup = windowIdentity.flatMap { explicitGroupDepartureSnapshot(containing: $0) }
         suppressPresentationForApplicationOwnedWindowMutation()
         return true
     }
 
+    func finishMeasuredGroup() {
+        guard let captured = measuredGroup else { return }
+        measuredGroup = nil
+        guard let current = explicitGroupStore.group(id: captured.groupID),
+              current.memberIDs == captured.memberIDs else { return }
+        retireExplicitGroup(captured, reason: .constraintMeasurement)
+    }
+
     func endConstraintMeasurement() {
         guard isConstraintMeasurementActive else { return }
+        finishMeasuredGroup()
         isConstraintMeasurementActive = false
         if isEnabled, isControllerRunning, !isApplicationInteractionSuppressed {
             // The measurement engine calls this only after its final restore
@@ -4746,6 +4759,26 @@ final class SnapController {
         }?.union(session.occupiedStableIDs) ?? session.occupiedStableIDs
         let candidatesByZone: [SnapZone: [ManagedWindow]]
         let occupiedZones = Set(session.occupiedZones.keys)
+        let scene = makeSnapObservationScene(visibleWindows: assistVisibleWindows)
+        func candidatesForZones(_ zones: [SnapZone]) -> [SnapZone: [ManagedWindow]] {
+            var result: [SnapZone: [ManagedWindow]] = [:]
+            for zone in zones where SplitLayoutGeometry.logicalSplitTopologyIsConnectedAndNonOverlapping(
+                zones: Array(occupiedZones) + [zone]
+            ) {
+                let desired = recordedSnapFrame(for: zone, on: screen, memberScope: assistMemberScope)
+                result[zone] = candidates.filter { candidate in
+                    guard let displayID = session.displayID else { return true }
+                    let context = SnapPlacementContext(targetGroupID: session.groupID, departingGroupID: nil,
+                        memberIDs: assistMemberScope.union([candidate.stableIdentity]), displayID: displayID)
+                    if case .confirmedInfeasible = initialConstraintSnapPlan(candidate: candidate,
+                        desiredFrame: desired, zone: zone, on: screen, context: context, observationScene: scene) {
+                        return false
+                    }
+                    return true
+                }
+            }
+            return result
+        }
         if settings.assistLayoutSwitchingEnabled,
            let threeWindowLayout = AssistCompletionLayoutPolicy
                 .threeWindowZones(occupiedZones: occupiedZones) {
@@ -4753,11 +4786,7 @@ final class SnapController {
                 .fourWindowZones.filter {
                     session.occupiedZones[$0] == nil
                 }
-            let fourWindowCandidates = assistCandidatesByZone(
-                zones: fourWindowRemaining,
-                candidates: candidates,
-                occupiedZones: occupiedZones
-            )
+            let fourWindowCandidates = candidatesForZones(fourWindowRemaining)
             let fourWindowAssignmentCount = AssistCandidateAssignmentPolicy
                 .maximumDistinctAssignmentCount(
                     zones: fourWindowRemaining,
@@ -4768,11 +4797,7 @@ final class SnapController {
             let threeWindowRemaining = threeWindowLayout.filter {
                 session.occupiedZones[$0] == nil
             }
-            let threeWindowCandidates = assistCandidatesByZone(
-                zones: threeWindowRemaining,
-                candidates: candidates,
-                occupiedZones: occupiedZones
-            )
+            let threeWindowCandidates = candidatesForZones(threeWindowRemaining)
             let mergedHalfCandidateCount = Set(
                 threeWindowCandidates.values.flatMap {
                     $0.map(\.stableIdentity)
@@ -4809,11 +4834,7 @@ final class SnapController {
             let twoWindowRemaining = twoWindowLayout.filter {
                 session.occupiedZones[$0] == nil
             }
-            let twoWindowCandidates = assistCandidatesByZone(
-                zones: twoWindowRemaining,
-                candidates: candidates,
-                occupiedZones: occupiedZones
-            )
+            let twoWindowCandidates = candidatesForZones(twoWindowRemaining)
             let oppositeHalfCandidateCount = Set(
                 twoWindowCandidates.values.flatMap {
                     $0.map(\.stableIdentity)
@@ -4822,18 +4843,36 @@ final class SnapController {
             let splitRemaining = threeWindowLayout.filter {
                 session.occupiedZones[$0] == nil
             }
-            let splitCandidates = assistCandidatesByZone(
-                zones: splitRemaining,
-                candidates: candidates,
-                occupiedZones: occupiedZones
-            )
-            let splitAssignmentCount = AssistCandidateAssignmentPolicy
+            let splitCandidates = candidatesForZones(splitRemaining)
+            var splitAssignmentCount = AssistCandidateAssignmentPolicy
                 .maximumDistinctAssignmentCount(
                     zones: splitRemaining,
                     candidateIDsByZone: splitCandidates.mapValues {
                         Set($0.map(\.stableIdentity))
                     }
                 )
+            // Individual fits can require incompatible divider positions. Before
+            // forcing a different layout, verify one pair against a single grid.
+            if oppositeHalfCandidateCount == 0, splitAssignmentCount == 2,
+               let occupied = session.occupiedZones.first, splitRemaining.count == 2 {
+                func member(_ id: String, _ zone: SnapZone) -> CanonicalSplitPartitionMember {
+                    .init(stableIdentity: id, zone: zone, referenceFrame: zone.frame(in: screen),
+                          limits: scene.constraintObservationsByIdentity[id]?.limits ?? .unknown)
+                }
+                let first = splitRemaining[0], second = splitRemaining[1]
+                let fixed = member(occupied.value, occupied.key)
+                let fits = (splitCandidates[first] ?? []).contains { lhs in
+                    (splitCandidates[second] ?? []).contains { rhs in
+                        guard lhs.stableIdentity != rhs.stableIdentity else { return false }
+                        let members = [fixed, member(lhs.stableIdentity, first), member(rhs.stableIdentity, second)]
+                        if case .confirmedInfeasible = SplitLayoutGeometry.canonicalConstraintPartition(
+                            members: members, incomingIdentity: rhs.stableIdentity, in: screen.visibleFrame
+                        ) { return false }
+                        return true
+                    }
+                }
+                if !fits { splitAssignmentCount = 0 }
+            }
             guard let completionLayout = AssistCompletionLayoutPolicy
                 .completionLayoutStartingFromHalf(
                     occupiedZones: occupiedZones,
@@ -4854,11 +4893,7 @@ final class SnapController {
                 ? twoWindowCandidates
                 : splitCandidates
         } else {
-            candidatesByZone = assistCandidatesByZone(
-                zones: remaining,
-                candidates: candidates,
-                occupiedZones: occupiedZones
-            )
+            candidatesByZone = candidatesForZones(remaining)
         }
 
         let eligibleCandidateCount = Set(
@@ -5053,20 +5088,6 @@ final class SnapController {
             )
         }
         updateAssistLayoutModifierMonitoringState()
-    }
-
-    private func assistCandidatesByZone(
-        zones: [SnapZone],
-        candidates: [ManagedWindow],
-        occupiedZones: Set<SnapZone>
-    ) -> [SnapZone: [ManagedWindow]] {
-        var result: [SnapZone: [ManagedWindow]] = [:]
-        for zone in zones where SplitLayoutGeometry.logicalSplitTopologyIsConnectedAndNonOverlapping(
-            zones: Array(occupiedZones) + [zone]
-        ) {
-            result[zone] = candidates
-        }
-        return result
     }
 
     private var gestureOptionPress: GestureOptionPress?

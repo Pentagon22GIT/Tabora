@@ -159,14 +159,14 @@
 "constraints.alert.select_window.title" = "選取目標視窗";
 "constraints.alert.select_window.detail" = "請選取要測量大小的視窗。";
 "constraints.alert.display_unavailable.detail" = "無法確認目標視窗所在的顯示器。";
-"constraints.alert.measure.detail" = "將移動視窗以測量其最小與最大大小。";
+"constraints.alert.measure.detail" = "將移動視窗以測量其最小與最大大小。若目標視窗屬於某個群組，測量結束時將解散該群組。";
 "constraints.alert.busy.title" = "請在目前操作完成後再試";
 "constraints.alert.busy.detail" = "正在貼齊、調整大小或執行其他視窗操作時無法測量大小。";
 "constraints.alert.values.title" = "%@ 的大小限制";
 "constraints.alert.values.detail" = "這些是目前儲存的數值。若要更新，請選擇「測量大小」。";
 "constraints.alert.delete.title" = "要刪除 %@ 的記錄嗎？";
 "constraints.permission.title" = "偵測到 %@ 可能有大小限制";
-"constraints.permission.detail" = "是否允許記錄，並移動目標視窗以測量所有可用的最小與最大大小？";
+"constraints.permission.detail" = "是否允許記錄，並移動目標視窗以測量所有可用的最小與最大大小？若目標視窗屬於某個群組，測量結束時將解散該群組。";
 "constraints.multiple_apps" = "%d 個 App";
 
 "group.title" = "群組";

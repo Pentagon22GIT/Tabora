@@ -272,12 +272,20 @@ final class SnapZoneTests: XCTestCase {
             ),
             [.leftHalf, .rightHalf]
         )
-        XCTAssertNil(
+        XCTAssertEqual(
             AssistCompletionLayoutPolicy.completionLayoutStartingFromHalf(
                 occupiedZones: occupied,
                 modifierIsPressed: false,
                 oppositeHalfCandidateCount: 0,
                 maximumDistinctSplitAssignments: 2
+            ), [.leftHalf, .topRight, .bottomRight]
+        )
+        XCTAssertNil(
+            AssistCompletionLayoutPolicy.completionLayoutStartingFromHalf(
+                occupiedZones: occupied,
+                modifierIsPressed: false,
+                oppositeHalfCandidateCount: 0,
+                maximumDistinctSplitAssignments: 1
             )
         )
     }

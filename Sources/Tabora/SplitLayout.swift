@@ -355,13 +355,12 @@ enum SplitLayoutGeometry {
                 : .confirmedInfeasible
         }
 
-        // Share divider coordinates even when the opposite cells are still vacant.
-        // If the limits preclude a common intersection, try the existing segmented layout.
-        if members.count > 1,
-           case .ready(let frames) = canonicalConstraintPartition(members: members,
-               incomingIdentity: incomingIdentity, preferredIncomingFrame: preferredIncomingFrame,
-               in: visibleFrame) {
-            return .ready(frames: frames)
+        if members.count > 1 {
+            let shared = canonicalConstraintPartition(members: members, incomingIdentity: incomingIdentity,
+                preferredIncomingFrame: preferredIncomingFrame, in: visibleFrame)
+            // A completed four-quarter group must share a single intersection.
+            if members.count == 4 { return shared }
+            if case .ready = shared { return shared }
         }
 
         var occupiedCells = Set<SnapZone>()

@@ -159,14 +159,14 @@
 "constraints.alert.select_window.title" = "Select a Window";
 "constraints.alert.select_window.detail" = "Select the window whose sizes you want to measure.";
 "constraints.alert.display_unavailable.detail" = "The display containing the target window could not be identified.";
-"constraints.alert.measure.detail" = "The window will move while Tabora measures its minimum and maximum sizes.";
+"constraints.alert.measure.detail" = "The window will move while Tabora measures its minimum and maximum sizes. If the window belongs to a group, Tabora dissolves that group when measurement ends.";
 "constraints.alert.busy.title" = "Try Again After the Current Operation Finishes";
 "constraints.alert.busy.detail" = "Sizes can’t be measured during snapping, resizing, or another window operation.";
 "constraints.alert.values.title" = "Size Constraints for %@";
 "constraints.alert.values.detail" = "These are the currently saved values. To update them, choose Measure Sizes.";
 "constraints.alert.delete.title" = "Delete the record for %@?";
 "constraints.permission.title" = "Possible Size Constraints Detected for %@";
-"constraints.permission.detail" = "Allow recording and move the target window to measure all available minimum and maximum sizes?";
+"constraints.permission.detail" = "Allow recording and move the target window to measure all available minimum and maximum sizes? If the window belongs to a group, Tabora dissolves that group when measurement ends.";
 "constraints.multiple_apps" = "%d Apps";
 
 "group.title" = "Group";

@@ -3,6 +3,29 @@ import XCTest
 @testable import Tabora
 
 final class NativeWindowIntegrationTests: XCTestCase {
+    func testConstraintMeasurementRetiresOnlyTheMeasuredWindowsGroup() throws {
+        let controller = SnapController()
+        defer { controller.stop() }
+        let bounds = CGRect(x: 0, y: 0, width: 800, height: 600)
+        func makeGroup(_ prefix: String) throws -> SnapGroup {
+            let placements = [SnapZone.leftHalf, .rightHalf].enumerated().map { index, zone in
+                SplitPlacementGeometry(stableIdentity: "\(prefix)-\(index)", zone: zone,
+                                       frame: zone.frame(in: bounds))
+            }
+            return try XCTUnwrap(controller.explicitGroupStore.reconcileAfterLayoutMutation(
+                preferredMemberID: placements[0].stableIdentity, displayID: CGMainDisplayID(),
+                placements: placements, detachedConnections: []))
+        }
+        let measured = try makeGroup("measured")
+        let other = try makeGroup("other")
+        XCTAssertTrue(controller.beginConstraintMeasurement(windowIdentity: "measured-0"))
+        XCTAssertNotNil(controller.explicitGroupStore.group(id: measured.id))
+        controller.endConstraintMeasurement()
+        XCTAssertNil(controller.explicitGroupStore.group(id: measured.id))
+        XCTAssertNotNil(controller.explicitGroupStore.group(id: other.id))
+        XCTAssertNil(controller.measuredGroup)
+    }
+
     func testPhysicalLivenessDistinguishesMinimizedClosedAndWrongOwner() throws {
         guard AXIsProcessTrusted() else { throw XCTSkip("Accessibility required") }
         let app = NSApplication.shared

@@ -40,7 +40,7 @@ enum SettingsScrollGeometry {
 final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     var gestureRegistrationPending: (() -> Bool)?
     var onVisibilityChange: ((Bool) -> Void)?
-    var onConstraintMeasurementWillBegin: (() -> Bool)?
+    var onConstraintMeasurementWillBegin: ((String) -> Bool)?
     var onConstraintMeasurementDidEnd: (() -> Void)?
     var onMissionControlPreviewMemoryLimitChange: ((Int) -> Void)?
     var onMissionControlPreviewCacheClear: (() -> Void)?
@@ -1288,7 +1288,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         alert.addButton(withTitle: L10n.text("common.cancel"))
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
-        guard onConstraintMeasurementWillBegin?() ?? true else {
+        guard onConstraintMeasurementWillBegin?(window.stableIdentity) ?? true else {
             let busy = NSAlert()
             busy.messageText = L10n.text("constraints.alert.busy.title")
             busy.informativeText =
@@ -1318,12 +1318,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         ) { [weak self] result in
             guard let self else { return }
             self.constraintMeasurementOperationActive = false
-            self.onConstraintMeasurementDidEnd?()
             self.constraintRegistry.applyExplicitMeasurement(
                 result.confirmedValues,
                 identity: identity,
                 displayName: record.displayName
             )
+            self.onConstraintMeasurementDidEnd?()
             self.refreshConstraintRecords()
             self.constraintMeasurementProgressPanel.finish(
                 confirmedValueCount: result.confirmedValues.count,

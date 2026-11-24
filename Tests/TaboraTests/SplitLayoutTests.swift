@@ -883,6 +883,59 @@ final class SplitLayoutTests: XCTestCase {
         }
     }
 
+    func testThreeAndFourSlotCandidatesCanMoveTheSharedIntersection() throws {
+        let screen = CGRect(x: -1000, y: 40, width: 1000, height: 800)
+        for zones: [SnapZone] in [[.leftHalf, .topRight, .bottomRight],
+                                  [.topLeft, .bottomLeft, .topRight, .bottomRight]] {
+            let members = zones.map { zone in
+                CanonicalSplitPartitionMember(stableIdentity: zone.rawValue, zone: zone,
+                    referenceFrame: zone.frame(in: screen),
+                    limits: zone == .bottomRight ? .init(minWidth: 610, minHeight: 450) : .unknown)
+            }
+            let result = SplitLayoutGeometry.adaptiveConstraintPartition(members: members,
+                incomingIdentity: SnapZone.bottomRight.rawValue,
+                preferredIncomingFrame: SnapZone.bottomRight.frame(in: screen), in: screen)
+            guard case .ready(let frames) = result else { return XCTFail("Expected movable dividers") }
+            let incoming = try XCTUnwrap(frames[SnapZone.bottomRight.rawValue])
+            XCTAssertEqual(incoming.width, 610)
+            XCTAssertEqual(incoming.height, 450)
+            XCTAssertEqual(frames[SnapZone.topRight.rawValue]?.minX, incoming.minX)
+            XCTAssertEqual(frames[SnapZone.topRight.rawValue]?.minY, incoming.maxY)
+        }
+    }
+
+    func testTopRightOccupantAllowsDifferentCandidatesBelowAndBesideIt() {
+        let screen = CGRect(x: 0, y: 0, width: 1000, height: 800)
+        let occupied = CanonicalSplitPartitionMember(stableIdentity: "occupied", zone: .topRight,
+            referenceFrame: SnapZone.topRight.frame(in: screen), limits: .init(minWidth: 600, minHeight: 500))
+        func fits(_ limits: AppConstraintLimits, in zone: SnapZone) -> Bool {
+            let frame = zone.frame(in: screen)
+            let candidate = CanonicalSplitPartitionMember(stableIdentity: "candidate", zone: zone,
+                referenceFrame: frame, limits: limits)
+            let result = SplitLayoutGeometry.adaptiveConstraintPartition(members: [occupied, candidate],
+                incomingIdentity: "candidate", preferredIncomingFrame: frame, in: screen)
+            if case .ready = result { return true }
+            return false
+        }
+        XCTAssertTrue(fits(.init(minWidth: 600), in: .bottomRight))
+        XCTAssertFalse(fits(.init(minWidth: 600), in: .topLeft))
+        XCTAssertTrue(fits(.init(minHeight: 500), in: .topLeft))
+        XCTAssertFalse(fits(.init(minHeight: 500), in: .bottomRight))
+    }
+
+    func testFourSlotCandidateRequiresOneCommonIntersection() {
+        let screen = CGRect(x: 0, y: 0, width: 1000, height: 800)
+        let members = AssistCompletionLayoutPolicy.fourWindowZones.map { zone in
+            CanonicalSplitPartitionMember(stableIdentity: zone.rawValue, zone: zone,
+                referenceFrame: zone.frame(in: screen),
+                limits: [.topLeft, .bottomRight].contains(zone) ? .init(minWidth: 600) : .unknown)
+        }
+        let result = SplitLayoutGeometry.adaptiveConstraintPartition(members: members,
+            incomingIdentity: SnapZone.bottomRight.rawValue, preferredIncomingFrame: SnapZone.bottomRight.frame(in: screen),
+            in: screen)
+        guard case .confirmedInfeasible = result else { return XCTFail("A staggered divider cannot complete the grid") }
+    }
+
     func testAdaptiveConstraintPartitionFourQuarterTopologyUnifiesBothAxes() {
         let frame = CGRect(x: 0, y: 0, width: 1000, height: 1000)
         var topRightLimits = AppConstraintLimits.unknown

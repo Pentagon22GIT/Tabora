@@ -159,14 +159,14 @@
 "constraints.alert.select_window.title" = "対象ウィンドウを選択";
 "constraints.alert.select_window.detail" = "サイズを取得するウィンドウを選んでください。";
 "constraints.alert.display_unavailable.detail" = "対象ウィンドウがあるディスプレイを確認できませんでした。";
-"constraints.alert.measure.detail" = "ウィンドウを動かして最小・最大サイズを取得します。";
+"constraints.alert.measure.detail" = "ウィンドウを動かして最小・最大サイズを取得します。対象ウィンドウがグループに属している場合、計測終了時にそのグループを解散します。";
 "constraints.alert.busy.title" = "操作の完了後にもう一度実行してください";
 "constraints.alert.busy.detail" = "スナップやリサイズなどの操作中はサイズを取得できません。";
 "constraints.alert.values.title" = "%@ の制約値";
 "constraints.alert.values.detail" = "現在保存されている値です。更新は「サイズを取得」から行います。";
 "constraints.alert.delete.title" = "%@ の記録を削除しますか？";
 "constraints.permission.title" = "%@ のサイズ制約の可能性を検出しました。";
-"constraints.permission.detail" = "記録を許可し、対象ウィンドウを動かして取得できるすべての最小・最大サイズを取得しますか？";
+"constraints.permission.detail" = "記録を許可し、対象ウィンドウを動かして取得できるすべての最小・最大サイズを取得しますか？対象ウィンドウがグループに属している場合、計測終了時にそのグループを解散します。";
 "constraints.multiple_apps" = "%d件のアプリ";
 
 "group.title" = "グループ";

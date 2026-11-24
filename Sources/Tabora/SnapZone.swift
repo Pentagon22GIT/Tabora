@@ -423,7 +423,7 @@ enum AssistCompletionLayoutPolicy {
         ), let threeWindow = threeWindowZonesStartingFromHalf(
             occupiedZones: occupiedZones
         ) else { return nil }
-        if modifierIsPressed, maximumDistinctSplitAssignments >= 2 {
+        if maximumDistinctSplitAssignments >= 2, modifierIsPressed || oppositeHalfCandidateCount == 0 {
             return threeWindow
         }
         return oppositeHalfCandidateCount > 0 ? twoWindow : nil

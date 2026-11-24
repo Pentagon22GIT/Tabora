@@ -145,6 +145,7 @@ extension SnapController {
             return
         }
 
+        measuredGroup = explicitGroupDepartureSnapshot(containing: stableIdentity)
         permissionConstraintMeasurementEngine.measure(
             window: window,
             screenFrame: screen.visibleFrame,
@@ -170,6 +171,7 @@ extension SnapController {
                 identity: request.identity,
                 displayName: request.displayName
             )
+            self.finishMeasuredGroup()
             guard result.restoredOriginalFrame else {
                 self.permissionConstraintMeasurementIsActive = false
                 self.endConstraintMeasurement()

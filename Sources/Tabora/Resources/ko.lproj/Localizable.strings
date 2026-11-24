@@ -159,14 +159,14 @@
 "constraints.alert.select_window.title" = "대상 윈도우 선택";
 "constraints.alert.select_window.detail" = "크기를 측정할 윈도우를 선택하십시오.";
 "constraints.alert.display_unavailable.detail" = "대상 윈도우가 있는 디스플레이를 확인할 수 없습니다.";
-"constraints.alert.measure.detail" = "윈도우를 이동하면서 최소 및 최대 크기를 측정합니다.";
+"constraints.alert.measure.detail" = "윈도우를 이동하면서 최소 및 최대 크기를 측정합니다. 대상 윈도우가 그룹에 속해 있으면 측정이 끝날 때 해당 그룹이 해제됩니다.";
 "constraints.alert.busy.title" = "현재 작업이 끝난 후 다시 시도하십시오";
 "constraints.alert.busy.detail" = "스냅이나 크기 조절 등의 작업 중에는 크기를 측정할 수 없습니다.";
 "constraints.alert.values.title" = "%@의 크기 제한";
 "constraints.alert.values.detail" = "현재 저장된 값입니다. 값을 업데이트하려면 ‘크기 측정’을 선택하십시오.";
 "constraints.alert.delete.title" = "%@의 기록을 삭제하겠습니까?";
 "constraints.permission.title" = "%@의 크기 제한 가능성을 감지했습니다";
-"constraints.permission.detail" = "기록을 허용하고 대상 윈도우를 이동하여 측정 가능한 모든 최소 및 최대 크기를 측정하겠습니까?";
+"constraints.permission.detail" = "기록을 허용하고 대상 윈도우를 이동하여 측정 가능한 모든 최소 및 최대 크기를 측정하겠습니까? 대상 윈도우가 그룹에 속해 있으면 측정이 끝날 때 해당 그룹이 해제됩니다.";
 "constraints.multiple_apps" = "앱 %d개";
 
 "group.title" = "그룹";

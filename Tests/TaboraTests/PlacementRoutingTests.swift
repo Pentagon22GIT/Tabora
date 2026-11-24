@@ -204,7 +204,7 @@ final class PlacementRoutingTests: XCTestCase {
             perform(windows[1], .topLeft, success: false, input: .assist)
             XCTAssertEqual(controller.activeSession, session)
             let app = try XCTUnwrap(controller.resolveAppConstraintIdentity(for: windows[1]))
-            registry.applyExplicitMeasurement([.minWidth: screen.visibleFrame.width + 100],
+            registry.applyExplicitMeasurement([.minWidth: ceil(screen.visibleFrame.width * 0.60)],
                 identity: app.identity, displayName: app.displayName)
             controller.presentIncompleteAssist(session: session, on: screen, visibleWindows: windows)
             let slot = SnapZone.bottomLeft.frame(in: screen)
@@ -217,7 +217,16 @@ final class PlacementRoutingTests: XCTestCase {
                 }) { return button }
                 return view.subviews.lazy.compactMap(candidateCard).first
             }
+            // Both fixture windows share this app limit: stacked quarters fit,
+            // but side-by-side quarters would require at least 120% of the display.
+            let blocked = SnapZone.topRight.frame(in: screen)
+            XCTAssertFalse(NSApp.windows.contains { panel in
+                panel.isVisible && panel is NSPanel && panel.frame.contains(CGPoint(x: blocked.midX, y: blocked.midY))
+                    && panel.contentView.flatMap(candidateCard) != nil
+            })
             let card = try XCTUnwrap(panel.contentView.flatMap(candidateCard))
+            registry.applyExplicitMeasurement([.minWidth: screen.visibleFrame.width + 100],
+                identity: app.identity, displayName: app.displayName)
             XCTAssertTrue(card.sendAction(card.action, to: card.target))
             let readinessDeadline = Date().addingTimeInterval(8)
             while controller.isAssistPlacementPending && Date() < readinessDeadline {

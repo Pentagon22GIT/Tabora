@@ -159,14 +159,14 @@
 "constraints.alert.select_window.title" = "选择目标窗口";
 "constraints.alert.select_window.detail" = "请选择要测量大小的窗口。";
 "constraints.alert.display_unavailable.detail" = "无法确认目标窗口所在的显示器。";
-"constraints.alert.measure.detail" = "将移动窗口以测量其最小和最大大小。";
+"constraints.alert.measure.detail" = "将移动窗口以测量其最小和最大大小。如果目标窗口属于某个分组，测量结束时将解散该分组。";
 "constraints.alert.busy.title" = "请在当前操作完成后再试";
 "constraints.alert.busy.detail" = "正在吸附、调整大小或执行其他窗口操作时无法测量大小。";
 "constraints.alert.values.title" = "%@ 的大小限制";
 "constraints.alert.values.detail" = "这些是当前存储的数值。要更新，请选择“测量大小”。";
 "constraints.alert.delete.title" = "要删除 %@ 的记录吗？";
 "constraints.permission.title" = "检测到 %@ 可能存在大小限制";
-"constraints.permission.detail" = "是否允许记录，并移动目标窗口以测量所有可用的最小和最大大小？";
+"constraints.permission.detail" = "是否允许记录，并移动目标窗口以测量所有可用的最小和最大大小？如果目标窗口属于某个分组，测量结束时将解散该分组。";
 "constraints.multiple_apps" = "%d 个 App";
 
 "group.title" = "群组";

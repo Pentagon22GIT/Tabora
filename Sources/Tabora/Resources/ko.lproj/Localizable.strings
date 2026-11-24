@@ -261,3 +261,6 @@
 "settings.gesture.title" = "트랙패드 제스처";
 "settings.gesture.note" = "Option을 누른 채 두 손가락으로 상하좌우 또는 대각선으로 쓸어넘기면 사용 중인 윈도우가 해당 방향에 배치됩니다.";
 "settings.gesture.maximize" = "위로 쓸어넘기면 상단에 배치하는 대신 윈도우 최대화";
+
+"settings.subdivide.title" = "그룹 영역 추가 분할";
+"settings.subdivide.note" = "원래 영역 안의 모서리에 스냅하면 다른 창을 유지하고 빈 영역에 배치할 창을 선택할 수 있습니다. 취소하면 그룹이 해제됩니다.";

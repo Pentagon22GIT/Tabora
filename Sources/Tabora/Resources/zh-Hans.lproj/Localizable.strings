@@ -261,3 +261,6 @@
 "settings.gesture.title" = "触控板手势";
 "settings.gesture.note" = "按住 Option 键，用双指向上下左右或对角方向轻扫，即可将当前窗口贴靠到相应位置。";
 "settings.gesture.maximize" = "向上轻扫时，将窗口最大化而不贴靠到上方";
+
+"settings.subdivide.title" = "进一步拆分组内区域";
+"settings.subdivide.note" = "贴靠到原区域内的角落时，其他窗口保留在原位，可选择一个窗口填入空位。取消将解散窗口组。";

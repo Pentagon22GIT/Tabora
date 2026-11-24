@@ -1228,6 +1228,37 @@ final class SnapGroupTests: XCTestCase {
         XCTAssertNil(store.group(containing: "cover"))
     }
 
+    func testOnlyExactQuarterCoversCanFormGroups() {
+        let zones = SnapZone.allCases.filter { $0 != .maximize }
+        let allowed: [Set<SnapZone>] = [
+            [.leftHalf, .rightHalf], [.topHalf, .bottomHalf],
+            [.leftHalf, .topRight, .bottomRight], [.rightHalf, .topLeft, .bottomLeft],
+            [.topHalf, .bottomLeft, .bottomRight], [.bottomHalf, .topLeft, .topRight],
+            [.topLeft, .topRight, .bottomLeft, .bottomRight]
+        ]
+        for mask in 0..<(1 << zones.count) {
+            let selected = zones.enumerated().compactMap { index, zone in
+                mask & (1 << index) == 0 ? nil : zone
+            }
+            XCTAssertEqual(SplitCoverage(selected) == .full, allowed.contains(Set(selected)))
+        }
+        XCTAssertEqual(SplitCoverage([.leftHalf, .leftHalf, .rightHalf]), .invalid)
+        XCTAssertEqual(SplitCoverage([.maximize]), .invalid)
+    }
+
+    func testIncompleteSuccessorCannotRetireCommittedGroup() throws {
+        var store = SnapGroupStore()
+        let placements = [left, right]
+        let group = try XCTUnwrap(store.reconcileAfterLayoutMutation(
+            preferredMemberID: left.stableIdentity, displayID: displayID, placements: placements,
+            detachedConnections: []))
+        let quarter = SplitPlacementGeometry(stableIdentity: right.stableIdentity, zone: .topRight,
+            frame: CGRect(x: 720, y: 450, width: 720, height: 450))
+        XCTAssertNil(store.reconcileAfterLayoutMutation(preferredMemberID: left.stableIdentity,
+            displayID: displayID, placements: [left, quarter], detachedConnections: [], targetGroupID: group.id))
+        XCTAssertEqual(store.group(id: group.id), group)
+    }
+
     func testRemovingOneMemberFromThreeDissolvesTheWholeGroup() {
         let topRight = SplitPlacementGeometry(
             stableIdentity: "top-right",

@@ -1031,6 +1031,13 @@ extension SnapController {
         interaction presentedInteraction: ResizeHandleInteraction,
         at point: CGPoint
     ) {
+        if activeSession?.groupID == nil && (activeSession?.occupiedStableIDs.count ?? 0) > 1 {
+            discardIncompleteAssistGroup()
+            picker.hide()
+            stopEscapeMonitoring()
+            stopAssistLayoutModifierMonitoring()
+            refreshResizeHandles()
+        }
         let presentedDescriptors = presentedInteraction.descriptors
         let descriptors = presentedDescriptors.compactMap { presented in
             baseResizeHandleDescriptors.first { $0.id == presented.id }

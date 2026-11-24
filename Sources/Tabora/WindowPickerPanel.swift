@@ -286,6 +286,7 @@ final class WindowPickerPanel: NSObject {
     private var previewLoader: PreviewImageLoader?
     private var selectionPending = false
 
+    private(set) var presentationGeneration: UInt64 = 0
     var isVisible: Bool { !panels.isEmpty }
 
     func containsScreenPoint(_ point: CGPoint) -> Bool {
@@ -364,11 +365,15 @@ final class WindowPickerPanel: NSObject {
         previewLoader: PreviewImageLoader
     ) {
 
+        presentationGeneration &+= 1
+        let generation = presentationGeneration
+        let cancel: () -> Void = { [weak self] in
+            guard let self, self.presentationGeneration == generation else { return }
+            self.hide(notifyCancel: true)
+        }
         for frame in backdropFrames where frame.width > 1 && frame.height > 1 {
             let panel = makePanel(frame: frame)
-            panel.contentView = PickerBackdropView(onCancel: { [weak self] in
-                self?.hide(notifyCancel: true)
-            })
+            panel.contentView = PickerBackdropView(onCancel: cancel)
             panel.orderFrontRegardless()
             panels.append(panel)
         }
@@ -385,13 +390,11 @@ final class WindowPickerPanel: NSObject {
                 zone: zone,
                 previewLoader: previewLoader,
                 selection: { [weak self] window, selectedZone in
-                    guard let self, !self.selectionPending else { return }
+                    guard let self, self.presentationGeneration == generation, !self.selectionPending else { return }
                     self.selectionPending = true
                     self.onSelect?(window, selectedZone)
                 },
-                onCancel: { [weak self] in
-                    self?.hide(notifyCancel: true)
-                }
+                onCancel: cancel
             )
             panel.contentView = content
             panel.orderFrontRegardless()
@@ -407,6 +410,7 @@ final class WindowPickerPanel: NSObject {
     }
 
     func hide(notifyCancel: Bool = false) {
+        presentationGeneration &+= 1
         panels.forEach { $0.orderOut(nil) }
         panels.removeAll()
         let cancel = onCancel

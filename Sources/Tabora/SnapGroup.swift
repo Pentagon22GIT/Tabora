@@ -878,6 +878,7 @@ struct SnapGroupStore {
                     : nil
             }
         )
+        guard SplitCoverage(zonesByID.values) == .full else { return nil }
         let previous = groupsByID[retainedGroupID]
 
         guard connectedIDs.allSatisfy({ memberID in

@@ -251,6 +251,7 @@ struct SnapPlacementContext {
     let memberIDs: Set<String>
     let displayID: CGDirectDisplayID
     var authorizedSplitDisplacements = Set<String>()
+    var subdivisionSource: [String: SnapZone]?
     var exchange: GroupSlotExchange?
     let multiMemberReplacementPlan: MultiMemberReplacementPlan?
 
@@ -569,7 +570,7 @@ final class SnapController {
                 groupSpaceMigrationLine.controllerStateDidChange()
                 cancelHandleResize(restoreOriginalFrames: true)
                 resetDragState()
-                activeSession = nil
+                discardIncompleteAssistGroup()
                 activeWindowObserver.stop()
                 foregroundSelectionMonitor.invalidateBaseline()
             } else if oldValue != isEnabled {
@@ -902,7 +903,12 @@ final class SnapController {
             missionControlGroupProxyController.hide(groupID: group.id)
         }
         if !dissolveExplicitGroupForUserDeparture(containing: target.identity) {
+            if let session = activeSession, session.groupID == nil,
+               session.occupiedStableIDs.contains(target.identity) {
+                cancelAssist()
+            }
             lockedPlacements.removeValue(forKey: target.identity)
+            restoreFrames.removeValue(forKey: target.identity)
         }
     }
 
@@ -1059,7 +1065,7 @@ final class SnapController {
         displayTopologyRecoveryDebtsByGroupID.removeAll()
         liveResizeScheduler.cancelAll()
         resetDragState()
-        activeSession = nil
+        discardIncompleteAssistGroup()
     }
 
     func reset() {
@@ -1354,7 +1360,7 @@ final class SnapController {
         // already changed eligibility/structure. Withdraw both selectable and
         // backdrop-only panels before NSAlert enters its modal run loop.
         isAssistPlacementPending = false
-        activeSession = nil
+        discardIncompleteAssistGroup()
         stopEscapeMonitoring()
         stopAssistLayoutModifierMonitoring()
         overlay.hide()
@@ -1433,7 +1439,7 @@ final class SnapController {
                 windowServerSnapshot: commandScene
             )
         invalidatePendingOperations()
-        activeSession = nil
+        discardIncompleteAssistGroup()
         stopAssistLayoutModifierMonitoring()
         gestureOptionPress = optionPress
         snap(
@@ -2657,7 +2663,7 @@ final class SnapController {
         picker.hide()
         virtualResizeOverlay.hideAll()
         resetDragState()
-        activeSession = nil
+        discardIncompleteAssistGroup()
     }
 
     private var persistedManagedWindowBindings: [ManagedWindowBinding] {
@@ -2751,6 +2757,19 @@ final class SnapController {
         }
         guard allowImmediate || detachedCandidateHitCount >= 2 else { return false }
 
+        if let stage = stagedGroupDeparture {
+            guard stage.draggedIdentity == source.stableIdentity,
+                  let lock = lockedPlacements[source.stableIdentity],
+                  let screen = screen(withDisplayID: lock.displayID),
+                  let frame = windowService.windowServerFrame(source) else { return false }
+            if matchesRecordedPlacement(frame, lock.appliedFrame, on: screen) {
+                guard restoreStagedGroupDepartureIfPossible(transferringDragFrom: source.stableIdentity)
+                    else { return false }
+            } else {
+                finalizeStagedGroupDepartureIfNeeded()
+            }
+        }
+
         invalidatePendingGroupRaise()
         invalidatePendingSelectionRaise()
         dragRestoreFrameCandidate = restoreFrames[source.stableIdentity] ?? source.frame
@@ -2773,7 +2792,6 @@ final class SnapController {
         // grouped until the normal confirmed move/resize/closure path proves
         // an actual departure. The detached child will join/create a group only
         // through the ordinary snap transaction below.
-        stagedGroupDeparture = nil
         // From this point the detached surface owns the original physical
         // mouse gesture. Do not keep consulting the old tab container as the
         // source on later drag events.
@@ -3296,8 +3314,9 @@ final class SnapController {
             window,
             messagingTimeout: AXMessagingTimeoutPolicy.interactiveOperation
         ) ?? window
-        activeSession = nil
+        discardIncompleteAssistGroup()
         stopAssistLayoutModifierMonitoring()
+        let dropGeneration = interactionGeneration
         snap(
             currentWindow,
             to: target.zone,
@@ -3305,7 +3324,8 @@ final class SnapController {
             continueAssist: true
         ) { [weak self] succeeded in
             guard let self else { return }
-            if !succeeded {
+            if !succeeded, self.interactionGeneration == dropGeneration,
+               self.stagedGroupDeparture?.draggedIdentity == window.stableIdentity {
                 self.finalizeStagedGroupDepartureIfNeeded()
             }
         }
@@ -3524,12 +3544,13 @@ final class SnapController {
             on: screen,
             frontmostGroupIDsBeforePlacement:
                 frontmostGroupIDsBeforePlacement,
-            observationScene: observationScene
+            observationScene: observationScene,
+            input: input
         ) else {
             completion?(false)
             return
         }
-        if input == .gesture, let group = explicitGroupStore.group(containing: window.stableIdentity),
+        if input == .gesture, placementContext.targetGroupID != nil, let group = explicitGroupStore.group(containing: window.stableIdentity),
            group.layout.zonesByMemberID.contains(where: { id, occupied in
                id != window.stableIdentity && SnapPlacementLayerPolicy.conflicts(existing: occupied, incoming: zone)
            }) {
@@ -4165,7 +4186,8 @@ final class SnapController {
         zone: SnapZone,
         on screen: NSScreen,
         frontmostGroupIDsBeforePlacement: Set<SnapGroupID>? = nil,
-        observationScene: SnapObservationScene? = nil
+        observationScene: SnapObservationScene? = nil,
+        input: SnapInput = .drag
     ) -> SnapPlacementContext? {
         guard let currentDisplayID = displayID(for: screen) else {
             return nil
@@ -4184,51 +4206,42 @@ final class SnapController {
             )
         }
 
-        if let existing = explicitGroupStore.group(
-            containing: window.stableIdentity
-        ) {
-            return SnapPlacementContext(
-                targetGroupID: existing.id,
-                departingGroupID: nil,
-                memberIDs: existing.memberIDs.union([window.stableIdentity]),
-                displayID: currentDisplayID
-            )
-        }
-
-        let scene = observationScene ?? makeSnapObservationScene()
-        if let stagedGroupDeparture,
-           stagedGroupDeparture.draggedIdentity == window.stableIdentity {
-            // The stage itself is the gesture-bound structural snapshot. A
-            // temporary broad AX census omission or Z-order change must not
-            // authorize converting that same gesture into an unrelated group.
-            // Continue the captured group while every captured placement still
-            // belongs to this display; exact live identity is revalidated by
-            // the placement transaction immediately before mutation.
-            let stagedPlacements = stagedGroupDeparture.memberIDs.compactMap {
-                lockedPlacements[$0]
-            }
-            let stagedZones = Dictionary(
-                uniqueKeysWithValues: stagedPlacements.map {
-                    ($0.stableIdentity, $0.zone)
+        let identity = window.stableIdentity
+        let existing = explicitGroupStore.group(containing: identity)
+        let stage = stagedGroupDeparture.flatMap { $0.draggedIdentity == identity ? $0 : nil }
+        if let members = existing?.memberIDs ?? stage?.memberIDs {
+            let placements = lockedPlacements.filter { members.contains($0.key) }
+            let zones = placements.mapValues(\.zone)
+            guard placements.count == members.count, let original = zones[identity],
+                  SplitCoverage(zones.values) == .full,
+                  existing.map({ $0.layout.zonesByMemberID == zones }) ?? true else { return nil }
+            if placements.values.allSatisfy({ $0.displayID == currentDisplayID }) {
+                if settings.groupSubdivisionEnabled,
+                   GroupSubdivisionPolicy.vacantCorner(afterMovingFrom: original, to: zone) != nil {
+                    var context = SnapPlacementContext(targetGroupID: nil, departingGroupID: existing?.id,
+                        memberIDs: members, displayID: currentDisplayID)
+                    context.subdivisionSource = zones
+                    return context
                 }
-            )
-            if stagedPlacements.count == stagedGroupDeparture.memberIDs.count,
-               stagedPlacements.allSatisfy({ $0.displayID == currentDisplayID }),
-               StagedGroupContinuationPolicy.canContinue(
-                   draggedIdentity: window.stableIdentity,
-                   memberIDs: stagedGroupDeparture.memberIDs,
-                   zonesByMemberID: stagedZones,
-                   incomingZone: zone,
-                   visibleFrame: screen.visibleFrame
-               ) {
-                return SnapPlacementContext(
-                    targetGroupID: nil,
-                    departingGroupID: nil,
-                    memberIDs: stagedGroupDeparture.memberIDs,
-                    displayID: currentDisplayID
-                )
+                let targetsPeer = existing != nil && zones.contains { id, peer in
+                    id != identity && SnapPlacementLayerPolicy.conflicts(existing: peer, incoming: zone)
+                }
+                // When subdivision is off, retain the ordinary occupied-slot authorization
+                // for every input. Only a gesture can turn that placement into an exchange.
+                let keepOccupiedRoute = targetsPeer && (!settings.groupSubdivisionEnabled
+                    || (input == .gesture && original.occupiedQuarters.count == zone.occupiedQuarters.count))
+                if original == zone || keepOccupiedRoute || (zone == .maximize && existing != nil) {
+                    return SnapPlacementContext(targetGroupID: existing?.id, departingGroupID: nil,
+                        memberIDs: members, displayID: currentDisplayID)
+                }
             }
+            if existing != nil || settings.groupSubdivisionEnabled {
+                return SnapPlacementContext(targetGroupID: nil, departingGroupID: existing?.id,
+                    memberIDs: [identity], displayID: currentDisplayID)
+            }
+            // A detached drag may still target a different eligible foreground group.
         }
+        let scene = observationScene ?? makeSnapObservationScene()
         let currentDraggedSurface = window.cgWindowID.map {
             WindowServerSelectionSnapshot(pid: window.pid, windowID: $0)
         }
@@ -4656,7 +4669,7 @@ final class SnapController {
 
     private func advanceAssist(with placedWindow: ManagedWindow, justPlacedZone zone: SnapZone, on screen: NSScreen, continueAssist: Bool) {
         guard continueAssist, zone != .maximize else {
-            activeSession = nil
+            discardIncompleteAssistGroup()
             stopEscapeMonitoring()
             updateAssistLayoutModifierMonitoringState()
             picker.hide()
@@ -4677,9 +4690,7 @@ final class SnapController {
         session providedSession: LayoutSession,
         on screen: NSScreen
     ) {
-        var session = providedSession
-        var remaining = session.remainingZones
-        guard !remaining.isEmpty else {
+        guard !providedSession.remainingZones.isEmpty else {
             activeSession = nil
             stopEscapeMonitoring()
             updateAssistLayoutModifierMonitoringState()
@@ -4687,13 +4698,21 @@ final class SnapController {
             return
         }
 
-        let assistVisibleWindows = managedVisibleWindows()
+        presentIncompleteAssist(session: providedSession, on: screen, visibleWindows: managedVisibleWindows())
+    }
+
+    func presentIncompleteAssist(session providedSession: LayoutSession, on screen: NSScreen,
+                                 visibleWindows assistVisibleWindows: [ManagedWindow]) {
+        // This presentation supersedes any readiness check owned by the old cards.
+        isAssistPlacementPending = false
+        var session = providedSession
+        var remaining = session.remainingZones
         let candidates = assistVisibleWindows.filter { candidate in
             !session.occupiedStableIDs.contains(candidate.stableIdentity)
                 && explicitGroupStore.group(containing: candidate.stableIdentity) == nil
         }
         guard !candidates.isEmpty else {
-            activeSession = nil
+            discardIncompleteAssistGroup()
             stopEscapeMonitoring()
             updateAssistLayoutModifierMonitoringState()
             picker.hide()
@@ -4750,7 +4769,7 @@ final class SnapController {
                         fourWindowAssignmentCount,
                     mergedHalfCandidateCount: mergedHalfCandidateCount
             ) else {
-                activeSession = nil
+                discardIncompleteAssistGroup()
                 stopEscapeMonitoring()
                 updateAssistLayoutModifierMonitoringState()
                 picker.hide()
@@ -4807,7 +4826,7 @@ final class SnapController {
                     oppositeHalfCandidateCount: oppositeHalfCandidateCount,
                     maximumDistinctSplitAssignments: splitAssignmentCount
                 ) else {
-                activeSession = nil
+                discardIncompleteAssistGroup()
                 stopEscapeMonitoring()
                 updateAssistLayoutModifierMonitoringState()
                 picker.hide()
@@ -4831,7 +4850,7 @@ final class SnapController {
             candidatesByZone.values.flatMap { $0.map(\.stableIdentity) }
         ).count
         guard eligibleCandidateCount > 0 else {
-            activeSession = nil
+            discardIncompleteAssistGroup()
             stopEscapeMonitoring()
             updateAssistLayoutModifierMonitoringState()
             picker.hide()
@@ -4882,7 +4901,7 @@ final class SnapController {
             // Clearing this flag makes the outstanding AX readiness poll stop
             // without committing a selection after the user dismissed Assist.
             self.isAssistPlacementPending = false
-            self.activeSession = nil
+            self.discardIncompleteAssistGroup()
             self.stopEscapeMonitoring()
             self.updateAssistLayoutModifierMonitoringState()
             self.refreshResizeHandles()
@@ -4896,16 +4915,20 @@ final class SnapController {
             // decision and must not erase the user's explicit selection.
             self.isAssistPlacementPending = true
             self.updateAssistLayoutModifierMonitoringState()
+            let presentation = self.picker.presentationGeneration
             let selectionGeneration = self.interactionGeneration
             self.windowService.waitForPlacementReadiness(
                 selected,
                 shouldContinue: { [weak self] in
                     guard let self else { return false }
                     return self.isAssistPlacementPending
+                        && self.picker.presentationGeneration == presentation
                         && self.interactionGeneration == selectionGeneration
                 }
             ) { [weak self] readiness in
                 guard let self,
+                      self.isAssistPlacementPending,
+                      self.picker.presentationGeneration == presentation,
                       self.interactionGeneration == selectionGeneration else { return }
 
                 switch readiness {
@@ -4931,9 +4954,9 @@ final class SnapController {
                         continueAssist: true,
                         raiseAfterInitialPlacement: true, input: .assist
                     ) { [weak self] succeeded in
-                        guard let self else { return }
+                        guard let self, self.interactionGeneration == selectionGeneration else { return }
                         if !succeeded {
-                            self.activeSession = nil
+                            self.discardIncompleteAssistGroup()
                             self.picker.hide()
                             self.updateAssistLayoutModifierMonitoringState()
                             self.refreshResizeHandles()
@@ -5521,7 +5544,26 @@ final class SnapController {
                   acceptedFramesByIdentity[exchange.peerID] != nil else { return false }
             lockedPlacements[exchange.peerID]?.zone = exchange.sourceZone
         }
-        if let departingGroupID = context?.departingGroupID {
+        if let source = context?.subdivisionSource {
+            let identity = window.stableIdentity
+            guard activeSession == nil, let original = source[identity],
+                  let vacancy = GroupSubdivisionPolicy.vacantCorner(afterMovingFrom: original, to: zone),
+                  source.allSatisfy({ id, oldZone in
+                      lockedPlacements[id]?.zone == oldZone && lockedPlacements[id]?.displayID == currentDisplayID
+                  }) else { return false }
+            if let groupID = context?.departingGroupID {
+                guard explicitGroupStore.group(id: groupID)?.layout.zonesByMemberID == source,
+                      stageExplicitGroupDepartureForDrag(containing: identity) else { return false }
+            }
+            guard stagedGroupDeparture?.draggedIdentity == identity,
+                  stagedGroupDeparture?.memberIDs == Set(source.keys),
+                  source.keys.allSatisfy({ explicitGroupStore.group(containing: $0) == nil }) else { return false }
+            var occupied = Dictionary(uniqueKeysWithValues: source.filter { $0.key != identity }.map { ($0.value, $0.key) })
+            occupied[zone] = identity
+            activeSession = LayoutSession(displayID: currentDisplayID,
+                layoutZones: Array(occupied.keys) + [vacancy], occupiedZones: occupied)
+            stagedGroupDeparture = nil
+        } else if let departingGroupID = context?.departingGroupID {
             guard explicitGroupStore.group(
                 containing: window.stableIdentity
             )?.id == departingGroupID,
@@ -5760,7 +5802,7 @@ final class SnapController {
         // membership. Never finalize or discard a staged departure from this
         // environment signal. The post-transition recovery below reconstructs
         // the captured group from its still-authoritative placement locks.
-        activeSession = nil
+        discardIncompleteAssistGroup()
         activeTarget = nil
         dragDisplayID = nil
         dragScreenFrame = nil
@@ -5847,7 +5889,7 @@ final class SnapController {
         overlay.hide()
         picker.hide()
         virtualResizeOverlay.hideAll()
-        activeSession = nil
+        discardIncompleteAssistGroup()
         activeTarget = nil
         dragDisplayID = nil
         dragScreenFrame = nil
@@ -5974,6 +6016,21 @@ final class SnapController {
         }
     }
 
+    func discardIncompleteAssistGroup() {
+        let session = activeSession
+        activeSession = nil
+        guard let session, session.groupID == nil, session.occupiedStableIDs.count > 1 else { return }
+        var retained = lockedPlacements
+        for (zone, identity) in session.occupiedZones {
+            guard let lock = retained[identity], lock.zone == zone, lock.displayID == session.displayID,
+                  explicitGroupStore.group(containing: identity) == nil else { continue }
+            retained.removeValue(forKey: identity)
+            restoreFrames.removeValue(forKey: identity)
+            removeConnections(for: identity)
+        }
+        lockedPlacements = retained
+    }
+
     private func cancelAssist() {
         if isConstraintMeasurementActive
             || isConstraintPermissionPromptActive
@@ -5997,7 +6054,7 @@ final class SnapController {
         virtualResizeOverlay.hideAll()
         finalizeStagedGroupDepartureIfNeeded()
         resetDragState()
-        activeSession = nil
+        discardIncompleteAssistGroup()
 
         // A normal click is also routed through this cancellation path before
         // drag detection begins. Rebuilding in place avoids destroying and

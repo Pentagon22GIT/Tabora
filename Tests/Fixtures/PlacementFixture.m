@@ -16,6 +16,9 @@ int main(void) {
         NSRect loose = NSMakeRect(NSMinX(screen) + 32, NSMinY(screen) + 32, 320, 310);
         NSArray<NSValue *> *frames = @[[NSValue valueWithRect:left], [NSValue valueWithRect:right],
                                        [NSValue valueWithRect:loose]];
+        if ([NSProcessInfo.processInfo.arguments containsObject:@"four"]) {
+            frames = [frames arrayByAddingObject:[NSValue valueWithRect:NSOffsetRect(loose, 60, 60)]];
+        }
         NSMutableArray<NSWindow *> *windows = [NSMutableArray new];
         for (NSUInteger i = 0; i < frames.count; i++) {
             NSWindow *window = [[NSWindow alloc] initWithContentRect:loose

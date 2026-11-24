@@ -261,3 +261,6 @@
 "settings.gesture.title" = "トラックパッドジェスチャー";
 "settings.gesture.note" = "Option（⌥）を押しながら2本指で上下左右または斜めにスワイプすると、操作中のウィンドウをその方向に配置します。";
 "settings.gesture.maximize" = "上スワイプの動作を上側へのスナップから最大化に変更";
+
+"settings.subdivide.title" = "グループの枠をさらに分割";
+"settings.subdivide.note" = "元の枠に含まれる隅にスナップすると、他のウィンドウを残したまま空き枠の候補を表示します。キャンセルするとグループを解消します。";

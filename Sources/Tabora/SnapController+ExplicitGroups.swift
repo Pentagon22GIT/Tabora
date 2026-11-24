@@ -74,17 +74,25 @@ extension SnapController {
                     frame: item.appliedFrame
                 )
             }
-            let reconciled = explicitGroupStore.reconcileAfterLayoutMutation(
+            if let effectiveMemberScope, Set(placements.map(\.stableIdentity)) != effectiveMemberScope { return false }
+            let split = placements.filter { $0.zone != .maximize }
+            if effectiveTargetGroupID == nil, SplitCoverage(split.map(\.zone)) == .incomplete {
+                let identities = Set(split.map(\.stableIdentity))
+                if identities == [preferredMemberID] { return true }
+                // Only the current picker can assemble multiple ungrouped placements.
+                return activeSession.map { session in
+                    session.groupID == nil && session.displayID == placement.displayID
+                        && session.occupiedStableIDs.union([preferredMemberID]) == identities
+                        && split.allSatisfy { explicitGroupStore.group(containing: $0.stableIdentity) == nil }
+                } ?? false
+            }
+            return explicitGroupStore.reconcileAfterLayoutMutation(
                 preferredMemberID: preferredMemberID,
                 displayID: placement.displayID,
                 placements: placements,
                 detachedConnections: detachedConnections,
                 targetGroupID: effectiveTargetGroupID
-            )
-            let provisionalSingleIsValid = effectiveTargetGroupID == nil
-                && placements.filter({ $0.zone != .maximize }).count == 1
-            let succeeded = reconciled != nil || provisionalSingleIsValid
-            return succeeded
+            ) != nil
         }
     }
 
@@ -204,11 +212,11 @@ extension SnapController {
     }
 
     @discardableResult
-    func restoreStagedGroupDepartureIfPossible() -> Bool {
+    func restoreStagedGroupDepartureIfPossible(transferringDragFrom sourceID: String? = nil) -> Bool {
         guard let stagedGroupDeparture else { return true }
-        guard dragWindow == nil,
-              pendingDragWindow == nil,
-              !isWindowMoveConfirmed else {
+        guard !isSnapPlacementInProgress,
+              sourceID == stagedGroupDeparture.draggedIdentity
+                || (dragWindow == nil && pendingDragWindow == nil && !isWindowMoveConfirmed) else {
             // A Space transition can occur while the physical drag continues.
             // Rebuilding the group at that point would erase the staged
             // departure authority before the eventual mouse-up decides whether
@@ -306,7 +314,7 @@ extension SnapController {
         }
         if let activeSession,
            !activeSession.occupiedStableIDs.isDisjoint(with: members) {
-            self.activeSession = nil
+            discardIncompleteAssistGroup()
             isAssistPlacementPending = false
             stopEscapeMonitoring()
             stopAssistLayoutModifierMonitoring()

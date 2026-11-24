@@ -697,42 +697,18 @@ final class WindowSafetyPolicyTests: XCTestCase {
         ))
     }
 
-    func testStagedGroupContinuesWhenDraggedHalfBecomesAdjacentQuarter() {
-        let screen = CGRect(x: 0, y: 0, width: 1200, height: 800)
-        XCTAssertTrue(StagedGroupContinuationPolicy.canContinue(
-            draggedIdentity: "left",
-            memberIDs: ["left", "right"],
-            zonesByMemberID: [
-                "left": .leftHalf,
-                "right": .rightHalf
-            ],
-            incomingZone: .topLeft,
-            visibleFrame: screen
-        ))
-        XCTAssertTrue(StagedGroupContinuationPolicy.canContinue(
-            draggedIdentity: "right",
-            memberIDs: ["left", "right"],
-            zonesByMemberID: [
-                "left": .leftHalf,
-                "right": .rightHalf
-            ],
-            incomingZone: .topRight,
-            visibleFrame: screen
-        ))
-    }
-
-    func testStagedGroupDoesNotForceContinuationForDisconnectedDrop() {
-        let screen = CGRect(x: 0, y: 0, width: 1200, height: 800)
-        XCTAssertFalse(StagedGroupContinuationPolicy.canContinue(
-            draggedIdentity: "left",
-            memberIDs: ["left", "right"],
-            zonesByMemberID: [
-                "left": .leftHalf,
-                "right": .rightHalf
-            ],
-            incomingZone: .topRight,
-            visibleFrame: screen
-        ))
+    func testSubdivisionRequiresDestinationInsideOriginalHalf() {
+        let halves: [(SnapZone, SnapZone, SnapZone)] = [
+            (.leftHalf, .topLeft, .bottomLeft), (.rightHalf, .topRight, .bottomRight),
+            (.topHalf, .topLeft, .topRight), (.bottomHalf, .bottomLeft, .bottomRight)
+        ]
+        for (half, first, second) in halves {
+            for destination in SnapZone.allCases {
+                let expected = destination == first ? second : (destination == second ? first : nil)
+                XCTAssertEqual(GroupSubdivisionPolicy.vacantCorner(afterMovingFrom: half, to: destination), expected)
+                XCTAssertNil(GroupSubdivisionPolicy.vacantCorner(afterMovingFrom: first, to: destination))
+            }
+        }
     }
 
     func testWindowMatchRejectsEqualBestCandidates() {

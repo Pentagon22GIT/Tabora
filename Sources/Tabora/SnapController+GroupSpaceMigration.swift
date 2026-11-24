@@ -536,6 +536,13 @@ extension SnapController: GroupSpaceMigrationHost {
     }
 
     func dissolveGroupSpaceMigration(_ capture: GroupSpaceMigrationCapture) {
+        // A terminal callback owns the captured layout only. Member-intersection
+        // retirement would otherwise also revoke a successor using one old member.
+        let snapshot = capture.structuralSnapshot
+        guard let group = explicitGroupStore.group(id: snapshot.groupID),
+              group.memberIDs == snapshot.memberIDs,
+              group.layout.zonesByMemberID == snapshot.zonesByMemberID,
+              group.displayID == snapshot.displayID else { return }
         for member in capture.members {
             windowService.cancelFrameOperation(for: member.element)
         }

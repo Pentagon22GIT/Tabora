@@ -29,6 +29,9 @@ int main(void) {
             BOOL overlap = [NSProcessInfo.processInfo.arguments containsObject:@"overlap"];
             if (overlap) window.title = @"Identical fixture";
             [window setFrame:overlap ? loose : frames[i].rectValue display:YES];
+            if (i == 0 && [NSProcessInfo.processInfo.arguments containsObject:@"exchange-minimum"]) {
+                window.minSize = NSMakeSize(ceil(NSWidth(screen) * 0.54), 100);
+            }
             if (i == 1 && [NSProcessInfo.processInfo.arguments containsObject:@"wide-minimum"]) {
                 window.minSize = NSMakeSize(ceil(NSWidth(screen) * 0.60), 100);
                 [window setFrame:NSMakeRect(NSMinX(screen), NSMinY(screen), NSWidth(screen) * 0.75,

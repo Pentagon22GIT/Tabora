@@ -9,6 +9,7 @@ final class TaboraApp: NSObject, NSApplicationDelegate {
     private var setupWindow: InitialSetupWindowController?
     private var statusItem: NSStatusItem!
     private lazy var controller = SnapController()
+    private lazy var splitLockNotice = SplitLockNotice()
     private let gestures = TrackpadSnapMonitor()
     private let shortcutManager = GlobalShortcutManager()
     private var settingsWindowIsVisible = false
@@ -103,12 +104,15 @@ final class TaboraApp: NSObject, NSApplicationDelegate {
             return c.windowService.windowServerSelectionSnapshot()
         }
         gestures.snap = { [weak self] zone, selection, press in
-            guard let destination = AppSettings.shared.gestureDestination(for: zone) else { return }
-            self?.controller.snapFocusedWindow(to: destination, input: .gesture, expecting: selection, optionPress: press)
+            guard AppSettings.shared.gestureSnapEnabled else { return }
+            self?.controller.snapFocusedWindow(to: zone, input: .gesture, expecting: selection, optionPress: press)
         }
         gestureObserver = NotificationCenter.default.addObserver(
             forName: AppSettings.gestureDidChange, object: nil, queue: .main
-        ) { [weak self] _ in self?.configureGesture() }
+        ) { [weak self] _ in
+            self?.configureGesture()
+            self?.configureShortcuts()
+        }
         controller.recoverShortcutRegistration = { [weak self] in self?.shortcutManager.retryMissingBindingsIfDue() }
         configureStatusItem()
         configureShortcuts()
@@ -190,9 +194,14 @@ final class TaboraApp: NSObject, NSApplicationDelegate {
     }
 
     private func configureShortcuts() {
-        shortcutManager.register(bindings: AppSettings.shared.shortcuts) { [weak self] action in
+        shortcutManager.register(bindings: AppSettings.shared.enabledShortcuts) { [weak self] action in
             guard let self, self.controller.isControllerRunning, self.controller.isUserSessionActive else { return }
-            if action == .restoreLast {
+            if action == .toggleSplitLock {
+                guard AppSettings.shared.gestureSnapEnabled else { return }
+                AppSettings.shared.splitLockEnabled.toggle()
+                self.splitLockNotice.show(enabled: AppSettings.shared.splitLockEnabled, on: NSScreen.main)
+                if self.settingsWindowIsVisible { self.settingsWindow.refreshGestureOptions() }
+            } else if action == .restoreLast {
                 self.controller.restoreLast()
             } else if let zone = action.zone {
                 self.controller.snapFocusedWindow(to: zone, input: .shortcut)

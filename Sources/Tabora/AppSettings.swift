@@ -42,9 +42,10 @@ struct ShortcutBinding: Codable, Equatable {
 enum ShortcutAction: String, CaseIterable, Codable {
     case leftHalf, rightHalf, topHalf, bottomHalf
     case topLeft, topRight, bottomLeft, bottomRight
-    case maximize, restoreLast
+    case maximize, restoreLast, toggleSplitLock
 
     var title: String {
+        if self == .toggleSplitLock { return L10n.text("command.split_lock") }
         if self == .restoreLast { return L10n.text("command.restore_last") }
         return SnapZone(rawValue: rawValue)?.displayName ?? rawValue
     }
@@ -216,6 +217,11 @@ final class AppSettings {
     }
 
     static let gestureDidChange = Notification.Name("TaboraGestureSnapDidChange")
+
+    var splitLockEnabled: Bool {
+        get { defaults.bool(forKey: "splitLockEnabled") }
+        set { defaults.set(newValue, forKey: "splitLockEnabled") }
+    }
 
     var groupSubdivisionEnabled: Bool {
         get { defaults.object(forKey: "groupSubdivisionEnabled") as? Bool ?? true }
@@ -484,6 +490,12 @@ final class AppSettings {
             )
             notify()
         }
+    }
+
+    var enabledShortcuts: [ShortcutAction: ShortcutBinding] {
+        var bindings = shortcuts
+        if !gestureSnapEnabled { bindings.removeValue(forKey: .toggleSplitLock) }
+        return bindings
     }
 
     var shortcuts: [ShortcutAction: ShortcutBinding] {

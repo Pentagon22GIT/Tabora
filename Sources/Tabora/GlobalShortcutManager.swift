@@ -13,7 +13,7 @@ enum GlobalShortcutDispatchPolicy {
 
 final class GlobalShortcutManager {
     private let signature: OSType
-    private var hotKeys: [EventHotKeyRef] = []
+    private var hotKeys: [UInt32: EventHotKeyRef] = [:]
     private var actions: [UInt32: () -> Void] = [:]
     private var eventHandler: EventHandlerRef?
 
@@ -61,7 +61,16 @@ final class GlobalShortcutManager {
             shortcutHandler = handler
             return
         }
-        clear()
+        // Keep unchanged Carbon registrations when only In-Group Gestures is enabled or disabled.
+        for (index, action) in ShortcutAction.allCases.enumerated() {
+            let identifier = UInt32(index + 1)
+            guard let ref = hotKeys[identifier],
+                  desiredBindings[action] == nil || desiredBindings[action] != bindings[action] else { continue }
+            UnregisterEventHotKey(ref)
+            hotKeys.removeValue(forKey: identifier)
+            actions.removeValue(forKey: identifier)
+        }
+        retryDelay = 1
         desiredBindings = bindings
         shortcutHandler = handler
         registerMissingBindings()
@@ -84,7 +93,7 @@ final class GlobalShortcutManager {
                 let status = RegisterEventHotKey(binding.keyCode, carbonModifiers(from: binding.modifiers),
                     id, GetApplicationEventTarget(), 0, &hotKey)
                 if status == noErr, let hotKey {
-                    hotKeys.append(hotKey)
+                    hotKeys[identifier] = hotKey
                     actions[identifier] = { [weak self] in self?.shortcutHandler?(action) }
                 }
             }
@@ -114,13 +123,13 @@ final class GlobalShortcutManager {
             &hotKey
         )
         guard status == noErr, let hotKey else { return false }
-        hotKeys.append(hotKey)
+        hotKeys[identifier] = hotKey
         actions[identifier] = handler
         return true
     }
 
     func clear() {
-        hotKeys.forEach { UnregisterEventHotKey($0) }
+        hotKeys.values.forEach { UnregisterEventHotKey($0) }
         hotKeys.removeAll()
         actions.removeAll()
         desiredBindings.removeAll()

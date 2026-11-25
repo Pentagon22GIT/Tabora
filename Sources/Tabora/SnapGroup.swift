@@ -15,7 +15,6 @@ struct SnapGroupLayout: Equatable {
 
 enum SnapGroupState: Equatable {
     case active
-    case occludedByMaximizedLayer(windowID: String)
     case suspendedForSpaceTransition
     case degraded(missingMemberIDs: Set<String>)
 }
@@ -603,7 +602,6 @@ enum GroupPresentationTransitionPolicy {
 struct SnapGroupStore {
     private(set) var groupsByID: [SnapGroupID: SnapGroup] = [:]
     private(set) var groupIDByMemberID: [String: SnapGroupID] = [:]
-    private(set) var maximizedLayerByDisplayID: [CGDirectDisplayID: String] = [:]
     private var nextCreationOrder: UInt64 = 0
     let policy: SnapGroupPolicy
 
@@ -647,28 +645,8 @@ struct SnapGroupStore {
         groupsByID[id]
     }
 
-    mutating func registerMaximizedLayer(
-        windowID: String,
-        displayID: CGDirectDisplayID
-    ) {
-        _ = dissolveGroup(containing: windowID)
-        maximizedLayerByDisplayID = maximizedLayerByDisplayID.filter {
-            $0.value != windowID
-        }
-        maximizedLayerByDisplayID[displayID] = windowID
-        updateOcclusionStates()
-    }
-
-    mutating func clearMaximizedLayer(windowID: String) {
-        maximizedLayerByDisplayID = maximizedLayerByDisplayID.filter {
-            $0.value != windowID
-        }
-        updateOcclusionStates()
-    }
-
     mutating func removeWindow(_ memberID: String) {
         _ = dissolveGroup(containing: memberID)
-        clearMaximizedLayer(windowID: memberID)
     }
 
     /// Removing one visible member invalidates the visual group as a whole.
@@ -744,8 +722,8 @@ struct SnapGroupStore {
         // environment and must not survive the rebind. A Space-transition
         // suspension is owned by a different transaction and remains intact.
         switch group.state {
-        case .active, .occludedByMaximizedLayer, .degraded:
-            group.state = activeState(for: displayID)
+        case .active, .degraded:
+            group.state = .active
         case .suspendedForSpaceTransition:
             break
         }
@@ -774,17 +752,13 @@ struct SnapGroupStore {
         }
     }
 
-    mutating func markActiveAfterSpaceTransition() {
-        updateOcclusionStates(forceRevision: true)
-    }
-
     mutating func markDegraded(
         groupID: SnapGroupID,
         missingMemberIDs: Set<String>
     ) {
         guard var group = groupsByID[groupID] else { return }
         let state: SnapGroupState = missingMemberIDs.isEmpty
-            ? activeState(for: group.displayID)
+            ? .active
             : .degraded(missingMemberIDs: missingMemberIDs)
         guard group.state != state else { return }
         group.state = state
@@ -796,7 +770,6 @@ struct SnapGroupStore {
     mutating func clear() {
         groupsByID.removeAll()
         groupIDByMemberID.removeAll()
-        maximizedLayerByDisplayID.removeAll()
         nextCreationOrder = 0
     }
 
@@ -903,15 +876,11 @@ struct SnapGroupStore {
             }
         }
 
-        maximizedLayerByDisplayID = maximizedLayerByDisplayID.filter {
-            !connectedIDs.contains($0.value)
-        }
-        updateOcclusionStates()
         for memberID in connectedIDs {
             groupIDByMemberID[memberID] = retainedGroupID
         }
 
-        let nextState = activeState(for: displayID)
+        let nextState: SnapGroupState = .active
         let layout = SnapGroupLayout(zonesByMemberID: zonesByID)
         let placementChanged = previous?.displayID != displayID
             || previous?.memberIDs != connectedIDs
@@ -950,25 +919,6 @@ struct SnapGroupStore {
         for memberID in removed.memberIDs where
             groupIDByMemberID[memberID] == groupID {
             groupIDByMemberID.removeValue(forKey: memberID)
-        }
-    }
-
-    private func activeState(for displayID: CGDirectDisplayID) -> SnapGroupState {
-        if let maximizedWindowID = maximizedLayerByDisplayID[displayID] {
-            return .occludedByMaximizedLayer(windowID: maximizedWindowID)
-        }
-        return .active
-    }
-
-    private mutating func updateOcclusionStates(forceRevision: Bool = false) {
-        for groupID in Array(groupsByID.keys) {
-            guard var group = groupsByID[groupID] else { continue }
-            let state = activeState(for: group.displayID)
-            guard forceRevision || group.state != state else { continue }
-            group.state = state
-            group.revision &+= 1
-            group.placementRevision &+= 1
-            groupsByID[groupID] = group
         }
     }
 }

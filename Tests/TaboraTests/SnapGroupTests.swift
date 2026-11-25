@@ -1206,28 +1206,6 @@ final class SnapGroupTests: XCTestCase {
         XCTAssertTrue(store.groups.isEmpty)
     }
 
-    func testMaximizedLayerIsSeparateFromSplitMembership() {
-        var store = SnapGroupStore()
-        let group = store.reconcileAfterLayoutMutation(
-            preferredMemberID: "right",
-            displayID: displayID,
-            placements: [left, right],
-            detachedConnections: []
-        )
-
-        store.registerMaximizedLayer(
-            windowID: "cover",
-            displayID: displayID
-        )
-
-        XCTAssertEqual(store.group(containing: "left")?.id, group?.id)
-        XCTAssertEqual(
-            store.group(containing: "left")?.state,
-            .occludedByMaximizedLayer(windowID: "cover")
-        )
-        XCTAssertNil(store.group(containing: "cover"))
-    }
-
     func testOnlyExactQuarterCoversCanFormGroups() {
         let zones = SnapZone.allCases.filter { $0 != .maximize }
         let allowed: [Set<SnapZone>] = [
@@ -1329,37 +1307,6 @@ final class SnapGroupTests: XCTestCase {
         XCTAssertNotNil(store.group(containing: "left"))
         XCTAssertNotNil(store.group(containing: "replacement"))
         XCTAssertNil(store.group(containing: "right"))
-    }
-
-    func testMaximizingAGroupMemberDissolvesItsSplitGroup() {
-        var store = SnapGroupStore()
-        _ = store.reconcileAfterLayoutMutation(
-            preferredMemberID: "right",
-            displayID: displayID,
-            placements: [left, right],
-            detachedConnections: []
-        )
-
-        store.registerMaximizedLayer(
-            windowID: "left",
-            displayID: displayID
-        )
-
-        XCTAssertTrue(store.groups.isEmpty)
-        XCTAssertNil(store.group(containing: "right"))
-    }
-
-    func testRemovingAProvisionalMaximizedWindowReleasesItsLayer() {
-        var store = SnapGroupStore()
-        store.registerMaximizedLayer(
-            windowID: "cover",
-            displayID: displayID
-        )
-        XCTAssertEqual(store.maximizedLayerByDisplayID[displayID], "cover")
-
-        store.removeWindow("cover")
-
-        XCTAssertNil(store.maximizedLayerByDisplayID[displayID])
     }
 
     func testRejectedSubsetReconciliationPreservesOriginalGroupForRetirement() {

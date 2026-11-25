@@ -146,6 +146,7 @@ extension SnapController {
               let originalFrame = pendingDragWindowFrame,
               manualResizeWindow != nil
                 || pendingNativeResizeDeparture != nil
+                || restoreFrames[originalWindow.stableIdentity] != nil
                 || lockedPlacements[originalWindow.stableIdentity] != nil else {
             return false
         }
@@ -267,9 +268,6 @@ extension SnapController {
         if dissolveExplicitGroupForUserDeparture(containing: identity) {
             return
         }
-        // A provisional placement can still own a maximized-layer entry even
-        // though it has no split group. Retire through the store API so that
-        // stale layer occupancy cannot block a later snap.
         explicitGroupStore.removeWindow(identity)
         lockedPlacements.removeValue(forKey: identity)
         removeConnections(for: identity)

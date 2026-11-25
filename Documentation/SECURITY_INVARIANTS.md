@@ -41,7 +41,7 @@
 - AssistのOption monitorはPicker sessionだけが所有し、通常コマンド用Carbon HotKeyやkeyboard event経路へ流さずeventも消費しない。Picker表示session外ではmodifier-state timerを保持しない。
 - Option monitorはSnap transaction中には開始しない。ただし次のPickerが先に提示された場合はtransaction完了の復帰点で監視可否を必ず再評価し、表示中sessionを監視なしで残さない。
 - 2面と1面の切り替えは同じpreview loader/cacheを保持し、表示形式の変更だけを理由にWindow Server captureを再予約しない。Quarter 2面の完成可否はzoneごとの候補数合計ではなく異なるwindowのmatchingで判定し、単一Halfからの分割も同じ条件を要求する。
-- maximize placementはrestore / occlusion layerとして記録してよいが、split membershipを持たないためAssistの予約済み候補集合へ入れてはいけない。候補選択前にmaximize状態を破棄せず、通常Snap commitでだけsplit placementへ遷移する。
+- 最大化したウィンドウの復元記録は、そのウィンドウにのみ属する。最大化を理由に他のグループの状態や交換可否を変更したり、対象をAssistの予約済み候補に加えたりしない。Assistの候補として選んだ場合、分割配置の確定時に初めてその枠へ登録する。
 
 ## Window state semantics
 

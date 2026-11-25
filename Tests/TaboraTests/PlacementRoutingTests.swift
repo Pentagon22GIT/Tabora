@@ -114,6 +114,20 @@ final class PlacementRoutingTests: XCTestCase {
         try exercisePlacement(threeSlots: false)
     }
 
+    func testMaximizePlanUsesExactVisibleFrame() {
+        let reference = CGRect(x: 90, y: 100, width: 400, height: 300)
+        let member = CanonicalSplitPartitionMember(stableIdentity: "cover", zone: .maximize,
+            referenceFrame: reference, limits: .unknown)
+        for visible in [CGRect(x: 0, y: 63, width: 1024, height: 674),
+                        CGRect(x: 0, y: 62, width: 1024, height: 675)] {
+            guard case .ready(let frames) = SplitLayoutGeometry.adaptiveConstraintPartition(
+                members: [member], incomingIdentity: member.stableIdentity,
+                preferredIncomingFrame: reference, in: visible
+            ) else { return XCTFail("Expected a maximize plan for \(visible)") }
+            XCTAssertEqual(frames[member.stableIdentity], visible)
+        }
+    }
+
     func testIndependentMaximizeKeepsGroupExchangeAndRestoreSize() throws {
         try exercisePlacement(threeSlots: false, maximizeMemberInput: .shortcut)
     }
@@ -384,11 +398,19 @@ final class PlacementRoutingTests: XCTestCase {
                 placements: placements, detachedConnections: []))
         }
         if let maximizeMemberInput {
+            func assertMaximized(_ window: ManagedWindow, target: CGRect, line: UInt = #line) throws {
+                let actual = try XCTUnwrap(controller.windowService.windowServerFrame(window), line: line)
+                XCTAssertEqual(actual.origin, target.origin, line: line)
+                XCTAssertEqual(actual.width, target.width, line: line)
+                // AX settlement accepts a one-point height difference on the real window.
+                XCTAssertEqual(actual.height, target.height, accuracy: 1, line: line)
+            }
             let cover = windows[2]
             settings.gestureSnapEnabled = true
             settings.maximizeOnUpwardGesture = true
+            let coverTarget = screen.visibleFrame
             guard perform(cover, .topHalf, assist: true) else { return }
-            XCTAssertEqual(controller.windowService.windowServerFrame(cover), screen.visibleFrame)
+            try assertMaximized(cover, target: coverTarget)
             XCTAssertNil(controller.lockedPlacements[cover.stableIdentity])
             XCTAssertNil(controller.activeSession)
             XCTAssertEqual(controller.restoreFrames[cover.stableIdentity], cover.frame)
@@ -407,9 +429,10 @@ final class PlacementRoutingTests: XCTestCase {
                 XCTAssertTrue(controller.stageExplicitGroupDepartureForDrag(containing: windows[0].stableIdentity))
             }
             let direction: SnapZone = maximizeMemberInput == .gesture ? .topHalf : .maximize
+            let memberTarget = screen.visibleFrame
             guard perform(windows[0].replacingFrame(moved), direction, input: maximizeMemberInput) else { return }
             XCTAssertNil(controller.stagedGroupDeparture)
-            XCTAssertEqual(controller.windowService.windowServerFrame(windows[0]), screen.visibleFrame)
+            try assertMaximized(windows[0], target: memberTarget)
             XCTAssertEqual(controller.windowService.windowServerFrame(windows[1]), windows[0].frame)
             XCTAssertTrue(controller.explicitGroupStore.groups.isEmpty)
             XCTAssertTrue(controller.lockedPlacements.isEmpty)

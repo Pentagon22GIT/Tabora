@@ -114,6 +114,18 @@ final class PlacementRoutingTests: XCTestCase {
         try exercisePlacement(threeSlots: false)
     }
 
+    func testIndependentMaximizeKeepsGroupExchangeAndRestoreSize() throws {
+        try exercisePlacement(threeSlots: false, maximizeMemberInput: .shortcut)
+    }
+
+    func testMaximizingStagedDragCommitsGroupDeparture() throws {
+        try exercisePlacement(threeSlots: false, maximizeMemberInput: .drag)
+    }
+
+    func testMaximizingMemberWithUpwardGestureReleasesGroup() throws {
+        try exercisePlacement(threeSlots: false, maximizeMemberInput: .gesture)
+    }
+
     func testEmptyQuarterAndExchangeInThreeWindowGroup() throws {
         try exercisePlacement(threeSlots: true)
     }
@@ -162,7 +174,7 @@ final class PlacementRoutingTests: XCTestCase {
         try exercisePlacement(threeSlots: false, wideMinimum: true)
     }
 
-    private func exercisePlacement(threeSlots: Bool, constrained: Bool = false, overlapping: Bool = false, cancelPartial: Bool = false, candidatesExhausted: Bool = false, subdivision: SnapZone? = nil, stageDrag: Bool = false, ownSlot: Bool = false, wideMinimum: Bool = false, movePeerBeforeExchange: Bool = false, combinedExchange: Bool = false) throws {
+    private func exercisePlacement(threeSlots: Bool, constrained: Bool = false, overlapping: Bool = false, cancelPartial: Bool = false, candidatesExhausted: Bool = false, subdivision: SnapZone? = nil, stageDrag: Bool = false, ownSlot: Bool = false, wideMinimum: Bool = false, movePeerBeforeExchange: Bool = false, combinedExchange: Bool = false, maximizeMemberInput: SnapInput? = nil) throws {
         guard AXIsProcessTrusted() else { throw XCTSkip("Accessibility required") }
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -371,6 +383,40 @@ final class PlacementRoutingTests: XCTestCase {
                 preferredMemberID: windows[0].stableIdentity, displayID: display,
                 placements: placements, detachedConnections: []))
         }
+        if let maximizeMemberInput {
+            let cover = windows[2]
+            settings.gestureSnapEnabled = true
+            settings.maximizeOnUpwardGesture = true
+            guard perform(cover, .topHalf, assist: true) else { return }
+            XCTAssertEqual(controller.windowService.windowServerFrame(cover), screen.visibleFrame)
+            XCTAssertNil(controller.lockedPlacements[cover.stableIdentity])
+            XCTAssertNil(controller.activeSession)
+            XCTAssertEqual(controller.restoreFrames[cover.stableIdentity], cover.frame)
+            XCTAssertEqual(controller.explicitGroupStore.group(id: group.id), group)
+            guard perform(windows[0], .rightHalf) else { return }
+            let moved = try XCTUnwrap(controller.windowService.windowServerFrame(windows[0]))
+            if maximizeMemberInput == .shortcut {
+                guard perform(windows[0].replacingFrame(moved), .maximize, success: false, input: .shortcut, duringPlacement: {
+                    controller.explicitGroupStore.suspendForSpaceTransition()
+                    controller.explicitGroupStore.markDegraded(groupID: group.id, missingMemberIDs: [])
+                }) else { return }
+                XCTAssertEqual(controller.explicitGroupStore.group(id: group.id)?.memberIDs, group.memberIDs)
+                XCTAssertEqual(controller.windowService.windowServerFrame(windows[0]), moved)
+            }
+            if maximizeMemberInput == .drag {
+                XCTAssertTrue(controller.stageExplicitGroupDepartureForDrag(containing: windows[0].stableIdentity))
+            }
+            let direction: SnapZone = maximizeMemberInput == .gesture ? .topHalf : .maximize
+            guard perform(windows[0].replacingFrame(moved), direction, input: maximizeMemberInput) else { return }
+            XCTAssertNil(controller.stagedGroupDeparture)
+            XCTAssertEqual(controller.windowService.windowServerFrame(windows[0]), screen.visibleFrame)
+            XCTAssertEqual(controller.windowService.windowServerFrame(windows[1]), windows[0].frame)
+            XCTAssertTrue(controller.explicitGroupStore.groups.isEmpty)
+            XCTAssertTrue(controller.lockedPlacements.isEmpty)
+            XCTAssertEqual(controller.restoreFrames[cover.stableIdentity], cover.frame)
+            XCTAssertEqual(controller.restoreFrames[windows[0].stableIdentity], windows[0].frame)
+            return
+        }
         if combinedExchange {
             XCTAssertFalse(settings.splitLockEnabled)
             XCTAssertNil(settings.shortcuts[.toggleSplitLock])
@@ -401,7 +447,7 @@ final class PlacementRoutingTests: XCTestCase {
             // Force a lifecycle change between AX application and structural commit.
             perform(windows[0].replacingFrame(source), .rightHalf, success: false, duringPlacement: {
                 controller.explicitGroupStore.suspendForSpaceTransition()
-                controller.explicitGroupStore.markActiveAfterSpaceTransition()
+                controller.explicitGroupStore.markDegraded(groupID: group.id, missingMemberIDs: [])
             })
             verifyOriginalPlacement()
             guard perform(windows[0].replacingFrame(source), .rightHalf, duringPlacement: {
@@ -586,7 +632,8 @@ final class PlacementRoutingTests: XCTestCase {
                        [windows[0].stableIdentity, windows[2].stableIdentity])
         let placed = try XCTUnwrap(controller.lockedPlacements[windows[2].stableIdentity])
         perform(windows[2].replacingFrame(placed.appliedFrame), .maximize)
-        XCTAssertEqual(controller.lockedPlacements[windows[2].stableIdentity]?.appliedFrame, screen.visibleFrame)
+        XCTAssertNil(controller.lockedPlacements[windows[2].stableIdentity])
+        XCTAssertNotNil(controller.restoreFrames[windows[2].stableIdentity])
         XCTAssertNil(controller.explicitGroupStore.group(containing: windows[2].stableIdentity))
         for (index, zone) in [(0, SnapZone.rightHalf), (1, .leftHalf)] {
             let frame = try XCTUnwrap(controller.windowService.windowServerFrame(windows[index]))
@@ -599,18 +646,22 @@ final class PlacementRoutingTests: XCTestCase {
                 XCTAssertEqual(controller.lockedPlacements[windows[0].stableIdentity]?.zone, .rightHalf)
             }
         }
-        func candidateButton(in view: NSView) -> NSButton? {
+        func candidateButton(in view: NSView, title: String) -> NSButton? {
             if let button = view as? NSButton, button.subviews.contains(where: {
-                ($0 as? NSTextField)?.stringValue == windows[0].title
+                ($0 as? NSTextField)?.stringValue == title
             }) { return button }
             for child in view.subviews {
-                if let button = candidateButton(in: child) { return button }
+                if let button = candidateButton(in: child, title: title) { return button }
             }
             return nil
         }
-        let card = try XCTUnwrap(NSApp.windows.filter(\.isVisible).compactMap { panel in
-            panel.contentView.flatMap(candidateButton)
-        }.first)
+        func visibleCard(for window: ManagedWindow) -> NSButton? {
+            NSApp.windows.filter(\.isVisible).compactMap { panel in
+                panel.contentView.flatMap { candidateButton(in: $0, title: window.title) }
+            }.first
+        }
+        XCTAssertNotNil(visibleCard(for: windows[2]))
+        let card = try XCTUnwrap(visibleCard(for: windows[0]))
         card.performClick(nil)
         let deadlineForSelection = Date().addingTimeInterval(8)
         while controller.explicitGroupStore.group(containing: windows[0].stableIdentity) == nil,

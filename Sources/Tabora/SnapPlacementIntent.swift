@@ -90,7 +90,7 @@ struct GroupSlotExchange {
 
 enum OccupiedSplitPolicy {
     static func permits(existing: SnapZone, incoming: SnapZone, replacementEnabled: Bool) -> Bool {
-        existing == .maximize || incoming == .maximize || replacementEnabled
+        replacementEnabled
             || !SnapPlacementLayerPolicy.conflicts(existing: existing, incoming: incoming)
     }
 }

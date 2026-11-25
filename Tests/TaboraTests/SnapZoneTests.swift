@@ -68,14 +68,14 @@ final class SnapZoneTests: XCTestCase {
             existing: .bottomRight,
             incoming: .maximize
         ))
-        XCTAssertTrue(SnapPlacementLayerPolicy.conflicts(
+        XCTAssertFalse(SnapPlacementLayerPolicy.conflicts(
             existing: .maximize,
             incoming: .maximize
         ))
     }
 
-    func testReturningToSplitRemovesMaximizedLayerAndKeepsNormalConflicts() {
-        XCTAssertTrue(SnapPlacementLayerPolicy.conflicts(
+    func testMaximizedWindowsDoNotConflictWithSplitPlacements() {
+        XCTAssertFalse(SnapPlacementLayerPolicy.conflicts(
             existing: .maximize,
             incoming: .leftHalf
         ))

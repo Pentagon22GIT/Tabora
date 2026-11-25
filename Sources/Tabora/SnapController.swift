@@ -253,6 +253,8 @@ struct SnapPlacementContext {
     var authorizedSplitDisplacements = Set<String>()
     var assistSession: LayoutSession?
     var subdivisionSource: [String: SnapZone]?
+    var maximizeSourceRevision: UInt64?
+    var maximizeStagedDeparture: StagedGroupDeparture?
     var exchange: GroupSlotExchange?
     let multiMemberReplacementPlan: MultiMemberReplacementPlan?
 
@@ -283,7 +285,7 @@ enum ExplicitGroupDepartureReason: Equatable {
     case failedSpaceMigration
 }
 
-struct StagedGroupDeparture {
+struct StagedGroupDeparture: Equatable {
     let draggedIdentity: String
     let memberIDs: Set<String>
     let retiredGroupIDs: Set<SnapGroupID>
@@ -747,7 +749,15 @@ final class SnapController {
         explicitGroupStore.connectedMemberCount
     }
     var detachedConnections: Set<SplitConnectionKey> = []
-    var restoreFrames: [String: CGRect] = [:]
+    private var standaloneRestoreTargets: [String: ActiveWindowObserver.ManagedTarget] = [:]
+    var restoreFrames: [String: CGRect] = [:] {
+        didSet {
+            let expired = standaloneRestoreTargets.keys.filter { restoreFrames[$0] == nil }
+            guard !expired.isEmpty else { return }
+            for identity in expired { standaloneRestoreTargets.removeValue(forKey: identity) }
+            synchronizeManagedWindowLifecycle()
+        }
+    }
     var activeSession: LayoutSession?
     var isAssistPlacementPending = false
     // Registration, proxy rebuilding and assist presentation must commit as a
@@ -893,13 +903,23 @@ final class SnapController {
     }
 
     private func synchronizeManagedWindowLifecycle() {
-        activeWindowObserver.synchronizeManagedWindows(isControllerRunning && isEnabled && isUserSessionActive ? lockedPlacements.map {
+        guard isControllerRunning, isEnabled, isUserSessionActive else {
+            activeWindowObserver.synchronizeManagedWindows([])
+            return
+        }
+        let locks = lockedPlacements.map {
             ActiveWindowObserver.ManagedTarget(identity: $0.key, pid: $0.value.pid, element: $0.value.element)
-        } : [])
+        }
+        activeWindowObserver.synchronizeManagedWindows(locks + standaloneRestoreTargets.values)
     }
 
     private func managedWindowWasDestroyed(_ target: ActiveWindowObserver.ManagedTarget) {
-        guard isControllerRunning, let placement = lockedPlacements[target.identity],
+        guard isControllerRunning else { return }
+        if let standalone = standaloneRestoreTargets[target.identity],
+           standalone.pid == target.pid, CFEqual(standalone.element, target.element) {
+            restoreFrames.removeValue(forKey: target.identity)
+        }
+        guard let placement = lockedPlacements[target.identity],
               placement.pid == target.pid, CFEqual(placement.element, target.element) else { return }
         // Retire derived pixels immediately; do not wait for census/recovery.
         if let group = explicitGroupStore.group(containing: target.identity) {
@@ -3376,8 +3396,6 @@ final class SnapController {
                 replacementEnabled: settings.occupiedReplacementEnabled)
         }) else { return .confirmedInfeasible }
         let evicted = displaced.subtracting(exchange.map { Array($0.peers.keys) } ?? [])
-        // Maximize uses a separate upper layer. Existing split peers are
-        // handled at commit and do not participate in its size constraints.
         let memberIDs: Set<String> = zone == .maximize ? [candidate.stableIdentity]
             : context.memberIDs.subtracting(evicted).union([candidate.stableIdentity])
         let visible = observationScene?.visibleWindows
@@ -3620,7 +3638,7 @@ final class SnapController {
                 return SnapPlacementLayerPolicy.conflicts(existing: peer.zone, incoming: zone)
             })
         }
-        if let stagedGroupDeparture,
+        if zone != .maximize, let stagedGroupDeparture,
            stagedGroupDeparture.draggedIdentity == window.stableIdentity,
            !stagedGroupDeparture.memberIDs.isSubset(
                 of: placementContext.memberIDs
@@ -4249,6 +4267,16 @@ final class SnapController {
         guard let currentDisplayID = displayID(for: screen) else {
             return nil
         }
+        if zone == .maximize {
+            let source = explicitGroupStore.group(containing: window.stableIdentity)
+            var context = SnapPlacementContext(targetGroupID: nil, departingGroupID: source?.id,
+                memberIDs: [window.stableIdentity], displayID: currentDisplayID)
+            context.maximizeSourceRevision = source?.placementRevision
+            if stagedGroupDeparture?.draggedIdentity == window.stableIdentity {
+                context.maximizeStagedDeparture = stagedGroupDeparture
+            }
+            return context
+        }
         if let session = activeSession {
             let groupMembers = session.groupID.flatMap {
                 explicitGroupStore.group(id: $0)?.memberIDs
@@ -4296,8 +4324,7 @@ final class SnapController {
                     id != identity && SnapPlacementLayerPolicy.conflicts(existing: peer, incoming: zone)
                 }
                 let keepOccupiedRoute = !settings.groupSubdivisionEnabled && targetsPeer
-                if (input != .gesture && (original == zone || keepOccupiedRoute))
-                    || (zone == .maximize && existing != nil) {
+                if input != .gesture && (original == zone || keepOccupiedRoute) {
                     return SnapPlacementContext(targetGroupID: existing?.id, departingGroupID: nil,
                         memberIDs: members, displayID: currentDisplayID)
                 }
@@ -4552,8 +4579,18 @@ final class SnapController {
         }
         commitSnapshots(snapshots)
         restoreFrames[window.stableIdentity] = restoreFrame
-        setAutomaticForegroundMode(forMemberID: window.stableIdentity)
-        raiseSnapGroup(withMainWindow: window, on: screen)
+        if zone == .maximize {
+            standaloneRestoreTargets[window.stableIdentity] = ActiveWindowObserver.ManagedTarget(
+                identity: window.stableIdentity, pid: window.pid, element: window.element
+            )
+            synchronizeManagedWindowLifecycle()
+        } else {
+            if standaloneRestoreTargets.removeValue(forKey: window.stableIdentity) != nil {
+                synchronizeManagedWindowLifecycle()
+            }
+            setAutomaticForegroundMode(forMemberID: window.stableIdentity)
+            raiseSnapGroup(withMainWindow: window, on: screen)
+        }
         advanceAssist(
             with: window,
             justPlacedZone: zone,
@@ -5553,6 +5590,24 @@ final class SnapController {
         if let context, context.displayID != currentDisplayID {
             return false
         }
+        if zone == .maximize {
+            guard let context else { return false }
+            let identity = window.stableIdentity
+            let current = explicitGroupStore.group(containing: identity)
+            let staged = stagedGroupDeparture?.draggedIdentity == identity ? stagedGroupDeparture : nil
+            guard current?.id == context.departingGroupID,
+                  current?.placementRevision == context.maximizeSourceRevision,
+                  staged == context.maximizeStagedDeparture else { return false }
+            if let staged {
+                guard staged.memberIDs.allSatisfy({ explicitGroupStore.group(containing: $0) == nil }) else { return false }
+                finalizeStagedGroupDepartureIfNeeded()
+            } else if current != nil {
+                guard dissolveExplicitGroupForUserDeparture(containing: identity) else { return false }
+            }
+            removeConnections(for: identity)
+            lockedPlacements.removeValue(forKey: identity)
+            return true
+        }
         if let session = context?.assistSession,
            !canPlaceAssistCandidate(window.stableIdentity, in: zone, session: session, displayID: currentDisplayID) {
             return false
@@ -5574,6 +5629,7 @@ final class SnapController {
         let previousDetachedConnections = detachedConnections
         let previousInFlightPlacementIDs = inFlightPlacementIDs
         let previousPendingPlacementSnapshots = pendingPlacementSnapshots
+        let previousRestoreTargets = standaloneRestoreTargets
         let previousRestoreFrames = restoreFrames
         let previousForegroundModes = groupForegroundModes
         let previousStagedDeparture = stagedGroupDeparture
@@ -5589,7 +5645,9 @@ final class SnapController {
                 detachedConnections = previousDetachedConnections
                 inFlightPlacementIDs = previousInFlightPlacementIDs
                 pendingPlacementSnapshots = previousPendingPlacementSnapshots
+                standaloneRestoreTargets = previousRestoreTargets
                 restoreFrames = previousRestoreFrames
+                synchronizeManagedWindowLifecycle()
                 groupForegroundModes = previousForegroundModes
                 stagedGroupDeparture = previousStagedDeparture
                 pendingNativeResizeDeparture = previousPendingNativeResizeDeparture
@@ -5648,29 +5706,8 @@ final class SnapController {
                 return false
             }
         }
-        if zone == .maximize,
-           stagedGroupDeparture?.draggedIdentity == window.stableIdentity {
-            finalizeStagedGroupDepartureIfNeeded()
-        }
-        if zone == .maximize,
-           explicitGroupStore.group(
-            containing: window.stableIdentity
-           ) != nil {
-            let incomingRestoreFrame = restoreFrames[window.stableIdentity]
-            _ = dissolveExplicitGroupForUserDeparture(
-                containing: window.stableIdentity
-            )
-            if let incomingRestoreFrame {
-                restoreFrames[window.stableIdentity] = incomingRestoreFrame
-            }
-        }
         if context?.departingGroupID == nil {
             removeConnections(for: window.stableIdentity)
-        }
-        if zone != .maximize {
-            explicitGroupStore.clearMaximizedLayer(
-                windowID: window.stableIdentity
-            )
         }
         let targetMemberIDs = context?.targetGroupID.flatMap {
             explicitGroupStore.group(id: $0)?.memberIDs
@@ -5680,11 +5717,9 @@ final class SnapController {
                 && targetMemberIDs.contains(identity)
             let belongsToProvisionalScope = context?.targetGroupID == nil
                 && (context?.memberIDs.contains(identity) ?? false)
-            let isMaximizedLayerConflict = placement.zone == .maximize
             guard identity != window.stableIdentity,
                   belongsToTargetGroup
-                    || belongsToProvisionalScope
-                    || isMaximizedLayerConflict,
+                    || belongsToProvisionalScope,
                   placement.displayID == currentDisplayID,
                   SnapPlacementLayerPolicy.conflicts(
                       existing: placement.zone,
@@ -5693,7 +5728,6 @@ final class SnapController {
             // The snap context already authorized the target/provisional
             // structural scope from exact identity evidence. Do not ask a new
             // broad AX census to decide whether that committed lock conflicts.
-            // Maximized-layer conflicts are structurally explicit as well.
             return identity
         })
         let replacementStillEnabled = settings.occupiedReplacementEnabled
@@ -5725,11 +5759,7 @@ final class SnapController {
                 // evidence that every peer left the desktop. Preserve the
                 // unaffected locks; reconciliation after inserting the
                 // incoming placement builds the new complete group atomically.
-                let displacedZone = lockedPlacements[identity]?.zone
                 lockedPlacements.removeValue(forKey: identity)
-                if displacedZone == .maximize {
-                    explicitGroupStore.clearMaximizedLayer(windowID: identity)
-                }
                 removeConnections(for: identity)
                 restoreFrames.removeValue(forKey: identity)
             }
@@ -5787,8 +5817,7 @@ final class SnapController {
         ) {
             activeSession?.groupID = group.id
         }
-        if zone != .maximize,
-           stagedGroupDeparture?.draggedIdentity == window.stableIdentity,
+        if stagedGroupDeparture?.draggedIdentity == window.stableIdentity,
            explicitGroupStore.group(containing: window.stableIdentity) != nil {
             stagedGroupDeparture = nil
         }

@@ -55,45 +55,37 @@ extension SnapController {
         )
         let effectiveTargetGroupID = targetGroupID ?? existingGroup?.id
         let effectiveMemberScope = memberScope ?? existingGroup?.memberIDs
-        if placement.zone == .maximize {
-            explicitGroupStore.registerMaximizedLayer(
-                windowID: preferredMemberID,
-                displayID: placement.displayID
+        let placements = lockedPlacements.compactMap { identity, item
+            -> SplitPlacementGeometry? in
+            guard item.displayID == placement.displayID,
+                  effectiveMemberScope?.contains(identity) ?? true else {
+                return nil
+            }
+            return SplitPlacementGeometry(
+                stableIdentity: identity,
+                zone: item.zone,
+                frame: item.appliedFrame
             )
-            return true
-        } else {
-            let placements = lockedPlacements.compactMap { identity, item
-                -> SplitPlacementGeometry? in
-                guard item.displayID == placement.displayID,
-                      effectiveMemberScope?.contains(identity) ?? true else {
-                    return nil
-                }
-                return SplitPlacementGeometry(
-                    stableIdentity: identity,
-                    zone: item.zone,
-                    frame: item.appliedFrame
-                )
-            }
-            if let effectiveMemberScope, Set(placements.map(\.stableIdentity)) != effectiveMemberScope { return false }
-            let split = placements.filter { $0.zone != .maximize }
-            if effectiveTargetGroupID == nil, SplitCoverage(split.map(\.zone)) == .incomplete {
-                let identities = Set(split.map(\.stableIdentity))
-                if identities == [preferredMemberID] { return true }
-                // Only the current picker can assemble multiple ungrouped placements.
-                return activeSession.map { session in
-                    session.groupID == nil && session.displayID == placement.displayID
-                        && session.occupiedStableIDs.union([preferredMemberID]) == identities
-                        && split.allSatisfy { explicitGroupStore.group(containing: $0.stableIdentity) == nil }
-                } ?? false
-            }
-            return explicitGroupStore.reconcileAfterLayoutMutation(
-                preferredMemberID: preferredMemberID,
-                displayID: placement.displayID,
-                placements: placements,
-                detachedConnections: detachedConnections,
-                targetGroupID: effectiveTargetGroupID
-            ) != nil
         }
+        if let effectiveMemberScope, Set(placements.map(\.stableIdentity)) != effectiveMemberScope { return false }
+        let split = placements.filter { $0.zone != .maximize }
+        if effectiveTargetGroupID == nil, SplitCoverage(split.map(\.zone)) == .incomplete {
+            let identities = Set(split.map(\.stableIdentity))
+            if identities == [preferredMemberID] { return true }
+            // Only the current picker can assemble multiple ungrouped placements.
+            return activeSession.map { session in
+                session.groupID == nil && session.displayID == placement.displayID
+                    && session.occupiedStableIDs.union([preferredMemberID]) == identities
+                    && split.allSatisfy { explicitGroupStore.group(containing: $0.stableIdentity) == nil }
+            } ?? false
+        }
+        return explicitGroupStore.reconcileAfterLayoutMutation(
+            preferredMemberID: preferredMemberID,
+            displayID: placement.displayID,
+            placements: placements,
+            detachedConnections: detachedConnections,
+            targetGroupID: effectiveTargetGroupID
+        ) != nil
     }
 
     func detachFocusedWindowFromExplicitGroup() {

@@ -212,16 +212,9 @@ enum SplitCoverage: Equatable {
 }
 
 enum SnapPlacementLayerPolicy {
-    /// A maximized snap is a non-connected upper layer. It replaces only an
-    /// earlier maximized snap on the same display and preserves the one split
-    /// layout below it. Returning to a split zone removes that upper layer and
-    /// resumes the existing single split graph; it never creates a second one.
     static func conflicts(existing: SnapZone, incoming: SnapZone) -> Bool {
-        if incoming == .maximize {
-            return existing == .maximize
-        }
-        if existing == .maximize {
-            return true
+        if existing == .maximize || incoming == .maximize {
+            return false
         }
         return !existing.occupiedQuarters.isDisjoint(
             with: incoming.occupiedQuarters

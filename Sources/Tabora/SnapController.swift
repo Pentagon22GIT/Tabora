@@ -3370,12 +3370,12 @@ final class SnapController {
             .displacedMemberIDs ?? []).union(contextAuthorizedConflicts)
         let exchange = context.exchange
         guard displaced.allSatisfy({ identity in
-            if identity == exchange?.peerID { return true }
+            if exchange?.peers[identity] != nil { return true }
             guard let existing = lockedPlacements[identity] else { return false }
             return OccupiedSplitPolicy.permits(existing: existing.zone, incoming: zone,
                 replacementEnabled: settings.occupiedReplacementEnabled)
         }) else { return .confirmedInfeasible }
-        let evicted = displaced.subtracting(exchange.map { [$0.peerID] } ?? [])
+        let evicted = displaced.subtracting(exchange.map { Array($0.peers.keys) } ?? [])
         // Maximize uses a separate upper layer. Existing split peers are
         // handled at commit and do not participate in its size constraints.
         let memberIDs: Set<String> = zone == .maximize ? [candidate.stableIdentity]
@@ -3415,9 +3415,9 @@ final class SnapController {
                     return .indeterminate
                 }
             }
-            if let exchange, identity == exchange.peerID {
-                zones[identity] = exchange.sourceZone
-                frames[identity] = exchange.sourceFrame
+            if let move = exchange?.peers[identity] {
+                zones[identity] = move.newZone
+                frames[identity] = move.frame
             } else {
                 zones[identity] = placement.zone
                 frames[identity] = referenceFramesByIdentity[identity] ?? window.frame
@@ -3541,7 +3541,7 @@ final class SnapController {
 
     func snap(
         _ window: ManagedWindow,
-        to zone: SnapZone,
+        to direction: SnapZone,
         on screen: NSScreen,
         continueAssist: Bool,
         raiseAfterInitialPlacement: Bool = false,
@@ -3550,6 +3550,29 @@ final class SnapController {
         completion: ((Bool) -> Void)? = nil
     ) {
         if input != .gesture && input != .assist { gestureOptionPress = nil }
+        var zone = direction
+        var lockedExchange = false
+        let lockedGroup = input == .gesture && settings.splitLockEnabled
+            ? explicitGroupStore.group(containing: window.stableIdentity) : nil
+        if let group = lockedGroup {
+            guard group.state == .active, group.displayID == displayID(for: screen),
+                  let source = group.layout.zonesByMemberID[window.stableIdentity] else {
+                completion?(false)
+                return
+            }
+            switch LockedGestureRoute.resolve(source: source, direction: direction, layout: group.layout.zonesByMemberID,
+                                              subdivisionEnabled: settings.groupSubdivisionEnabled) {
+            case .ignored:
+                completion?(false)
+                return
+            case .subdivision: break
+            case .exchange(let target):
+                zone = target
+                lockedExchange = true
+            }
+        } else if input == .gesture {
+            zone = settings.gestureDestination(for: direction) ?? direction
+        }
         let operationGeneration = interactionGeneration
         let observationScene = makeSnapObservationScene()
         guard var placementContext = snapPlacementContext(
@@ -3559,8 +3582,14 @@ final class SnapController {
             frontmostGroupIDsBeforePlacement:
                 frontmostGroupIDsBeforePlacement,
             observationScene: observationScene,
-            input: input
+            input: input,
+            lockedExchange: lockedExchange
         ) else {
+            completion?(false)
+            return
+        }
+        if let lockedGroup, placementContext.targetGroupID != lockedGroup.id,
+           !(placementContext.departingGroupID == lockedGroup.id && placementContext.subdivisionSource != nil) {
             completion?(false)
             return
         }
@@ -3568,16 +3597,17 @@ final class SnapController {
            group.layout.zonesByMemberID.contains(where: { id, occupied in
                id != window.stableIdentity && SnapPlacementLayerPolicy.conflicts(existing: occupied, incoming: zone)
            }) {
-            // A member can exchange one exact occupied slot. A gesture aimed
-            // across multiple quarters cannot evict its peers, even with replacement on.
+            // Validate every moving peer against the same WindowServer observation.
             guard group.id == placementContext.targetGroupID, group.displayID == placementContext.displayID,
                   let exchange = GroupSlotExchange.resolve(group: group, sourceID: window.stableIdentity,
-                    destination: zone, placements: lockedPlacements),
+                    destination: zone, placements: lockedPlacements, allowCombined: lockedExchange),
                   matchesRecordedPlacement(window.frame, exchange.sourceFrame, on: screen),
-                  let peer = lockedPlacements[exchange.peerID],
-                  observationScene.windowServerSnapshot.contains(where: {
+                  exchange.peers.keys.allSatisfy({ id in
+                      guard let peer = lockedPlacements[id] else { return false }
+                      return observationScene.windowServerSnapshot.contains(where: {
                       $0.layer == 0 && $0.pid == peer.pid && $0.windowID == peer.cgWindowID
-                          && matchesRecordedPlacement($0.frame, exchange.destinationFrame, on: screen)
+                          && self.matchesRecordedPlacement($0.frame, peer.appliedFrame, on: screen)
+                      })
                   }) else {
                 completion?(false)
                 return
@@ -4213,7 +4243,8 @@ final class SnapController {
         on screen: NSScreen,
         frontmostGroupIDsBeforePlacement: Set<SnapGroupID>? = nil,
         observationScene: SnapObservationScene? = nil,
-        input: SnapInput = .drag
+        input: SnapInput = .drag,
+        lockedExchange: Bool = false
     ) -> SnapPlacementContext? {
         guard let currentDisplayID = displayID(for: screen) else {
             return nil
@@ -4250,7 +4281,7 @@ final class SnapController {
                   existing.map({ $0.layout.zonesByMemberID == zones }) ?? true else { return nil }
             if placements.values.allSatisfy({ $0.displayID == currentDisplayID }) {
                 if input == .gesture, let existing,
-                   zones.contains(where: { $0.key != identity && $0.value == zone }) {
+                   lockedExchange || zones.contains(where: { $0.key != identity && $0.value == zone }) {
                     return SnapPlacementContext(targetGroupID: existing.id, departingGroupID: nil,
                         memberIDs: members, displayID: currentDisplayID)
                 }
@@ -5583,9 +5614,10 @@ final class SnapController {
         if let exchange = context?.exchange {
             guard exchange.isCurrent(in: explicitGroupStore.group(id: exchange.groupID)),
                   lockedPlacements[exchange.sourceID]?.zone == exchange.sourceZone,
-                  lockedPlacements[exchange.peerID]?.zone == exchange.peerZone,
-                  acceptedFramesByIdentity[exchange.peerID] != nil else { return false }
-            lockedPlacements[exchange.peerID]?.zone = exchange.sourceZone
+                  exchange.peers.allSatisfy({ id, move in
+                      lockedPlacements[id]?.zone == move.oldZone && acceptedFramesByIdentity[id] != nil
+                  }) else { return false }
+            for (id, move) in exchange.peers { lockedPlacements[id]?.zone = move.newZone }
         }
         if let source = context?.subdivisionSource {
             let identity = window.stableIdentity
@@ -5748,7 +5780,7 @@ final class SnapController {
             guard let group = explicitGroupStore.group(id: exchange.groupID),
                   group.memberIDs == targetMemberIDs,
                   group.layout.zonesByMemberID[exchange.sourceID] == zone,
-                  group.layout.zonesByMemberID[exchange.peerID] == exchange.sourceZone else { return false }
+                  exchange.peers.allSatisfy({ group.layout.zonesByMemberID[$0.key] == $0.value.newZone }) else { return false }
         }
         if let group = explicitGroupStore.group(
             containing: window.stableIdentity

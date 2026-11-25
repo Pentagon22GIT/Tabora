@@ -29,6 +29,8 @@ struct SnapGroup: Equatable {
     var state: SnapGroupState
     var preferredMemberID: String
     var revision: UInt64
+    // Exchanges depend on membership, layout, display and lifecycle, not focus.
+    var placementRevision: UInt64 = 1
 }
 
 struct SnapGroupDissolution: Equatable {
@@ -748,6 +750,7 @@ struct SnapGroupStore {
             break
         }
         group.revision &+= 1
+        group.placementRevision &+= 1
         groupsByID[groupID] = group
         return group
     }
@@ -766,6 +769,7 @@ struct SnapGroupStore {
             guard var group = groupsByID[groupID] else { continue }
             group.state = .suspendedForSpaceTransition
             group.revision &+= 1
+            group.placementRevision &+= 1
             groupsByID[groupID] = group
         }
     }
@@ -785,6 +789,7 @@ struct SnapGroupStore {
         guard group.state != state else { return }
         group.state = state
         group.revision &+= 1
+        group.placementRevision &+= 1
         groupsByID[groupID] = group
     }
 
@@ -908,11 +913,11 @@ struct SnapGroupStore {
 
         let nextState = activeState(for: displayID)
         let layout = SnapGroupLayout(zonesByMemberID: zonesByID)
-        let didChange = previous?.displayID != displayID
+        let placementChanged = previous?.displayID != displayID
             || previous?.memberIDs != connectedIDs
             || previous?.layout != layout
             || previous?.state != nextState
-            || previous?.preferredMemberID != preferredMemberID
+        let didChange = placementChanged || previous?.preferredMemberID != preferredMemberID
         let revision = didChange
             ? ((previous?.revision ?? 0) &+ 1)
             : (previous?.revision ?? 1)
@@ -931,7 +936,8 @@ struct SnapGroupStore {
             layout: layout,
             state: nextState,
             preferredMemberID: preferredMemberID,
-            revision: revision
+            revision: revision,
+            placementRevision: (previous?.placementRevision ?? 0) &+ (placementChanged ? 1 : 0)
         )
         groupsByID[retainedGroupID] = group
         return group
@@ -961,6 +967,7 @@ struct SnapGroupStore {
             guard forceRevision || group.state != state else { continue }
             group.state = state
             group.revision &+= 1
+            group.placementRevision &+= 1
             groupsByID[groupID] = group
         }
     }

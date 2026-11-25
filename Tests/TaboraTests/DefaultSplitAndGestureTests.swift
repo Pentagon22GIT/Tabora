@@ -108,6 +108,30 @@ final class DefaultSplitAndGestureTests: XCTestCase {
         XCTAssertEqual(AppSettings(defaults: defaults).gestureDestination(for: .topHalf), .maximize)
     }
 
+    func testSplitLockBindingsAndPreferencesSurviveGestureToggle() throws {
+        let domain = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let settings = AppSettings(defaults: defaults)
+        let lock = ShortcutBinding(keyCode: 20, modifiers: 256)
+        let snap = ShortcutBinding(keyCode: 21, modifiers: 256)
+        settings.gestureSnapEnabled = true
+        settings.splitLockEnabled = true
+        settings.maximizeOnUpwardGesture = true
+        settings.shortcuts = [.toggleSplitLock: lock, .topHalf: snap]
+        settings.gestureSnapEnabled = false
+        XCTAssertEqual(settings.enabledShortcuts, [.topHalf: snap])
+        let reopened = AppSettings(defaults: defaults)
+        reopened.gestureSnapEnabled = true
+        XCTAssertEqual(reopened.enabledShortcuts, [.toggleSplitLock: lock, .topHalf: snap])
+        XCTAssertTrue(reopened.splitLockEnabled)
+        XCTAssertTrue(reopened.maximizeOnUpwardGesture)
+        reopened.gestureSnapEnabled = false
+        reopened.shortcuts.removeValue(forKey: .toggleSplitLock)
+        reopened.gestureSnapEnabled = true
+        XCTAssertEqual(reopened.enabledShortcuts, [.topHalf: snap])
+    }
+
     func testEightGestureDirectionsAndDeadZone() {
         let zones: [SnapZone] = [.rightHalf, .topRight, .topHalf, .topLeft,
             .leftHalf, .bottomLeft, .bottomHalf, .bottomRight]

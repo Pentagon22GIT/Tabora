@@ -69,16 +69,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private var resizeModeButtons: [LinkedResizeDisplayMode: NSButton] = [:]
     private var resizeStyleButtons: [LinkedResizePresentationStyle: NSButton] = [:]
     private let linkedResizeOptionsStack = NSStackView()
-    private let launchCheckbox = NSButton(
-        checkboxWithTitle: L10n.text("settings.general.launch_at_login"),
-        target: nil,
-        action: nil
-    )
-    private let windowPreviewsCheckbox = NSButton(
-        checkboxWithTitle: L10n.text("settings.general.show_window_previews"),
-        target: nil,
-        action: nil
-    )
+    private let launchCheckbox = NSButton(checkboxWithTitle: L10n.text("settings.general.launch_at_login"), target: nil, action: nil)
+    private let windowPreviewsCheckbox = NSButton(checkboxWithTitle: L10n.text("settings.general.show_window_previews"), target: nil, action: nil)
     private let languagePopup = NSPopUpButton()
     private lazy var applyLanguageButton = NSButton(
         title: L10n.text("settings.language.apply_restart"),
@@ -86,57 +78,25 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         action: #selector(applyLanguage)
     )
     private var pendingLanguage = L10n.language
-    private let missionControlGroupMigrationCheckbox = NSButton(
-        checkboxWithTitle: L10n.text("settings.experimental.group_migration.checkbox"),
-        target: nil,
-        action: nil
-    )
+    private let missionControlGroupMigrationCheckbox = NSButton(checkboxWithTitle: L10n.text("settings.experimental.group_migration.checkbox"), target: nil, action: nil)
     private let missionControlGroupMigrationRuntimeStatus = NSTextField(
         labelWithString: L10n.text("settings.experimental.api_status.pending")
     )
-    private let restoreSizeOnMoveCheckbox = NSButton(
-        checkboxWithTitle: L10n.text("settings.general.restore_size.checkbox"),
-        target: nil,
-        action: nil
-    )
-    private let linkedResizeCheckbox = NSButton(
-        checkboxWithTitle: L10n.text("settings.general.linked_resize.checkbox"),
-        target: nil,
-        action: nil
-    )
-    private let raiseConnectedWindowsOnClickCheckbox = NSButton(
-        checkboxWithTitle: L10n.text("settings.general.raise_group.checkbox"),
-        target: nil,
-        action: nil
-    )
-    private let resizeCursorAdornmentCheckbox = NSButton(
-        checkboxWithTitle: L10n.text("settings.general.resize_cursor.checkbox"),
-        target: nil,
-        action: nil
-    )
+    private let restoreSizeOnMoveCheckbox = NSButton(checkboxWithTitle: L10n.text("settings.general.restore_size.checkbox"), target: nil, action: nil)
+    private let linkedResizeCheckbox = NSButton(checkboxWithTitle: L10n.text("settings.general.linked_resize.checkbox"), target: nil, action: nil)
+    private let raiseConnectedWindowsOnClickCheckbox = NSButton(checkboxWithTitle: L10n.text("settings.general.raise_group.checkbox"), target: nil, action: nil)
+    private let resizeCursorAdornmentCheckbox = NSButton(checkboxWithTitle: L10n.text("settings.general.resize_cursor.checkbox"), target: nil, action: nil)
     private let resizeCursorAdornmentDistanceSlider = NSSlider()
     private let resizeCursorAdornmentDistanceValue = NSTextField(labelWithString: "")
     private let edgeThresholdSlider = NSSlider()
     private let edgeThresholdValue = NSTextField(labelWithString: "")
     private let cornerBandSlider = NSSlider()
     private let cornerBandValue = NSTextField(labelWithString: "")
-    private let sideDwellExpansionCheckbox = NSButton(
-        checkboxWithTitle: L10n.text("settings.general.side_dwell.checkbox"),
-        target: nil,
-        action: nil
-    )
+    private let sideDwellExpansionCheckbox = NSButton(checkboxWithTitle: L10n.text("settings.general.side_dwell.checkbox"), target: nil, action: nil)
     private let sideDwellDurationSlider = NSSlider()
     private let sideDwellDurationValue = NSTextField(labelWithString: "")
-    private let missionControlLatestPreviewCheckbox = NSButton(
-        checkboxWithTitle: L10n.text("settings.experimental.latest_preview.checkbox"),
-        target: nil,
-        action: nil
-    )
-    private let assistLayoutSwitchingCheckbox = NSButton(
-        checkboxWithTitle: L10n.text("settings.general.assist.checkbox"),
-        target: nil,
-        action: nil
-    )
+    private let missionControlLatestPreviewCheckbox = NSButton(checkboxWithTitle: L10n.text("settings.experimental.latest_preview.checkbox"), target: nil, action: nil)
+    private let assistLayoutSwitchingCheckbox = NSButton(checkboxWithTitle: L10n.text("settings.general.assist.checkbox"), target: nil, action: nil)
     private let workspaceEdgeDelayStatus = NSTextField(
         labelWithString: L10n.text("settings.experimental.workspace.status.checking")
     )
@@ -165,11 +125,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     )
     private let constraintMeasurementProgressPanel =
         ConstraintMeasurementProgressPanel()
-    private let constraintPromptCheckbox = NSButton(
-        checkboxWithTitle: L10n.text("settings.constraints.confirm_new"),
-        target: nil,
-        action: nil
-    )
+    private let constraintPromptCheckbox = NSButton(checkboxWithTitle: L10n.text("settings.constraints.confirm_new"), target: nil, action: nil)
     private let constraintRecordsStack = NSStackView()
     private var constraintIdentitiesByControlID: [String: AppConstraintIdentity] = [:]
     private var constraintMeasurementInProgress = false
@@ -229,8 +185,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     private let gestureMaximizeToggle = NSButton(checkboxWithTitle: L10n.text("settings.gesture.maximize"), target: nil, action: nil)
 
-    private func refreshGestureOptions() {
+    func refreshGestureOptions() {
         let settings = AppSettings.shared
+        splitLockCheckbox?.isEnabled = settings.gestureSnapEnabled
+        splitLockCheckbox?.state = settings.gestureSnapEnabled && settings.splitLockEnabled ? .on : .off
         gestureToggle.state = settings.gestureSnapEnabled ? .on : .off
         gestureMaximizeToggle.isEnabled = settings.gestureSnapEnabled
         gestureMaximizeToggle.state = settings.gestureSnapEnabled && settings.maximizeOnUpwardGesture ? .on : .off
@@ -251,6 +209,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func changeGroupSubdivision(_ sender: NSButton) {
         AppSettings.shared.groupSubdivisionEnabled = sender.state == .on
+    }
+
+    private weak var splitLockCheckbox: NSButton?
+    @objc private func changeSplitLock(_ sender: NSButton) {
+        guard AppSettings.shared.gestureSnapEnabled else { return }
+        AppSettings.shared.splitLockEnabled = sender.state == .on
     }
 
     @objc private func changeOccupiedReplacement(_ sender: NSButton) {
@@ -356,6 +320,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         windowPreviewsCheckbox.target = self
         windowPreviewsCheckbox.action = #selector(toggleWindowPreviews)
         stack.addArrangedSubview(windowPreviewsCheckbox)
+        stack.setCustomSpacing(4, after: windowPreviewsCheckbox)
         let previewNote = NSTextField(
             wrappingLabelWithString: L10n.text("settings.general.preview_note")
         )
@@ -390,38 +355,29 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         languageNote.maximumNumberOfLines = 0
         stack.addArrangedSubview(languageNote)
 
-        stack.addArrangedSubview(separator())
-        let information = NSButton(title: L10n.text("information.title"), target: self, action: #selector(showAppInformation))
-        information.bezelStyle = .rounded
-        stack.addArrangedSubview(information)
-        let removal = NSButton(title: L10n.text("cleanup.button"), target: self, action: #selector(showRemoval))
-        removal.bezelStyle = .rounded
-        stack.addArrangedSubview(removal)
-        stack.addArrangedSubview(separator())
+        addSeparator(to: stack)
         stack.addArrangedSubview(sectionTitle(L10n.text("settings.general.window_movement")))
         let replacement = NSButton(checkboxWithTitle: L10n.text("settings.replace.occupied"),
             target: self, action: #selector(changeOccupiedReplacement(_:)))
         replacement.state = AppSettings.shared.occupiedReplacementEnabled ? .on : .off
         stack.addArrangedSubview(replacement)
+        stack.setCustomSpacing(4, after: replacement)
         stack.addArrangedSubview(note("settings.replace.note"))
         let subdivision = NSButton(checkboxWithTitle: L10n.text("settings.subdivide.title"),
             target: self, action: #selector(changeGroupSubdivision(_:)))
         subdivision.state = AppSettings.shared.groupSubdivisionEnabled ? .on : .off
         stack.addArrangedSubview(subdivision)
+        stack.setCustomSpacing(4, after: subdivision)
         stack.addArrangedSubview(note("settings.subdivide.note"))
         restoreSizeOnMoveCheckbox.target = self
         restoreSizeOnMoveCheckbox.action = #selector(toggleRestoreSizeOnMove)
         stack.addArrangedSubview(restoreSizeOnMoveCheckbox)
-        let restoreSizeNote = NSTextField(
-            wrappingLabelWithString: L10n.text("settings.general.restore_size.note")
-        )
-        restoreSizeNote.textColor = .secondaryLabelColor
-        restoreSizeNote.maximumNumberOfLines = 0
-        stack.addArrangedSubview(restoreSizeNote)
-
+        addSeparator(to: stack)
+        stack.addArrangedSubview(sectionTitle(L10n.text("settings.section.resize")))
         linkedResizeCheckbox.target = self
         linkedResizeCheckbox.action = #selector(toggleLinkedResize)
         stack.addArrangedSubview(linkedResizeCheckbox)
+        stack.setCustomSpacing(4, after: linkedResizeCheckbox)
         let linkedResizeNote = NSTextField(
             wrappingLabelWithString: L10n.text("settings.general.linked_resize.note")
         )
@@ -431,10 +387,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
         linkedResizeOptionsStack.orientation = .vertical
         linkedResizeOptionsStack.alignment = .leading
-        linkedResizeOptionsStack.spacing = 10
+        linkedResizeOptionsStack.spacing = 9
         linkedResizeOptionsStack.edgeInsets = NSEdgeInsets(
             top: 0,
-            left: 18,
+            left: 8,
             bottom: 0,
             right: 0
         )
@@ -450,6 +406,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         raiseConnectedWindowsOnClickCheckbox.target = self
         raiseConnectedWindowsOnClickCheckbox.action = #selector(toggleRaiseConnectedWindowsOnClick)
         linkedResizeOptionsStack.addArrangedSubview(raiseConnectedWindowsOnClickCheckbox)
+        linkedResizeOptionsStack.setCustomSpacing(4, after: raiseConnectedWindowsOnClickCheckbox)
         let raiseConnectedWindowsOnClickNote = NSTextField(
             wrappingLabelWithString: L10n.text("settings.general.raise_group.note")
         )
@@ -462,6 +419,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         )
         presentationStyleTitle.font = .systemFont(ofSize: 13, weight: .medium)
         linkedResizeOptionsStack.addArrangedSubview(presentationStyleTitle)
+        linkedResizeOptionsStack.setCustomSpacing(4, after: presentationStyleTitle)
 
         let presentationStyleStack = NSStackView()
         presentationStyleStack.orientation = .vertical
@@ -492,34 +450,16 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             )
             button.identifier = NSUserInterfaceItemIdentifier(style.rawValue)
             resizeStyleButtons[style] = button
-            let optionStack = NSStackView()
-            optionStack.orientation = .vertical
-            optionStack.alignment = .leading
-            optionStack.spacing = 2
-            optionStack.addArrangedSubview(button)
-            let note = NSTextField(wrappingLabelWithString: detail)
-            note.textColor = .secondaryLabelColor
-            note.font = .systemFont(ofSize: 11)
-            note.maximumNumberOfLines = 0
-            note.widthAnchor.constraint(lessThanOrEqualToConstant: 500).isActive = true
-            optionStack.addArrangedSubview(note)
-            presentationStyleStack.addArrangedSubview(optionStack)
+            addResizeChoice(button, detail: detail, to: presentationStyleStack)
         }
         linkedResizeOptionsStack.addArrangedSubview(presentationStyleStack)
-        let presentationStyleNote = NSTextField(
-            wrappingLabelWithString: L10n.text("settings.general.resize_style.note")
-        )
-        presentationStyleNote.textColor = .secondaryLabelColor
-        presentationStyleNote.maximumNumberOfLines = 0
-        linkedResizeOptionsStack.addArrangedSubview(presentationStyleNote)
-
+        presentationStyleStack.widthAnchor.constraint(equalTo: linkedResizeOptionsStack.widthAnchor, constant: -8).isActive = true
         resizeCursorAdornmentCheckbox.target = self
         resizeCursorAdornmentCheckbox.action = #selector(
             toggleResizeCursorAdornment
         )
-        linkedResizeOptionsStack.addArrangedSubview(
-            resizeCursorAdornmentCheckbox
-        )
+        linkedResizeOptionsStack.addArrangedSubview(resizeCursorAdornmentCheckbox)
+        linkedResizeOptionsStack.setCustomSpacing(4, after: resizeCursorAdornmentCheckbox)
         let resizeCursorAdornmentNote = NSTextField(
             wrappingLabelWithString: L10n.text("settings.general.resize_cursor.note")
         )
@@ -533,6 +473,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         )
         resizeCursorAdornmentDistanceTitle.font = .systemFont(ofSize: 13, weight: .medium)
         linkedResizeOptionsStack.addArrangedSubview(resizeCursorAdornmentDistanceTitle)
+        linkedResizeOptionsStack.setCustomSpacing(4, after: resizeCursorAdornmentDistanceTitle)
         resizeCursorAdornmentDistanceSlider.minValue = AppSettings
             .resizeCursorAdornmentDistanceRange.lowerBound
         resizeCursorAdornmentDistanceSlider.maxValue = AppSettings
@@ -559,6 +500,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         )
         displayModeTitle.font = .systemFont(ofSize: 13, weight: .medium)
         linkedResizeOptionsStack.addArrangedSubview(displayModeTitle)
+        linkedResizeOptionsStack.setCustomSpacing(4, after: displayModeTitle)
 
         let displayModeStack = NSStackView()
         displayModeStack.orientation = .vertical
@@ -571,15 +513,16 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         ]
         for (mode, title, detail) in modeDescriptions {
             let button = NSButton(
-                radioButtonWithTitle: "\(title) — \(detail)",
+                radioButtonWithTitle: title,
                 target: self,
                 action: #selector(changeLinkedResizeDisplayMode(_:))
             )
             button.identifier = NSUserInterfaceItemIdentifier(mode.rawValue)
             resizeModeButtons[mode] = button
-            displayModeStack.addArrangedSubview(button)
+            addResizeChoice(button, detail: detail, to: displayModeStack)
         }
         linkedResizeOptionsStack.addArrangedSubview(displayModeStack)
+        displayModeStack.widthAnchor.constraint(equalTo: linkedResizeOptionsStack.widthAnchor, constant: -8).isActive = true
         let displayModeNote = NSTextField(
             wrappingLabelWithString: L10n.text("settings.general.drag_display.note")
         )
@@ -588,26 +531,39 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         linkedResizeOptionsStack.addArrangedSubview(displayModeNote)
 
         stack.addArrangedSubview(linkedResizeOptionsStack)
+        linkedResizeOptionsStack.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
 
-        stack.addArrangedSubview(separator())
-        stack.addArrangedSubview(sectionTitle(L10n.text("settings.general.extensions.title")))
-        let assistLayoutTitle = NSTextField(
-            labelWithString: L10n.text("settings.general.assist.title")
-        )
-        assistLayoutTitle.font = .systemFont(ofSize: 13, weight: .medium)
-        stack.addArrangedSubview(assistLayoutTitle)
+        addSeparator(to: stack)
+        stack.addArrangedSubview(sectionTitle(L10n.text("settings.gesture.title")))
+        gestureToggle.target = self
+        gestureToggle.action = #selector(changeGesture)
+        stack.addArrangedSubview(gestureToggle)
+        stack.setCustomSpacing(4, after: gestureToggle)
+        stack.addArrangedSubview(note("settings.gesture.note"))
+        gestureMaximizeToggle.target = self
+        gestureMaximizeToggle.action = #selector(changeGestureMaximize)
+        stack.addArrangedSubview(gestureMaximizeToggle)
+        let lock = NSButton(checkboxWithTitle: L10n.text("settings.split_lock"), target: self,
+                            action: #selector(changeSplitLock(_:)))
+        splitLockCheckbox = lock
+        stack.addArrangedSubview(lock)
+        stack.setCustomSpacing(4, after: lock)
+        stack.addArrangedSubview(note("settings.split_lock.note"))
+        addSeparator(to: stack)
+        stack.addArrangedSubview(sectionTitle(L10n.text("settings.general.assist.title")))
         assistLayoutSwitchingCheckbox.target = self
         assistLayoutSwitchingCheckbox.action = #selector(
             toggleAssistLayoutSwitching
         )
         stack.addArrangedSubview(assistLayoutSwitchingCheckbox)
+        stack.setCustomSpacing(4, after: assistLayoutSwitchingCheckbox)
         let assistLayoutNote = NSTextField(
             wrappingLabelWithString: L10n.text("settings.general.assist.note")
         )
         assistLayoutNote.textColor = .secondaryLabelColor
         assistLayoutNote.maximumNumberOfLines = 0
         stack.addArrangedSubview(assistLayoutNote)
-        stack.addArrangedSubview(separator())
+        addSeparator(to: stack)
 
         stack.addArrangedSubview(sectionTitle(L10n.text("settings.general.drag_detection.title")))
         let detectionNote = NSTextField(
@@ -620,6 +576,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         sideDwellExpansionCheckbox.target = self
         sideDwellExpansionCheckbox.action = #selector(toggleSideDwellExpansion)
         stack.addArrangedSubview(sideDwellExpansionCheckbox)
+        stack.setCustomSpacing(4, after: sideDwellExpansionCheckbox)
 
         configureSlider(
             sideDwellDurationSlider,
@@ -664,6 +621,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         )
         resetDetectionButton.bezelStyle = .rounded
         stack.addArrangedSubview(resetDetectionButton)
+
+        addSeparator(to: stack)
+        stack.addArrangedSubview(sectionTitle(L10n.text("settings.section.management")))
+        let information = NSButton(title: L10n.text("information.title"), target: self, action: #selector(showAppInformation))
+        information.bezelStyle = .rounded
+        let removal = NSButton(title: L10n.text("cleanup.button"), target: self, action: #selector(showRemoval))
+        removal.bezelStyle = .rounded
+        stack.addArrangedSubview(NSStackView(views: [information, removal]))
 
         return stack
     }
@@ -736,6 +701,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         constraintRecordsStack.alignment = .leading
         constraintRecordsStack.spacing = 12
         stack.addArrangedSubview(constraintRecordsStack)
+        constraintRecordsStack.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         return stack
     }
 
@@ -753,6 +719,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             toggleMissionControlGroupMigration
         )
         stack.addArrangedSubview(missionControlGroupMigrationCheckbox)
+        stack.setCustomSpacing(4, after: missionControlGroupMigrationCheckbox)
         let groupMigrationNote = NSTextField(
             wrappingLabelWithString: L10n.text("settings.experimental.group_migration.note")
         )
@@ -773,19 +740,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         )
         missionControlGroupMigrationRuntimeStatus.maximumNumberOfLines = 0
         stack.addArrangedSubview(missionControlGroupMigrationRuntimeStatus)
-        stack.addArrangedSubview(separator())
-
-        let gestureTitle = NSTextField(labelWithString: L10n.text("settings.gesture.title"))
-        gestureTitle.font = .systemFont(ofSize: 13, weight: .medium)
-        stack.addArrangedSubview(gestureTitle)
-        gestureToggle.target = self
-        gestureToggle.action = #selector(changeGesture)
-        stack.addArrangedSubview(gestureToggle)
-        stack.addArrangedSubview(note("settings.gesture.note"))
-        gestureMaximizeToggle.target = self
-        gestureMaximizeToggle.action = #selector(changeGestureMaximize)
-        stack.addArrangedSubview(gestureMaximizeToggle)
-        stack.addArrangedSubview(separator())
+        addSeparator(to: stack)
 
         let latestPreviewTitle = NSTextField(
             labelWithString: L10n.text("settings.experimental.latest_preview.title")
@@ -795,13 +750,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         missionControlLatestPreviewCheckbox.target = self
         missionControlLatestPreviewCheckbox.action = #selector(toggleMissionControlLatestPreview)
         stack.addArrangedSubview(missionControlLatestPreviewCheckbox)
+        stack.setCustomSpacing(4, after: missionControlLatestPreviewCheckbox)
         let latestPreviewNote = NSTextField(
             wrappingLabelWithString: L10n.text("settings.experimental.latest_preview.note")
         )
         latestPreviewNote.textColor = .secondaryLabelColor
         latestPreviewNote.maximumNumberOfLines = 0
         stack.addArrangedSubview(latestPreviewNote)
-        stack.addArrangedSubview(separator())
+        addSeparator(to: stack)
 
         let workspaceEdgeTitle = NSTextField(
             labelWithString: L10n.text("settings.experimental.workspace.title")
@@ -823,7 +779,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         workspaceEdgeButtons.spacing = 10
         stack.addArrangedSubview(workspaceEdgeButtons)
 
-        stack.addArrangedSubview(separator())
+        addSeparator(to: stack)
 
         let previewMemoryTitle = NSTextField(
             labelWithString: L10n.text("settings.experimental.preview.title")
@@ -939,7 +895,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
         valueLabel.alignment = .right
         valueLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
-        valueLabel.widthAnchor.constraint(equalToConstant: 54).isActive = true
+        valueLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 54).isActive = true
 
         let sliderRow = NSStackView(views: [slider, valueLabel])
         sliderRow.orientation = .horizontal
@@ -953,17 +909,28 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         return stack
     }
 
+    private func addResizeChoice(_ button: NSButton, detail: String, to stack: NSStackView) {
+        stack.addArrangedSubview(button)
+        stack.setCustomSpacing(2, after: button)
+        let caption = NSTextField(wrappingLabelWithString: detail)
+        caption.textColor = .secondaryLabelColor
+        caption.font = .systemFont(ofSize: 11)
+        caption.maximumNumberOfLines = 0
+        stack.addArrangedSubview(caption)
+        caption.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor).isActive = true
+    }
+
     private func sectionTitle(_ text: String) -> NSTextField {
         let field = NSTextField(labelWithString: text)
         field.font = .systemFont(ofSize: 17, weight: .semibold)
         return field
     }
 
-    private func separator() -> NSBox {
+    private func addSeparator(to stack: NSStackView) {
         let box = NSBox()
         box.boxType = .separator
-        box.widthAnchor.constraint(equalToConstant: 520).isActive = true
-        return box
+        stack.addArrangedSubview(box)
+        box.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
     }
 
     private func refresh() {
@@ -1096,7 +1063,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             appName.font = .systemFont(ofSize: 13, weight: .semibold)
             appName.lineBreakMode = .byTruncatingMiddle
             appName.toolTip = record.displayName
-            appName.widthAnchor.constraint(equalToConstant: 140).isActive = true
+            appName.lineBreakMode = .byTruncatingTail
 
             let hasPending = AppConstraintBound.allCases.contains {
                 if case .candidate = record.state(for: $0) { return true }
@@ -1110,8 +1077,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
                 )
             }
 
-            let permissionButton = NSButton(
-                checkboxWithTitle: L10n.text("settings.constraints.allow_recording"),
+            let permissionButton = NSButton(checkboxWithTitle: L10n.text("settings.constraints.allow_recording"),
                 target: self,
                 action: #selector(changeConstraintPermission(_:))
             )
@@ -1141,20 +1107,22 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             deleteButton.identifier = NSUserInterfaceItemIdentifier(controlID)
 
             let buttons = NSStackView(
-                views: [permissionButton, verifyButton, inspectButton, deleteButton]
+                views: [verifyButton, inspectButton, deleteButton]
             )
             buttons.orientation = .horizontal
             buttons.alignment = .centerY
             buttons.spacing = 8
 
             let row = NSStackView(
-                views: [appName, buttons]
+                views: [appName]
             )
-            row.orientation = .horizontal
-            row.alignment = .centerY
-            row.spacing = 12
-            row.widthAnchor.constraint(lessThanOrEqualToConstant: 520).isActive = true
+            row.orientation = .vertical
+            row.alignment = .leading
+            row.spacing = 8
+            row.addArrangedSubview(permissionButton)
+            row.addArrangedSubview(buttons)
             constraintRecordsStack.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: constraintRecordsStack.widthAnchor).isActive = true
         }
     }
 
@@ -1408,7 +1376,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         refreshConstraintRecords()
     }
 
-    private func constraintIdentity(for sender: NSButton) -> AppConstraintIdentity? {
+    private func constraintIdentity(for sender: NSControl) -> AppConstraintIdentity? {
         guard let key = sender.identifier?.rawValue else { return nil }
         return constraintIdentitiesByControlID[key]
     }

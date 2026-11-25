@@ -26,6 +26,133 @@ final class NativeWindowIntegrationTests: XCTestCase {
         XCTAssertNil(controller.measuredGroup)
     }
 
+    func testGeneralSettingsAlignGestureCheckboxesAndPreserveDependencies() throws {
+        _ = NSApplication.shared
+        let controller = SettingsWindowController()
+        let window = try XCTUnwrap(controller.window)
+        defer { window.close() }
+        let root = try XCTUnwrap(window.contentView)
+        root.layoutSubtreeIfNeeded()
+        func buttons(in view: NSView) -> [NSButton] {
+            view.subviews.compactMap { $0 as? NSButton } + view.subviews.flatMap(buttons)
+        }
+        let controls = buttons(in: root)
+        func control(_ key: String) throws -> NSButton {
+            try XCTUnwrap(controls.first { $0.title == L10n.text(key) })
+        }
+        let parent = try control("settings.gesture.snap")
+        let maximize = try control("settings.gesture.maximize")
+        let lock = try control("settings.split_lock")
+        let position = parent.convert(parent.bounds, to: root)
+        XCTAssertGreaterThan(position.width, 0)
+        XCTAssertLessThanOrEqual(position.maxX, root.bounds.maxX)
+        for child in [maximize, lock] {
+            XCTAssertEqual(child.convert(child.bounds, to: root).minX, position.minX, accuracy: 1)
+            XCTAssertEqual(child.isEnabled, parent.state == .on)
+        }
+        let style = try control("settings.general.resize_style.mac.title")
+        let mode = try control("settings.general.drag_display.lightweight.title")
+        let cursor = try control("settings.general.resize_cursor.checkbox")
+        let styleLeft = style.convert(style.bounds, to: root).minX
+        for member in [mode, cursor] {
+            XCTAssertEqual(member.convert(member.bounds, to: root).minX, styleLeft, accuracy: 1)
+        }
+        XCTAssertLessThanOrEqual(abs(styleLeft - position.minX), 12)
+    }
+
+    func testGestureCheckboxesPersistAcrossParentToggleAndWindowRecreation() throws {
+        _ = NSApplication.shared
+        let defaults = UserDefaults.standard
+        let keys = ["gestureSnapEnabled", "maximizeOnUpwardGesture", "splitLockEnabled"]
+        let saved = keys.map { defaults.object(forKey: $0) }
+        defer {
+            for (key, value) in zip(keys, saved) {
+                if let value { defaults.set(value, forKey: key) } else { defaults.removeObject(forKey: key) }
+            }
+        }
+        keys.forEach { defaults.set(false, forKey: $0) }
+        func controls(_ controller: SettingsWindowController) throws -> [NSButton] {
+            func buttons(_ root: NSView) -> [NSButton] {
+                root.subviews.compactMap { $0 as? NSButton } + root.subviews.flatMap(buttons)
+            }
+            let all = buttons(try XCTUnwrap(controller.window?.contentView))
+            return try ["settings.gesture.snap", "settings.gesture.maximize", "settings.split_lock"].map { key in
+                try XCTUnwrap(all.first { $0.title == L10n.text(key) })
+            }
+        }
+        let controller = SettingsWindowController()
+        defer { controller.window?.close() }
+        let checkboxes = try controls(controller)
+        for checkbox in checkboxes { checkbox.performClick(nil) }
+        XCTAssertTrue(keys.allSatisfy { defaults.bool(forKey: $0) })
+        checkboxes[0].performClick(nil)
+        XCTAssertTrue(checkboxes.dropFirst().allSatisfy { !$0.isEnabled && $0.state == .off })
+        XCTAssertTrue(keys.dropFirst().allSatisfy { defaults.bool(forKey: $0) })
+        let reopened = SettingsWindowController()
+        defer { reopened.window?.close() }
+        let restored = try controls(reopened)
+        restored[0].performClick(nil)
+        XCTAssertTrue(restored.allSatisfy { $0.isEnabled && $0.state == .on })
+    }
+
+    func testSettingsDescriptionsFitInEveryLanguageAndCategory() throws {
+        _ = NSApplication.shared
+        let original = L10n.language
+        defer { L10n.language = original }
+        func descendants(_ view: NSView) -> [NSView] {
+            view.subviews + view.subviews.flatMap(descendants)
+        }
+        for language in AppLanguage.allCases {
+            L10n.language = language
+            let controller = SettingsWindowController()
+            let window = try XCTUnwrap(controller.window)
+            defer { window.close() }
+            let root = try XCTUnwrap(window.contentView)
+            let categories = try XCTUnwrap(descendants(root).compactMap { $0 as? NSSegmentedControl }.first)
+            for index in 0..<categories.segmentCount {
+                categories.selectedSegment = index
+                XCTAssertTrue(categories.sendAction(categories.action, to: categories.target))
+                root.layoutSubtreeIfNeeded()
+                let scroll = try XCTUnwrap(descendants(root).compactMap { $0 as? NSScrollView }.first)
+                let document = try XCTUnwrap(scroll.documentView)
+                for field in descendants(document).compactMap({ $0 as? NSTextField })
+                    where !field.isHiddenOrHasHiddenAncestor && !field.stringValue.isEmpty {
+                    let frame = field.convert(field.bounds, to: document)
+                    let info = "\(language) tab \(index): \(field.stringValue)"
+                    XCTAssertLessThanOrEqual(frame.maxX, scroll.contentSize.width + 1, info)
+                    XCTAssertGreaterThanOrEqual(frame.minX, -1, info)
+                    if field.maximumNumberOfLines == 1 || field.cell?.wraps == false {
+                        XCTAssertLessThanOrEqual(field.intrinsicContentSize.width, frame.width + 1, info)
+                    }
+                    if let cell = field.cell, cell.wraps {
+                        let needed = cell.cellSize(forBounds: CGRect(x: 0, y: 0, width: frame.width, height: 10000))
+                        XCTAssertGreaterThanOrEqual(frame.height + 1, needed.height, info)
+                    }
+                }
+            }
+        }
+    }
+
+    func testSplitLockNoticeDoesNotTakeFocusAndDismisses() throws {
+        let screen = try XCTUnwrap(NSScreen.main)
+        let notice = SplitLockNotice()
+        defer { notice.orderOut(nil) }
+        let previousKey = NSApp.keyWindow
+        notice.show(enabled: true, on: screen)
+        notice.show(enabled: false, on: screen)
+        XCTAssertTrue(notice.isVisible)
+        XCTAssertTrue(notice.ignoresMouseEvents)
+        XCTAssertFalse(notice.canBecomeKey)
+        XCTAssertFalse(notice.canBecomeMain)
+        XCTAssertTrue(NSApp.keyWindow === previousKey)
+        XCTAssertEqual(notice.frame.maxY, screen.visibleFrame.maxY - 10, accuracy: 1)
+        let deadline = Date().addingTimeInterval(3)
+        while notice.isVisible && Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        }
+        XCTAssertFalse(notice.isVisible)
+    }
+
     func testPhysicalLivenessDistinguishesMinimizedClosedAndWrongOwner() throws {
         guard AXIsProcessTrusted() else { throw XCTSkip("Accessibility required") }
         let app = NSApplication.shared

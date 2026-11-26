@@ -1104,7 +1104,10 @@ final class AXWindowService {
             -> WindowOcclusionSnapshot? in
             guard let id = item[kCGWindowNumber as String] as? NSNumber,
                   let pid = item[kCGWindowOwnerPID as String] as? NSNumber,
-                  pid.int32Value != currentPID,
+                  // Settings is a normal physical obstruction. Keep our overlay
+                  // panels out of the snapshot so they cannot occlude themselves.
+                  (pid.int32Value != currentPID ||
+                   SettingsWindowController.ownsInput(NSApp?.window(withWindowNumber: id.intValue))),
                   ((item[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1) > 0 else {
                 return nil
             }

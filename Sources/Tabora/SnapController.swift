@@ -886,7 +886,7 @@ final class SnapController {
 
     var isApplicationInteractionSuppressed: Bool {
         ApplicationInteractionSuppressionPolicy.isSuppressed(
-            applicationUIVisible: isApplicationUIVisible,
+            applicationUIVisible: isApplicationUIVisible || NSApp?.modalWindow != nil,
             constraintMeasurementActive: isConstraintMeasurementActive,
             constraintPermissionPromptActive: isConstraintPermissionPromptActive,
             restoreTransactionActive: isRestoreTransactionActive
@@ -1601,7 +1601,8 @@ final class SnapController {
                 matching: localMask
             ) { [weak self] event in
                 self?.observeReservationShadowPointerEvent(event.type)
-                if self?.resizeHandleOverlay.owns(window: event.window) == true
+                if SettingsWindowController.ownsInput(event.window)
+                    || self?.resizeHandleOverlay.owns(window: event.window) == true
                     || self?.missionControlGroupProxyController.owns(
                         window: event.window
                     ) == true {
@@ -1825,7 +1826,9 @@ final class SnapController {
                 self.settings.transientGroupPreviewEnabled
             )
             self.groupSpaceMigrationLine.settingsDidChange()
-            self.missionControlGroupProxyController.hideAll()
+            if !self.settings.linkedResizeEnabled {
+                self.missionControlGroupProxyController.hideAll()
+            }
             if !self.settings.groupMigrationEnabled {
                 self.groupSpaceMigrationReservationShadowObserver.resetAll()
                 self.resetGroupSpaceMigrationForegroundIntents()

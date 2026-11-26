@@ -41,6 +41,57 @@ final class PlacementWindowIntegrationTests: XCTestCase {
         }
     }
 
+    func testExternalWindowCanMaximizeWhileSettingsRemainOpen() throws {
+        guard AXIsProcessTrusted() else { throw XCTSkip("Accessibility required") }
+        let delegate = TaboraApp()
+        _ = delegate.perform(NSSelectorFromString("openSettings"))
+        let settings = try XCTUnwrap(NSApp.windows.first { SettingsWindowController.ownsInput($0) && $0.isVisible })
+        defer { settings.close() }
+
+        let fixture = Process()
+        fixture.executableURL = try Self.compiledFixture.get()
+        fixture.arguments = ["candidate-only", "{{120, 160}, {420, 320}}", "160"]
+        try fixture.run()
+        defer { if fixture.isRunning { fixture.terminate(); fixture.waitUntilExit() } }
+        let service = AXWindowService()
+        let deadline = Date().addingTimeInterval(5)
+        while service.windowServerSelectionSnapshot()?.pid != fixture.processIdentifier && Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        }
+        let selected = try XCTUnwrap(service.windowServerSelectionSnapshot())
+        guard selected.pid == fixture.processIdentifier else { return XCTFail("Fixture must own focus") }
+        let settingsID = CGWindowID(settings.windowNumber)
+        let snapshot = service.windowOcclusionSnapshot()
+        XCTAssertTrue(snapshot.contains { $0.windowID == settingsID && $0.pid == getpid() && $0.layer == 0 })
+        let candidates = service.visibleWindows()
+        XCTAssertTrue(candidates.contains { $0.pid == selected.pid && $0.cgWindowID == selected.windowID })
+        XCTAssertFalse(candidates.contains { $0.pid == ProcessInfo.processInfo.processIdentifier })
+        let original = try XCTUnwrap(service.windowServerFrame(pid: selected.pid, windowID: selected.windowID))
+        let screen = try XCTUnwrap(NSScreen.screens.first { $0.frame.contains(CGPoint(x: original.midX, y: original.midY)) })
+        let target = SnapZone.maximize.frame(in: screen)
+        XCTAssertNotEqual(original, target)
+        _ = delegate.perform(NSSelectorFromString("maximize"))
+        let end = Date().addingTimeInterval(5)
+        while service.windowServerFrame(pid: selected.pid, windowID: selected.windowID) != target && Date() < end {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        }
+        XCTAssertEqual(service.windowServerFrame(pid: selected.pid, windowID: selected.windowID), target)
+        XCTAssertTrue(settings.isVisible)
+        let member = WindowOcclusionParticipant(pid: selected.pid, frame: target, windowID: selected.windowID)
+        func settingsCoversMember() throws -> Bool {
+            let above = try XCTUnwrap(service.occludingWindows(above: [member], in: service.windowOcclusionSnapshot()))
+            return above.contains { $0.windowID == settingsID }
+        }
+        settings.order(.below, relativeTo: Int(selected.windowID))
+        XCTAssertFalse(try settingsCoversMember())
+        settings.order(.above, relativeTo: Int(selected.windowID))
+        let orderDeadline = Date().addingTimeInterval(2)
+        while try !settingsCoversMember(), Date() < orderDeadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        }
+        XCTAssertTrue(try settingsCoversMember())
+    }
+
     func testSelfGestureReassignsHalfAndCancelsCorner() throws {
         try exercisePlacement(threeSlots: false, reassign: true)
         try exercisePlacement(threeSlots: true, reassign: true)

@@ -1,7 +1,8 @@
 # 非公開APIを用いたグループのDesktop間移送
 
-**最終更新:** 2026-09-05
-**動作確認済み環境:** macOS 26.5.2 / 26.6.2
+**最終更新:** 2026-11-26
+
+設定画面に記載する機能確認履歴は macOS 26.5.2 / 26.6.2 / 27.3。
 **対象:** Mission Control上のグループProxy移送、Window→Space観測、将来のABI保守
 
 ## 目的
@@ -143,7 +144,7 @@ operation classとinitializerは照会時・dispatch直前に再取得する。i
 
 ## API不成立時のユーザー通知
 
-設定の試験的機能欄には、実行時capabilityの現在状態と`動作確認済み: macOS 26.5.2 / 26.6.2（2026-08-30）`を表示する。
+設定の試験的機能欄には、実行時capabilityの現在状態と`動作確認済み: macOS 26.5.2 / 26.6.2 / 27.3`を表示する。
 
 警告境界はOSバージョンではなく、次の実際の不成立である。
 
@@ -191,7 +192,7 @@ destination drop直後にもmember SpaceまたはAX elementが一時的に`unkno
 
 移送仕様の最終実機確認基準: **2026-09-07 / Tabora v2.2.3 (Build 20)**
 
-2026-10-12時点のv2.3.0 (Build 21)はPreview補完用のread-only captureを同じbridgeへ追加しています。移送用symbol、capability、FIFOとmutation経路は変更していません。現行sourceでの実機回帰確認は未完了です。
+2026-10-12時点のv2.3.0 (Build 21)はPreview補完用のread-only captureを同じbridgeへ追加しています。移送用symbol、capability、FIFOとmutation経路は変更していません。これは当時の実装記録です。現在の画像取得はScreenCaptureKitを使用します。
 
 最新macOS実機確認: **2026-09-01 / Tabora v2.1.0 (Build 16) / macOS 26.6.2**
 

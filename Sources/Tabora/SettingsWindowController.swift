@@ -54,6 +54,12 @@ enum SettingsScrollGeometry {
 
 final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate {
     var gestureRegistrationPending: (() -> Bool)?
+    static func ownsInput(_ window: NSWindow?) -> Bool {
+        window?.windowController is SettingsWindowController ||
+            window?.windowController is InitialSetupWindowController
+    }
+
+    var onShortcutRecordingChange: ((Bool) -> Void)?
     var onVisibilityChange: ((Bool) -> Void)?
     var onConstraintMeasurementWillBegin: ((String) -> Bool)?
     var onConstraintMeasurementDidEnd: (() -> Void)?
@@ -170,6 +176,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         window.isReleasedWhenClosed = false
         super.init(window: window)
         window.delegate = self
+        NotificationCenter.default.addObserver(self, selector: #selector(refreshPreviewActivity),
+                                               name: NSApplication.didBecomeActiveNotification, object: NSApp)
+        NotificationCenter.default.addObserver(self, selector: #selector(stopPreview),
+                                               name: NSApplication.didResignActiveNotification, object: NSApp)
         buildUI()
         refresh()
     }
@@ -177,6 +187,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     required init?(coder: NSCoder) { fatalError() }
 
     func windowWillClose(_ notification: Notification) {
+        setPreviewActive(false)
         informationWindow?.close()
         finishRecording()
         constraintMeasurementProgressPanel.dismiss()
@@ -192,15 +203,38 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
             refreshConstraintRecords()
         }
         DispatchQueue.main.async { [weak self] in
-            self?.onVisibilityChange?(false)
+            guard let self, self.window?.isVisible != true else { return }
+            self.onVisibilityChange?(false)
         }
     }
 
+    @objc private func refreshPreviewActivity() {
+        guard let window else { return }
+        setPreviewActive(NSApp.isActive && window.isKeyWindow && window.isVisible &&
+                         !window.isMiniaturized && window.occlusionState.contains(.visible))
+    }
+
+    @objc private func stopPreview() {
+        setPreviewActive(false)
+    }
+
+    func windowDidBecomeKey(_ notification: Notification) { refreshPreviewActivity() }
+
+    func windowDidChangeOcclusionState(_ notification: Notification) { refreshPreviewActivity() }
+
+    func windowDidResignKey(_ notification: Notification) {
+        stopPreview()
+        if recordingAction != nil { finishRecording() }
+    }
+
     func windowDidMiniaturize(_ notification: Notification) {
+        setPreviewActive(false)
+        if recordingAction != nil { finishRecording() }
         onVisibilityChange?(false)
     }
 
     func windowDidDeminiaturize(_ notification: Notification) {
+        refreshPreviewActivity()
         onVisibilityChange?(true)
     }
 
@@ -283,6 +317,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         refreshExperimentalWorkspaceState()
         onVisibilityChange?(true)
         showWindow(nil)
+        refreshPreviewActivity()
         NSApplication.shared.activate(ignoringOtherApps: true)
         positionScrollViewAtTop()
     }
@@ -967,6 +1002,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     private let previewPanel = NSView()
     private var previewHeight: NSLayoutConstraint!
     private var previewItems: [PreviewItem] = []
+    private var previewActive = false
     private var currentPreview: Int?
 
     private func demo(_ scene: DemoScene, title: String, from first: NSView, in stack: NSStackView) {
@@ -1015,15 +1051,25 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         if let previous = currentPreview { previewItems[previous].anchor.showsPreview = false }
         currentPreview = index
         if let index { previewItems[index].anchor.showsPreview = true }
+        updatePreviewPanel()
+    }
+
+    private func setPreviewActive(_ active: Bool) {
+        guard previewActive != active else { return }
+        previewActive = active
+        updatePreviewPanel()
+    }
+
+    private func updatePreviewPanel() {
+        let index = currentPreview
         previewPanel.subviews.forEach { $0.removeFromSuperview() }
         previewHeight.constant = index == nil ? 0 : 180
-        guard let index else { return }
+        guard previewActive, let index else { return }
         let item = previewItems[index]
         let caption = NSTextField(labelWithString: item.title)
         caption.font = .systemFont(ofSize: 12, weight: .medium)
         caption.textColor = .secondaryLabelColor
-        let host = NSHostingView(rootView: OperationPreview(scene: item.scene, title: item.title)
-            .scaleEffect(1))
+        let host = NSHostingView(rootView: OperationPreview(scene: item.scene, title: item.title))
         previewPanel.wantsLayer = true
         previewPanel.layer?.cornerRadius = 10
         previewPanel.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
@@ -1911,10 +1957,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         guard let raw = sender.identifier?.rawValue,
               let action = ShortcutAction(rawValue: raw), settings.shortcutAvailable(action) else { return }
         recordingAction = action
+        onShortcutRecordingChange?(true)
         sender.title = L10n.text("settings.commands.press_key")
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, let action = self.recordingAction else { return event }
+            guard let self, event.window === self.window, let action = self.recordingAction else { return event }
             if event.keyCode == 53 {
                 self.finishRecording()
                 return nil
@@ -1938,11 +1985,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     }
 
     private func finishRecording() {
+        let wasRecording = recordingAction != nil
         recordingAction = nil
         if let keyMonitor {
             NSEvent.removeMonitor(keyMonitor)
             self.keyMonitor = nil
         }
+        if wasRecording { onShortcutRecordingChange?(false) }
         refresh()
     }
 

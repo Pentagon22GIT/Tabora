@@ -1,6 +1,6 @@
 # アーキテクチャ
 
-この文書は、SnapFlow Final Baselineから継承したTaboraの構造と、v1系の安定化、およびv2.0.0以降のSpace membership観測・Mission Controlグループ移送を説明するものです。これは実装の説明文書であり、実コードとは別の新しい挙動を定義するものではありません。
+配置入力は `SnapController` に集約し、AXで実ウィンドウを操作します。配置候補とMission Controlはその配置状態を参照し、画像取得は共有のScreenCaptureKitサービスへ委ねます。Desktop間の移送には独立した非公開API経路があります。
 
 ## アプリケーション起動と設定
 
@@ -8,9 +8,13 @@
 - `AppSettings.swift` は現在のアプリの `UserDefaults.standard` domainへユーザー設定を保存し、`ServiceManagement` を使ってログイン項目登録を管理します。
 - `Localization.swift` は対応言語、初回言語決定、保存、resource bundle解決、日本語fallbackを一つの境界へ集約します。初回だけmacOSの最優先言語を参照し、以後は保存した`appLanguage`を使用します。不正値とresource欠落は日本語へfail closedします。
 - `ConstraintStore.swift` はアプリ別App Constraint recordをschema version付きJSONとしてApplication SupportのBundle ID別directoryへatomic writeします。Official / Community間でrecordを暗黙共有せず、record単位でvalidationして1 recordの破損を他recordの消失へ波及させません。
-- `SettingsWindowController.swift` は上部固定のカテゴリ切替で一般 / デフォルト分割率 / コマンド / サイズ制約 / 試験的機能を表示し、「アプリ別のサイズ制約」でApp Constraintの記録許可・読み取り専用の値表示・明示計測・record削除をローカルstoreへ反映します。手動の数値編集経路は持ちません。一般設定の言語選択では適用ボタンだけを選択先言語で即時表示し、明示計測中は再起動を拒否します。
+- `SettingsWindowController.swift` はサイドバーで一般、共有リサイズ、ウィンドウ配置、デフォルト分割率、サイズ制約、ジェスチャー、ドラッグ判定、コマンド設定、試験的機能を切り替え、「アプリ別のサイズ制約」でApp Constraintの記録許可・読み取り専用の値表示・明示計測・record削除をローカルstoreへ反映します。手動の数値編集経路は持ちません。一般設定の言語選択では適用ボタンだけを選択先言語で即時表示し、明示計測中は再起動を拒否します。
 - 言語適用は現在process内でUI objectを部分的に差し替えません。`AppMain.swift`が同じ`.app` bundleだけを対象にrelaunch helperを起動できた場合に限り選択を保存し、現在processを終了します。helperは親processの終了を有限時間確認してから`/usr/bin/open -g`を実行します。起動失敗時は保存も終了も行いません。この再起動境界はSnap / Group / Resize / Recovery / Mission Control stateへ新しいmutation経路を追加しません。
 - 2 / 3 / 4分割Assist切り替えは「ウィンドウ配置」の「オプションで分割数を変更」です。新規インストールはON、旧版からの更新は保存値（未設定なら旧版のOFF）を引き継ぎます。保存key `experimentalAssistLayoutSwitchingEnabled`は移行互換のため維持します。隣接Quarterが2枚配置されたsession、または単一Halfから反対側を異なる2windowへ分割可能なsessionだけ、Picker表示中にcombined-sessionのOption状態を約60 Hzで確認します。通常コマンド用Carbon HotKeyやkeyboard event経路には登録せず、Option eventも消費しません。session終了、cancel、drag、shared resize、Space/display遷移、設定OFFではtimerを即時解除します。
+
+設定の表示中も他アプリへの配置入力を受け付けます。設定ウィンドウ内の入力は設定UIが処理し、キー割り当て中は配置ショートカットの登録を一時解除します。入力待ちを終えるか設定がキーボードフォーカスを失うと、現在の割り当てを再登録します。モーダル確認、制約計測、復元中は操作の競合を抑制します。操作例の描画は、アプリがアクティブで設定がキーウィンドウになり、画面に表示されている間だけ行います。フォーカスを失うと描画ビューを取り外し、選択中の項目は保持します。
+
+配置候補の列挙ではTabora自身のウィンドウを除外します。一方、Window Serverの前後順で分割線の遮蔽を判定するときは、設定とセットアップのウィンドウも対象に含めます。これにより、手前の設定が分割線を覆い、背後に回ると通常の境界操作に戻ります。
 
 ## ウィンドウ観測とidentity
 

@@ -2,53 +2,68 @@
 
 Taboraは、macOSのウィンドウを画面端・四隅・分割領域へ配置し、接続したウィンドウを共有境界からまとめてリサイズできる、無料・オープンソースのメニューバーアプリです。
 
-**v3.3.0（ビルド31）**では、前面に揃ったグループで、操作中の枠へスワイプするとその枠のウィンドウを選び直せます。選択を取り消すと元の配置を保ちます。「ジェスチャー」で「相対的ジェスチャ」と「ジェスチャーでグループを再配置」をオンにすると使えます。
+## インストールと更新
 
-Mission Control内の画像再取得は「試験的機能 → Mission Control内で最新の画像に切り替える」で有効にできます（初期OFF）。OFFでは通常時に取得した画像を使い、Mission Control内部での再取得は行いません。ONでは内部の既存geometry安定判定後に取得しますが、macOSの挙動によって低解像度や余白が生じる場合があります。通常のプレビューと同じく、画面収録の許可を確認してからScreenCaptureKitで対象ウィンドウだけを取得します。Mission Controlへ入る直前の取得は行いません。
+1. [公式リリース](https://github.com/Pentagon22GIT/Tabora/releases/latest)から本体のZIP、SHA-256、マニフェストを取得します。
+2. ハッシュと署名を確認し、展開した `Tabora.app` を `/Applications` または `~/Applications` に移動します。
+3. 初回起動時に表示言語を選び、アクセシビリティを許可します。画像プレビューとログイン時の起動は任意です。
 
-## 初回セットアップと削除
+公式版はTabora専用の証明書による自己署名です。更新時はTaboraを終了して本体を置き換えてください。設定・サイズ制約は引き継がれます。メニューの「更新を確認…」は公式リリースをブラウザで開きます。
 
-新規インストール時は、pent.からの案内、プライバシーと利用についての説明、表示言語を提示した後、アクセシビリティの案内と任意のログイン項目・画像取得を確認します。初回セットアップは、既存の設定または制約記録がある更新ユーザーには表示しません。初回セットアップを途中で閉じた場合は完了扱いにせず、次回に再開します。
+## ウィンドウの操作
 
-「Taboraのご案内」は、インストールへのお礼とプライバシー・権限・ライセンスを説明するもので、利用規約への同意画面ではありません。通常の更新や言語変更では再表示せず、重要な案内の改訂時だけ表示します。表示履歴のない既存版からの移行時には一度表示しますが、閉じてもアプリを利用でき、ログイン項目や画像取得の設定は変更しません。「設定」→「一般」からいつでも読み返せます。自動アップデートや販売・認証機能は追加していません。
+| やりたいこと | 操作 |
+|---|---|
+| 画面を分割する | ウィンドウを画面の端や隅へドラッグし、空いた枠に置くウィンドウを候補から選びます。 |
+| 分割幅を変える | 「共有リサイズ」を有効にして境界をドラッグすると、両側のウィンドウが一緒に変形します。 |
+| もう一つ枠を作る | 「グループの枠をさらに分割」を有効にし、半分を占めるウィンドウを同じ側の隅へ配置します。空いた隅に候補が出ます。 |
+| ジェスチャーで配置する | 「ジェスチャー」で8方向スナップを有効にし、Optionを押しながら2本指でスワイプします。 |
+| グループの窓を選び直す | 「相対的ジェスチャ」と「ジェスチャーでグループを再配置」を有効にします。グループ全体が手前にあるとき、自分の枠へスワイプして候補を選びます。キャンセルすると元の配置を保ちます。 |
+
+分割率はディスプレイごとに設定できます。実際の配置では、各ウィンドウの最小・最大サイズに合わせて境界を調整します。キーボードで操作する場合は「コマンド設定」でショートカットを割り当てます。
+
+### Mission Control
+
+グループの表示にはアプリアイコンまたはウィンドウ画像を使います。「試験的機能」では、Mission Control内での画像更新と、グループの別Desktopへの移送を個別に有効にできます。移送にはAppleの非公開APIを使用するため、macOSの更新によって利用できなくなる場合があります。
+
+## 動作環境と権限
+
+動作保証の対象はmacOS 26以降です。macOS 13〜15向けの互換処理も維持しています。表示言語は日本語、英語、韓国語、簡体字中国語、繁体字中国語から選べます。
+
+| 権限 | 用途 |
+|---|---|
+| アクセシビリティ | ウィンドウの位置やサイズを取得し、配置・リサイズします。 |
+| 画面収録（任意） | 「プレビューをウィンドウ画像にする」がオンのとき、配置候補やMission Controlに対象ウィンドウの画像を表示します。オフではアプリアイコンを使います。 |
+
+権限は「システム設定 → プライバシーとセキュリティ」で変更できます。画像はメモリ内だけで扱います。設定やサイズ制約の保存先、権限の解除については[プライバシーポリシー](PRIVACY.md)を参照してください。
+
+## 設定とデータの削除
 
 「設定 → 一般 → 削除する項目を選ぶ…」で、設定のみ、アプリ別サイズ制約のみ、全ディスプレイの分割率のみ、または全データとアプリ本体を選択できます。実行前に再確認し、対象は実行中のエディションだけです。全削除はログイン項目を解除し、本体をゴミ箱へ移動します。画像キャッシュはメモリ内だけにあり、終了時に解放します。
 
 本体の自動削除は `/Applications` または自分の `~/Applications` にある実行中のTaboraに限定します。開発フォルダ、ダウンロード先、シンボリックリンクからの本体削除は拒否します。OSの権限・診断記録、他エディション、他のコピー、手動で書き出したファイル、未知のファイル、空の保存ディレクトリは削除しません。
 
-## ローカルビルド
+## Community版をビルド
 
-既存のビルドと共有キャッシュを保護するため、出力先がすでに存在する場合はビルドスクリプトを停止します。未使用の出力先を指定できます。
+開発用のCommunity版は公式版と別のBundle ID・署名を使い、設定と権限も独立しています。ビルドにはmacOS 26のスクリーンショットAPIを含むSDKが必要です。
 
-```sh
-TABORA_BUILD_OUTPUT_DIR="$PWD/build/local-3.3.0" ./Scripts/build-community.sh
+```zsh
+git clone https://github.com/Pentagon22GIT/Tabora.git
+cd Tabora
+./Scripts/build-community.sh
 ```
 
-`install-community.sh` は新しい専用作業領域でビルドします。既存Community版の置換には対話確認が必要で、以前の本体は `~/Applications/.tabora-previous.*` に保持します。
+出力先は次のとおりです。
 
-## 主な機能
+```text
+build/community/Tabora Community.app
+```
 
-- 左右・上下・四隅・最大化へのスナップ。「デフォルト分割率」で画面ごとの初期比率を設定でき、外部画面を再接続すると前回の値を使用します。
-- 残り領域を使う配置アシスト
-- Option（⌥）ホールド式2 / 3 / 4分割Assist切り替え（ウィンドウ配置 → オプションで分割数を変更、新規インストール時はON・既存設定を継承）
-- 2 / 3 / 4ウィンドウで四領域すべてを埋めるとグループが成立します。途中で候補を閉じたり候補が尽きたりした場合、各ウィンドウは配置した位置とサイズに残ります。
-- 共有境界による連動リサイズ
-- macOS風 / Windows風 / 統合型の共有リサイズ表示
-- スナップ済みウィンドウの移動時復元
-- 「設定 → ジェスチャー」で8方向スナップを有効にできます（初期OFF）。Option＋2本指スワイプで操作中のウィンドウを配置します。真上は上側へのスナップで、設定で画面上端と同じ最大化に変更できます。
-- 「設定 → ジェスチャー → 相対的ジェスチャ」をオンにすると、前面に揃ったグループでは、操作中の窓を基準に入れ替えや細分化を指示できます。一部の窓だけを手前に戻した状態では、通常のスナップ操作が使えます。半分の枠から反対側へまっすぐスワイプすると、その側の1枚または2枚とまとめて交換します。角の枠からは辺を共有する相手と交換できます。初期状態はオフで、切り替え用のショートカットは「コマンド設定」で割り当てられます。ショートカットで切り替えると画面上端にオン・オフを2秒間表示します。
-- 「ウィンドウ配置」の「グループの枠をさらに分割」（初期ON）を有効にすると、2分割から3分割へ、3分割から4分割へ進めます。たとえば左枠を左上へスナップすると、右側の配置を保ったまま左下の候補を選べます。ジェスチャーでは、移動先が同じグループの別の枠と一致すれば、大きさに関係なく交換します。グループ内ジェスチャがオフで交換にも細分化にも該当しない方向では、元のグループを解消して新しい配置を始めます。
-- Optionによる候補切り替えが有効な場合、反対側の大きな枠に入る候補がなく、小さな2枠に別々のウィンドウを配置できるときは、自動で小さな2枠の候補を表示します。
-- 候補から追加したウィンドウに最小・最大サイズがある場合は、配置済みのウィンドウも調整して分割線を揃えます。ディスプレイ別の分割率は、各ウィンドウが受け入れられる範囲で適用します。
-- 細分化の候補をキャンセルした場合、選べる候補がなくなった場合、またはサイズ制約の記録許可ダイアログが開いた場合は、各ウィンドウをその時点の位置とサイズに残し、仮配置の予約を解放します。
-- 入れ替え時の許可画面や設定からサイズ制約を計測すると、計測終了時に対象ウィンドウのグループを解散します。計測用に変更したウィンドウの位置とサイズは復元を試みます。
-- 「ウィンドウ配置」で既存枠への置き換えを有効にできます（初期OFF）。成立済みグループ内ではジェスチャーで枠を交換できます。
-- 通常クリック、Mission Control、アプリ切替等に連動した接続グループ前面化
-- 低頻度Recovery watchdogによる一時的なAX / Window Server不整合からの復旧
-- 任意のグローバルショートカット
-- 任意の配置候補プレビュー
-- Mission ControlのグループProxyによるDesktop間移送（試験的・初期OFF）
-- 日本語、英語、韓国語、簡体字中国語、繁体字中国語のアプリ内UI
+既存の出力先は保護されます。再ビルドには環境変数 `TABORA_BUILD_OUTPUT_DIR` で未使用の絶対パスを指定できます。インストールには次のスクリプトを使用します。
+
+```zsh
+./Scripts/install-community.sh
+```
 
 ## 詳細資料
 
@@ -60,107 +75,6 @@ TABORA_BUILD_OUTPUT_DIR="$PWD/build/local-3.3.0" ./Scripts/build-community.sh
 - 常駐負荷と性能の実測結果: [PERFORMANCE_VALIDATION.md](Documentation/PERFORMANCE_VALIDATION.md)
 - セキュリティ境界: [THREAT_MODEL.md](Documentation/THREAT_MODEL.md) / [SECURITY_INVARIANTS.md](Documentation/SECURITY_INVARIANTS.md)
 - バージョンごとの変更履歴: [CHANGELOG.md](CHANGELOG.md)
-
-## 動作環境
-
-- 動作保証の対象はmacOS 26以降です。配布前に26系・27系で同じバイナリを確認します。
-- Deployment TargetはmacOS 13.0です。13〜15向けの互換経路も維持しています。
-- この版のビルド環境はmacOS SDK 27.2です。ソースのビルドにはmacOS 26のスクリーンショットAPIを含むSDKが必要です。
-- AppKit / Accessibility / Window Server APIを使用するためmacOS上でのビルド・実行が必要
-
-試験的なDesktop間グループ移送はApple非公開のSkyLight APIを実行時に解決します。設定は初期OFFで、対応symbol / class / selector / display解決のいずれかが不足する環境では移送を開始しません。APIを呼び出せない場合は警告し、設定画面にも現在状態とmacOS 26.5.2 / 26.6.2 / 27.3での機能確認履歴を表示します。macOS更新後の動作は保証されません。
-
-## 表示言語
-
-対応するアプリ内表示言語は、日本語、English、한국어、简体中文、繁體中文です。設定の「一般」にある言語選択で変更し、選択先の言語で表示される「適用して再起動」に相当するボタンを押すとTaboraが自動的に再起動して全UIへ反映します。App Constraintのサイズ取得中は適用を拒否し、現在の計測を中断しません。
-
-初回起動時だけmacOSの最優先言語を参照します。未対応言語、取得不能、保存値の破損時は日本語へfail closedし、決定結果を保存します。以後はmacOSの言語変更やTaboraの更新だけでは選択を変更しません。READMEや`Documentation/`などの開発文書は日本語を正本とし、多言語化の対象外です。
-
-## 必要な権限
-
-### Accessibility
-
-ウィンドウの取得、移動、サイズ変更、ドラッグ状態の確認に使用します。
-
-```text
-システム設定 > プライバシーとセキュリティ > Accessibility
-```
-
-### 画面収録
-
-「プレビューをウィンドウ画像にする」を有効にすると、配置候補とMission Controlのグループ表示に使用します。通常のスナップや共有リサイズには不要です。
-
-```text
-システム設定 > プライバシーとセキュリティ > 画面収録
-```
-
-TaboraはSnapFlowとは別Bundle ID・別署名identityの新しいアプリです。SnapFlowへ与えたTCC権限をTaboraが引き継ぐことを前提にせず、必要な権限はTaboraへ改めて許可してください。
-
-## Official / Community
-
-| 種類 | Official | Community |
-|---|---|---|
-| 表示名 | Tabora | Tabora Community |
-| Bundle ID | `dev.pent.Tabora` | `dev.pent.Tabora.community` |
-| 用途 | Maintainerによる正式配布 | 開発・検証・改造 |
-| 署名 | Tabora専用の固定自己署名identity | Ad-hoc |
-| 権限領域 | Official固有 | Officialと分離 |
-
-SnapFlowの公式署名identityはTaboraへ流用しません。Tabora専用の自己署名Code Signing identityは作成済みで、`Config/OfficialSigning.plist`には公開SHA-1 fingerprint `B931AC85747B9B12E32751D3776AAFD3430E5A12` が設定されています。秘密鍵・`.p12`・passwordはrepositoryへ含めません。
-
-## Official版のインストール
-
-Official Releaseが公開されている場合は、公式repositoryのReleasesから同じReleaseに含まれる`Tabora-<version>.zip`、`.sha256`、`release-manifest.json`を取得し、SHA-256と署名identityを確認してから展開します。`Tabora.app`を`~/Applications`または`/Applications`へ移動し、macOSの案内に従って初回起動と必要な権限を許可してください。
-
-TaboraはApple Developer ID / Notarizationを前提にしない自己署名OSSとして設計されています。Gatekeeper警告を無効化するコマンドやquarantine属性の強制削除を標準手順にはしません。
-
-## Community版をビルド
-
-```zsh
-git clone https://github.com/Pentagon22GIT/Tabora.git
-cd Tabora
-chmod +x Scripts/*.sh
-./Scripts/build-community.sh
-```
-
-出力先:
-
-```text
-build/community/Tabora Community.app
-```
-
-インストールまで行う場合:
-
-```zsh
-./Scripts/install-community.sh
-```
-
-## Official版
-
-Official版はMaintainerだけが作成します。Tabora専用の署名証明書を設定したうえで、cleanなGit状態から次を使用します。
-
-```zsh
-./Scripts/build-official.sh
-./Scripts/verify-official.sh
-```
-
-Release手順は[RELEASE_PROCESS.md](Documentation/RELEASE_PROCESS.md)、初期署名・repository設定は[MAINTAINER_SETUP.md](Documentation/MAINTAINER_SETUP.md)を参照してください。
-
-## 更新
-
-メニューバーの「更新を確認…」は次の公式GitHub Releasesページを既定ブラウザで開きます。
-
-```text
-https://github.com/Pentagon22GIT/Tabora/releases/latest
-```
-
-Tabora自身にHTTPクライアント、自動更新ダウンローダー、自己置換処理はありません。
-
-## プライバシー
-
-Taboraはウィンドウ情報と設定をローカルで扱います。解析、広告、テレメトリー、クラッシュレポート自動送信は実装していません。プレビュー画像は利用者が有効にした場合だけ取得し、メモリ上で使用します。
-
-詳細: [PRIVACY.md](PRIVACY.md)
 
 ## セキュリティ
 
@@ -175,24 +89,6 @@ Accessibilityと画面収録は強い権限です。公式版を確認すると�
 ## Contribution
 
 Contributionは[CONTRIBUTING.md](CONTRIBUTING.md)に従ってください。通常の変更でも`./Scripts/test.sh all`とCommunity buildを実行し、window identity / group membership / shared resize / Recovery / Mission Controlの安全不変条件を弱めないことを要求します。
-
-## プロジェクト構成
-
-```text
-Tabora/
-├── Sources/Tabora/
-├── Tests/TaboraTests/
-├── Scripts/
-├── Config/
-├── Documentation/
-├── .github/
-├── build/
-│   ├── official/
-│   └── community/
-└── release/
-```
-
-`build/`と`release/`は成果物の出力先です。この配布projectでは既存成果物を含めません。SwiftPMが生成する`.build/`、旧Git履歴、Finder metadataも含めません。
 
 ## License
 

@@ -1,3 +1,4 @@
+import SwiftUI
 import ScreenCaptureKit
 import AppKit
 import XCTest
@@ -226,6 +227,98 @@ final class NativeWindowIntegrationTests: XCTestCase {
         let restored = try controls(reopened)
         click(restored[0])
         XCTAssertTrue(restored.allSatisfy { $0.isEnabled && $0.state == .on })
+    }
+
+    func testShortcutRecordingEndsWhenSettingsLoseKeyboardFocus() throws {
+        let controller = SettingsWindowController()
+        controller.show()
+        defer { controller.close() }
+        let window = try XCTUnwrap(controller.window)
+        func descendants(_ view: NSView) -> [NSView] {
+            view.subviews + view.subviews.flatMap(descendants)
+        }
+        let root = try XCTUnwrap(window.contentView)
+        let navigation = try XCTUnwrap(descendants(root).compactMap { $0 as? NSTableView }.first)
+        var changes: [Bool] = []
+        controller.onShortcutRecordingChange = { changes.append($0) }
+        for row in 0..<navigation.numberOfRows where navigation.delegate?.tableView?(navigation, shouldSelectRow: row) == true {
+            navigation.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            if let button = descendants(root).compactMap({ $0 as? NSButton }).first(where: {
+                $0.action == NSSelectorFromString("recordShortcut:") && $0.isEnabled
+            }) {
+                XCTAssertTrue(button.sendAction(button.action, to: button.target))
+                break
+            }
+        }
+        XCTAssertEqual(changes, [true])
+        // XCTest may run without owning system keyboard focus. Deliver AppKit's
+        // delegate notification to the actual recorder after its button action.
+        controller.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification, object: window))
+        XCTAssertEqual(changes, [true, false])
+        XCTAssertTrue(window.isVisible)
+    }
+
+    func testSettingsPreviewLifecycle() throws {
+        NSApplication.shared.setActivationPolicy(.accessory)
+        NSApp.finishLaunching()
+        let controller = SettingsWindowController()
+        let window = try XCTUnwrap(controller.window)
+        window.animationBehavior = .none
+        defer { window.close() }
+        func descendants(_ view: NSView) -> [NSView] {
+            view.subviews + view.subviews.flatMap(descendants)
+        }
+        let root = try XCTUnwrap(window.contentView)
+        let table = try XCTUnwrap(descendants(root).compactMap { $0 as? NSTableView }.first)
+        controller.show()
+        // General is the first selectable category, shared resize the second.
+        let categories = (0..<table.numberOfRows).filter {
+            table.delegate?.tableView?(table, shouldSelectRow: $0) == true
+        }
+        table.selectRowIndexes(IndexSet(integer: categories[1]), byExtendingSelection: false)
+        let rows = descendants(root).compactMap { $0 as? SettingsRow }.filter { $0.onEnter != nil }
+        let selected = try XCTUnwrap(rows.last)
+        selected.onEnter?()
+        func dispatchFocusEvents() {
+            // XCTest drives the run loop but does not dispatch AppKit focus events.
+            let deadline = Date().addingTimeInterval(0.75)
+            while Date() < deadline {
+                if let event = NSApp.nextEvent(matching: .any, until: deadline, inMode: .default, dequeue: true) {
+                    NSApp.sendEvent(event)
+                }
+            }
+        }
+        func check(_ hosts: Int, line: UInt = #line) {
+            dispatchFocusEvents()
+            XCTAssertEqual(descendants(root).filter { $0 is NSHostingView<OperationPreview> }.count, hosts, "active=\(NSApp.isActive) key=\(window.isKeyWindow) occlusion=\(window.occlusionState.rawValue)", line: line)
+        }
+        dispatchFocusEvents()
+        guard NSApp.isActive else {
+            throw XCTSkip("The real keyboard-focus test needs foreground access to the desktop")
+        }
+        check(1)
+        let other = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 160, height: 100),
+                             styleMask: .titled, backing: .buffered, defer: false)
+        other.isReleasedWhenClosed = false
+        defer { other.close() }
+        other.makeKeyAndOrderFront(nil)
+        check(0)
+        XCTAssertTrue(window.isVisible)
+        window.makeKeyAndOrderFront(nil)
+        check(1)
+        XCTAssertTrue(selected.showsPreview)
+        window.miniaturize(nil)
+        check(0)
+        window.deminiaturize(nil)
+        check(1)
+        XCTAssertTrue(selected.showsPreview)
+        window.close()
+        check(0)
+        controller.show()
+        check(1)
+        XCTAssertTrue(selected.showsPreview)
+        table.selectRowIndexes(IndexSet(integer: categories[0]), byExtendingSelection: false)
+        check(0)
     }
 
     func testSettingsDescriptionsFitInEveryLanguageAndCategory() throws {

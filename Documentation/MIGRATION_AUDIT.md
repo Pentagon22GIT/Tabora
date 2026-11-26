@@ -77,6 +77,6 @@ AppKit、Accessibility、Window Server、TCC、Mission Controlを必要とする
 
 v2.3.0はv2.2.3を基準にPreviewの全サイズ補完とそのテストを追加しています。v2.2.2で追加した非同期操作の変更は継承せず、`WindowSpaces` / `GroupSpaceMigration` / `TaboraSkyLightBridge`のmigration transport、FIFO、rollback、destination layout contractをv2.2.1の境界へ戻しています。
 
-Desktop間group migrationはmacOS 26.5.2 / 26.6.2で成立を確認した履歴を保持します。OS versionによるallowlistではなく、各起動時のruntime capabilityと実Window→Space membershipによって利用可否と物理成功を判定する設計は現行sourceでも維持されています。
+Desktop間group migrationはmacOS 26.5.2 / 26.6.2 / 27.3の機能確認履歴を保持します。OS versionによるallowlistではなく、各起動時のruntime capabilityと実Window→Space membershipによって利用可否と物理成功を判定する設計は現行sourceでも維持されています。
 
 現在のRelease確認項目は[RELEASE_PROCESS.md](RELEASE_PROCESS.md)、移送実装の詳細は[PRIVATE_API_GROUP_SPACE_MIGRATION.md](PRIVATE_API_GROUP_SPACE_MIGRATION.md)、常駐性能基準は[PERFORMANCE_VALIDATION.md](PERFORMANCE_VALIDATION.md)を参照してください。

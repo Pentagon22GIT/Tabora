@@ -12,6 +12,7 @@ final class TaboraApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private lazy var splitLockNotice = SplitLockNotice()
     private let gestures = TrackpadSnapMonitor()
     private let shortcutManager = GlobalShortcutManager()
+    private var shortcutRecording = false
     private var settingsWindowIsVisible = false
     private lazy var settingsWindow: SettingsWindowController = {
         let controller = SettingsWindowController()
@@ -20,7 +21,10 @@ final class TaboraApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         controller.onVisibilityChange = { [weak self] isVisible in
             self?.settingsWindowIsVisible = isVisible
-            self?.controller.setApplicationUIVisible(isVisible)
+        }
+        controller.onShortcutRecordingChange = { [weak self] recording in
+            self?.shortcutRecording = recording
+            self?.configureShortcuts()
         }
         controller.onConstraintMeasurementWillBegin = { [weak self] identity in
             self?.controller.beginConstraintMeasurement(windowIdentity: identity) ?? false
@@ -101,6 +105,11 @@ final class TaboraApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         applicationHasStarted = true
         gestures.target = { [weak self] in
             guard let c = self?.controller, c.canAcceptGestureSnap else { return nil }
+            if self?.settingsWindowIsVisible == true {
+                let point = NSEvent.mouseLocation
+                let number = NSWindow.windowNumber(at: point, belowWindowWithWindowNumber: 0)
+                if SettingsWindowController.ownsInput(NSApp.window(withWindowNumber: number)) { return nil }
+            }
             return c.windowService.windowServerSelectionSnapshot()
         }
         gestures.snap = { [weak self] zone, selection, press in
@@ -213,8 +222,11 @@ final class TaboraApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func configureShortcuts() {
+        guard !shortcutRecording else { shortcutManager.clear(); return }
         shortcutManager.register(bindings: AppSettings.shared.enabledShortcuts) { [weak self] action in
-            guard let self, self.controller.isControllerRunning, self.controller.isUserSessionActive else { return }
+            guard let self, self.controller.isControllerRunning, self.controller.isUserSessionActive,
+                  !self.controller.isApplicationInteractionSuppressed,
+                  !(NSApp.isActive && SettingsWindowController.ownsInput(NSApp.keyWindow)) else { return }
             if action == .toggleSplitLock {
                 guard AppSettings.shared.gestureSnapEnabled else { return }
                 AppSettings.shared.splitLockEnabled.toggle()
@@ -236,9 +248,7 @@ final class TaboraApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         controller.setApplicationUIVisible(true)
         defer {
             groupSpaceMigrationAPIAlertIsPresented = false
-            controller.setApplicationUIVisible(
-                settingsWindowIsVisible
-            )
+            controller.setApplicationUIVisible(false)
         }
 
         let alert = NSAlert()

@@ -24,7 +24,7 @@ struct SwipeDiagram: View {
                     let opacity = age == 0 ? 0.83 : min(1, distance * 12) * (0.24 - Double(age) * 0.045)
                     let x = size.width * 0.5 + (direction == .up ? 0 : (previous - 0.5) * (direction == .left ? -41 : 41))
                     let y = size.height * 0.5 - (direction == .up ? (previous - 0.5) * 29 : 0)
-                    for offset in [-6.0, 6.0] {
+                    for offset: CGFloat in [-6, 6] {
                         let diameter: CGFloat = 9
                         let finger = CGRect(x: x + offset - diameter / 2, y: y - diameter / 2 + (offset < 0 ? 2 : 0), width: diameter, height: diameter)
                         ctx.fill(Path(ellipseIn: finger), with: .color(.primary.opacity(opacity)))

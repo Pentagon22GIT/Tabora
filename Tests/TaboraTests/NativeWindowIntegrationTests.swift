@@ -1,63 +1,198 @@
+import ScreenCaptureKit
 import AppKit
 import XCTest
 @testable import Tabora
 
 final class NativeWindowIntegrationTests: XCTestCase {
-    func testConstraintMeasurementRetiresOnlyTheMeasuredWindowsGroup() throws {
-        let controller = SnapController()
-        defer { controller.stop() }
-        let bounds = CGRect(x: 0, y: 0, width: 800, height: 600)
-        func makeGroup(_ prefix: String) throws -> SnapGroup {
-            let placements = [SnapZone.leftHalf, .rightHalf].enumerated().map { index, zone in
-                SplitPlacementGeometry(stableIdentity: "\(prefix)-\(index)", zone: zone,
-                                       frame: zone.frame(in: bounds))
-            }
-            return try XCTUnwrap(controller.explicitGroupStore.reconcileAfterLayoutMutation(
-                preferredMemberID: placements[0].stableIdentity, displayID: CGMainDisplayID(),
-                placements: placements, detachedConnections: []))
+    // Observe only this test process. Keep this independent of the production
+    // layer-zero policy so the oracle can inspect a real floating proxy panel.
+    private func observedImage(_ id: CGWindowID) throws -> CGImage {
+        guard #available(macOS 14, *) else { throw XCTSkip("Screenshot oracle requires macOS 14") }
+        let ready = expectation(description: "Read owned test window")
+        var result: CGImage?
+        Task {
+            defer { ready.fulfill() }
+            guard let content = try? await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true),
+                  let window = content.windows.first(where: { $0.windowID == id && $0.owningApplication?.processID == getpid() }) else { return }
+            let filter = SCContentFilter(desktopIndependentWindow: window)
+            let config = SCStreamConfiguration()
+            config.width = Int(window.frame.width)
+            config.height = Int(window.frame.height)
+            config.showsCursor = false
+            config.ignoreShadowsSingleWindow = true
+            result = try? await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
         }
-        let measured = try makeGroup("measured")
-        let other = try makeGroup("other")
-        XCTAssertTrue(controller.beginConstraintMeasurement(windowIdentity: "measured-0"))
-        XCTAssertNotNil(controller.explicitGroupStore.group(id: measured.id))
-        controller.endConstraintMeasurement()
-        XCTAssertNil(controller.explicitGroupStore.group(id: measured.id))
-        XCTAssertNotNil(controller.explicitGroupStore.group(id: other.id))
-        XCTAssertNil(controller.measuredGroup)
+        wait(for: [ready], timeout: 5)
+        return try XCTUnwrap(result)
     }
 
-    func testGeneralSettingsAlignGestureCheckboxesAndPreserveDependencies() throws {
+    func testScopedScreenshotUsesPlannedPixelsAndRechecksAuthorization() throws {
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: CGRect(x: 100, y: 100, width: 320, height: 200),
+                              styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.animationBehavior = .none
+        window.backgroundColor = .systemBlue
+        window.orderFrontRegardless()
+        window.displayIfNeeded()
+        defer { window.close() }
+        let id = CGWindowID(window.windowNumber)
+        let plan = PreviewFullSizeRequest(ownerPID: getpid(), windowSize: window.frame.size,
+                                          targetPixelSize: CGSize(width: 160, height: 100))
+        let finished = expectation(description: "Scoped window screenshot")
+        DispatchQueue.global().async {
+            XCTAssertNil(WindowPreviewCaptureService.capture(for: id, capacityWait: 0.1, expectedOwnerPID: getpid() + 1))
+            var checks = 0
+            let rejected = WindowPreviewCaptureService.capture(for: id, capacityWait: 0.1, expectedOwnerPID: getpid()) {
+                checks += 1
+                return checks == 1
+            }
+            XCTAssertNil(rejected)
+            XCTAssertGreaterThanOrEqual(checks, 2, "A revoked request must be rechecked and rejected")
+            let captured = WindowPreviewCaptureService.capture(for: id, capacityWait: 0.45, fullSizeRequest: plan)
+            XCTAssertEqual(captured?.width, 160)
+            XCTAssertEqual(captured?.height, 100)
+            finished.fulfill()
+        }
+        wait(for: [finished], timeout: 10)
+    }
+
+    func testPickerRevocationReplacesDisplayedPixelsWithoutClosingSelection() throws {
+        let app = NSApplication.shared
+        let existing = Set(app.windows.map(ObjectIdentifier.init))
+        let domain = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let settings = AppSettings(defaults: defaults)
+        settings.windowPreviewsEnabled = true
+        let controller = SnapController(settings: settings)
+        controller.isControllerRunning = true
+        controller.isApplicationUIVisible = true
+        let picker = controller.picker
+        defer { picker.hide() }
+        func observePermission(_ granted: Bool) {
+            controller.reconcilePreviewAccess(preflight: { granted })
+            let end = Date().addingTimeInterval(2)
+            while controller.previewAccessGranted != granted && Date() < end {
+                RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+            }
+            XCTAssertEqual(controller.previewAccessGranted, granted)
+        }
+        observePermission(true)
+        let frame = CGRect(x: 100, y: 100, width: 420, height: 320)
+        let icon = try XCTUnwrap(NSImage(systemSymbolName: "app", accessibilityDescription: nil))
+        let candidate = ManagedWindow(element: AXUIElementCreateApplication(getpid()), pid: getpid(),
+            title: "Owned fixture", appIcon: icon, frame: frame, isMinimized: false,
+            isFullscreen: false, cgWindowID: 7)
+        let image = try XCTUnwrap(icon.cgImage(forProposedRect: nil, context: nil, hints: nil))
+        picker.show(windowsByZone: [.leftHalf: [candidate]], zoneFrames: [.leftHalf: frame],
+                    previewProvider: { _, _ in image }, onCancel: {}, onSelect: { _, _ in })
+        let views = app.windows.filter { !existing.contains(ObjectIdentifier($0)) }
+            .compactMap(\.contentView).flatMap(descendants).compactMap { $0 as? NSImageView }
+        let placeholder = try XCTUnwrap(views.first { $0.image === icon })
+        let preview = try XCTUnwrap(views.first { $0 !== placeholder })
+        let cutoff = Date().addingTimeInterval(2)
+        while preview.image == nil && Date() < cutoff {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        }
+        XCTAssertNotNil(preview.image)
+        observePermission(false)
+        XCTAssertNil(preview.image)
+        XCTAssertFalse(placeholder.isHidden)
+        XCTAssertTrue(picker.isVisible)
+        observePermission(true)
+        let reacquired = Date().addingTimeInterval(2)
+        while preview.image == nil && Date() < reacquired {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        }
+        XCTAssertNotNil(preview.image)
+        // Hold one physical permission probe beyond its deadline. The watchdog
+        // must clear already displayed pixels without queuing a second OS call.
+        let release = DispatchSemaphore(value: 0)
+        controller.reconcilePreviewAccess { _ = release.wait(timeout: .now() + 5); return true }
+        RunLoop.main.run(until: Date().addingTimeInterval(3.1))
+        controller.reconcilePreviewAccess { XCTFail("overlapping permission probe"); return true }
+        XCTAssertFalse(controller.previewAccessGranted)
+        release.signal()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertFalse(controller.previewAccessGranted)
+        XCTAssertNil(preview.image)
+        XCTAssertFalse(placeholder.isHidden)
+        XCTAssertTrue(picker.isVisible)
+        observePermission(true)
+        let restored = Date().addingTimeInterval(2)
+        while preview.image == nil && Date() < restored {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        }
+        XCTAssertNotNil(preview.image)
+        settings.windowPreviewsEnabled = false
+        controller.reconcilePreviewAccess(preflight: { XCTFail("OFF must skip OS probe"); return true })
+        XCTAssertNil(preview.image)
+        XCTAssertFalse(placeholder.isHidden)
+        XCTAssertTrue(picker.isVisible)
+    }
+
+    func testPickerReloadRequestsNewPhysicalWindowForSameAXCard() throws {
+        _ = NSApplication.shared
+        let picker = WindowPickerPanel()
+        defer { picker.hide() }
+        let frame = CGRect(x: 200, y: 200, width: 400, height: 300)
+        let icon = try XCTUnwrap(NSImage(systemSymbolName: "app", accessibilityDescription: nil))
+        let image = try XCTUnwrap(icon.cgImage(forProposedRect: nil, context: nil, hints: nil))
+        let first = ManagedWindow(element: AXUIElementCreateApplication(getpid()), pid: getpid(),
+            title: "Sample", appIcon: icon, frame: frame, isMinimized: false, isFullscreen: false, cgWindowID: 17)
+        let replacement = first.replacingCGWindowID(18)
+        let initial = expectation(description: "First physical card")
+        let next = expectation(description: "New physical card")
+        picker.show(windowsByZone: [.leftHalf: [first]], zoneFrames: [.leftHalf: frame],
+            previewProvider: { subject, _ in
+                XCTAssertEqual(subject.pid, getpid())
+                switch subject.windowID {
+                case 17: initial.fulfill()
+                case 18: next.fulfill()
+                default: XCTFail("Unexpected preview subject")
+                }
+                return image
+            }, onCancel: {}, onSelect: { _, _ in })
+        wait(for: [initial], timeout: 2)
+        XCTAssertTrue(picker.updateLayout(windowsByZone: [.leftHalf: [replacement]],
+            zoneFrames: [.leftHalf: frame], onCancel: {}, onSelect: { _, _ in }))
+        wait(for: [next], timeout: 2)
+    }
+
+    private func descendants(_ view: NSView) -> [NSView] {
+        view.subviews + view.subviews.flatMap(descendants)
+    }
+
+    private func selectGesturePage(_ root: NSView) throws -> [SettingsSwitch] {
+        let table = try XCTUnwrap(descendants(root).compactMap { $0 as? NSTableView }.first)
+        table.selectRowIndexes(IndexSet(integer: 8), byExtendingSelection: false)
+        root.layoutSubtreeIfNeeded()
+        let controls = descendants(root).compactMap { $0 as? SettingsSwitch }
+        return try ["settings.gesture.snap", "settings.gesture.maximize", "settings.split_lock"].map { key in
+            try XCTUnwrap(controls.first { $0.title == L10n.text(key) })
+        }
+    }
+
+    func testGestureSettingsAlignSwitchesAndPreserveDependencies() throws {
         _ = NSApplication.shared
         let controller = SettingsWindowController()
         let window = try XCTUnwrap(controller.window)
         defer { window.close() }
         let root = try XCTUnwrap(window.contentView)
-        root.layoutSubtreeIfNeeded()
-        func buttons(in view: NSView) -> [NSButton] {
-            view.subviews.compactMap { $0 as? NSButton } + view.subviews.flatMap(buttons)
-        }
-        let controls = buttons(in: root)
-        func control(_ key: String) throws -> NSButton {
-            try XCTUnwrap(controls.first { $0.title == L10n.text(key) })
-        }
-        let parent = try control("settings.gesture.snap")
-        let maximize = try control("settings.gesture.maximize")
-        let lock = try control("settings.split_lock")
+        let controls = try selectGesturePage(root)
+        let parent = controls[0]
+        let row = try XCTUnwrap(descendants(root).compactMap { $0 as? SettingsRow }.first { row in
+            row.arrangedSubviews.contains { ($0 as? SettingsSwitch)?.title == L10n.text("settings.gesture.reassign") }
+        })
+        XCTAssertTrue(row.arrangedSubviews.contains { ($0 as? NSTextField)?.stringValue == L10n.text("settings.gesture.reassign.note") })
         let position = parent.convert(parent.bounds, to: root)
         XCTAssertGreaterThan(position.width, 0)
         XCTAssertLessThanOrEqual(position.maxX, root.bounds.maxX)
-        for child in [maximize, lock] {
+        for child in controls.dropFirst() {
             XCTAssertEqual(child.convert(child.bounds, to: root).minX, position.minX, accuracy: 1)
             XCTAssertEqual(child.isEnabled, parent.state == .on)
         }
-        let style = try control("settings.general.resize_style.mac.title")
-        let mode = try control("settings.general.drag_display.lightweight.title")
-        let cursor = try control("settings.general.resize_cursor.checkbox")
-        let styleLeft = style.convert(style.bounds, to: root).minX
-        for member in [mode, cursor] {
-            XCTAssertEqual(member.convert(member.bounds, to: root).minX, styleLeft, accuracy: 1)
-        }
-        XCTAssertLessThanOrEqual(abs(styleLeft - position.minX), 12)
     }
 
     func testGestureCheckboxesPersistAcrossParentToggleAndWindowRecreation() throws {
@@ -71,27 +206,25 @@ final class NativeWindowIntegrationTests: XCTestCase {
             }
         }
         keys.forEach { defaults.set(false, forKey: $0) }
-        func controls(_ controller: SettingsWindowController) throws -> [NSButton] {
-            func buttons(_ root: NSView) -> [NSButton] {
-                root.subviews.compactMap { $0 as? NSButton } + root.subviews.flatMap(buttons)
-            }
-            let all = buttons(try XCTUnwrap(controller.window?.contentView))
-            return try ["settings.gesture.snap", "settings.gesture.maximize", "settings.split_lock"].map { key in
-                try XCTUnwrap(all.first { $0.title == L10n.text(key) })
-            }
+        func controls(_ controller: SettingsWindowController) throws -> [NSSwitch] {
+            try selectGesturePage(XCTUnwrap(controller.window?.contentView)).map(\.control)
+        }
+        func click(_ control: NSSwitch) {
+            control.state = control.state == .on ? .off : .on
+            XCTAssertTrue(control.sendAction(control.action, to: control.target))
         }
         let controller = SettingsWindowController()
         defer { controller.window?.close() }
         let checkboxes = try controls(controller)
-        for checkbox in checkboxes { checkbox.performClick(nil) }
+        for checkbox in checkboxes { click(checkbox) }
         XCTAssertTrue(keys.allSatisfy { defaults.bool(forKey: $0) })
-        checkboxes[0].performClick(nil)
-        XCTAssertTrue(checkboxes.dropFirst().allSatisfy { !$0.isEnabled && $0.state == .off })
+        click(checkboxes[0])
+        XCTAssertTrue(checkboxes.dropFirst().allSatisfy { !$0.isEnabled && $0.state == .on })
         XCTAssertTrue(keys.dropFirst().allSatisfy { defaults.bool(forKey: $0) })
         let reopened = SettingsWindowController()
         defer { reopened.window?.close() }
         let restored = try controls(reopened)
-        restored[0].performClick(nil)
+        click(restored[0])
         XCTAssertTrue(restored.allSatisfy { $0.isEnabled && $0.state == .on })
     }
 
@@ -108,13 +241,18 @@ final class NativeWindowIntegrationTests: XCTestCase {
             let window = try XCTUnwrap(controller.window)
             defer { window.close() }
             let root = try XCTUnwrap(window.contentView)
-            let categories = try XCTUnwrap(descendants(root).compactMap { $0 as? NSSegmentedControl }.first)
-            for index in 0..<categories.segmentCount {
-                categories.selectedSegment = index
-                XCTAssertTrue(categories.sendAction(categories.action, to: categories.target))
+            let categories = try XCTUnwrap(descendants(root).compactMap { $0 as? NSTableView }.first)
+            for index in 0..<categories.numberOfRows where categories.delegate?.tableView?(categories, shouldSelectRow: index) == true {
+                categories.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
                 root.layoutSubtreeIfNeeded()
-                let scroll = try XCTUnwrap(descendants(root).compactMap { $0 as? NSScrollView }.first)
+                let scroll = try XCTUnwrap(descendants(root).compactMap { $0 as? NSScrollView }.first { $0.documentView !== categories })
                 let document = try XCTUnwrap(scroll.documentView)
+                let page = try XCTUnwrap(document.subviews.first)
+                let contentEnd = page.convert(page.bounds, to: document).maxY
+                let expectedRange = max(0, contentEnd + 16 - scroll.contentView.bounds.height)
+                var proposed = scroll.contentView.bounds
+                proposed.origin.y = document.bounds.height
+                XCTAssertEqual(scroll.contentView.constrainBoundsRect(proposed).minY, expectedRange, accuracy: 1)
                 for field in descendants(document).compactMap({ $0 as? NSTextField })
                     where !field.isHiddenOrHasHiddenAncestor && !field.stringValue.isEmpty {
                     let frame = field.convert(field.bounds, to: document)
@@ -304,8 +442,19 @@ final class NativeWindowIntegrationTests: XCTestCase {
         }
     }
 
+    func testRevokingDisplayedGroupPixelsPreservesProxyAndPlacement() throws {
+        try assertSplitWindowClose(zones: [.leftHalf, .rightHalf], closedIndex: 1,
+                                   deliversNotification: false, verifyRevocation: true)
+    }
+
+    func testDesktopRecoveryWithdrawsProxyOrderedAboveItsMembers() throws {
+        try assertSplitWindowClose(zones: [.leftHalf, .rightHalf], closedIndex: 0,
+                                   deliversNotification: false, unexpectedProxyFocus: true)
+    }
+
     private func assertSplitWindowClose(zones: [SnapZone], closedIndex: Int,
-                                       deliversNotification: Bool, minimizesMember: Bool = false) throws {
+                                       deliversNotification: Bool, minimizesMember: Bool = false,
+                                       verifyRevocation: Bool = false, unexpectedProxyFocus: Bool = false) throws {
         guard AXIsProcessTrusted() else { throw XCTSkip("Accessibility required") }
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
@@ -352,7 +501,7 @@ final class NativeWindowIntegrationTests: XCTestCase {
             let id = CGWindowID(window.windowNumber)
             let element = try XCTUnwrap(elements.first { RuntimeWindowIDResolver().resolve($0) == id })
             let frame = try XCTUnwrap(AXWindowService().windowServerFrame(pid: getpid(), windowID: id))
-            return ManagedWindow(element: element, pid: getpid(), title: window.title, appIcon: nil,
+            return ManagedWindow(element: element, pid: getpid(), title: window.title, appIcon: NSImage(systemSymbolName: "app", accessibilityDescription: nil),
                 frame: frame, isMinimized: false, isFullscreen: false, cgWindowID: id)
         }
         let placements = zip(managed, zones).map { window, zone in
@@ -380,11 +529,13 @@ final class NativeWindowIntegrationTests: XCTestCase {
                 previewCacheByteLimit: 16 * 1024 * 1024,
                 previewProvider: { id, authorized in
                     guard authorized(), let id else { return nil }
-                    let image = CGWindowListCreateImage(.null, .optionIncludingWindow, id, .boundsIgnoreFraming)
+                    let image = WindowPreviewCaptureService.capture(for: id, capacityWait: 0.45, isGroupPreview: true, expectedOwnerPID: getpid(), shouldCapture: authorized)
                     print("SPLIT_CAPTURE: id=\(id) pixels=\(image?.width ?? 0)x\(image?.height ?? 0)")
                     return image
                 }, transientPreviewProvider: { _, _ in nil })
         }
+        proxy.onPreviewCacheReady = { refresh() }
+        defer { proxy.onPreviewCacheReady = nil }
         refresh()
         RunLoop.main.run(until: Date().addingTimeInterval(0.3))
         refresh()
@@ -393,16 +544,53 @@ final class NativeWindowIntegrationTests: XCTestCase {
         let proxyWindow = try XCTUnwrap(app.windows.first { $0.windowNumber > 0 && CGWindowID($0.windowNumber) == descriptor.windowID })
         XCTAssertTrue(proxyWindow.isVisible, "Must start with a real visible proxy, not only a dictionary entry")
         XCTAssertGreaterThan(proxyWindow.alphaValue, 0)
+        if unexpectedProxyFocus {
+            proxy.onPreviewCacheReady = nil
+            proxy.currentTransitionAuthorization = { _ in false }
+            proxyWindow.orderFrontRegardless()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+            let observation = controller.windowService.windowOcclusionSnapshotObservation(includingOrder: true)
+            proxy.withdrawUnsafeDesktopProxies(orderedWindowIDs: observation.orderedWindowIDs)
+            XCTAssertFalse(proxyWindow.isVisible)
+            XCTAssertTrue(proxyWindow.ignoresMouseEvents)
+            XCTAssertEqual(controller.explicitGroupStore.groups.map(\.id), [group.id])
+            return
+        }
         proxyWindow.displayIfNeeded()
-        let previewImage = try XCTUnwrap(CGWindowListCreateImage(.null, .optionIncludingWindow,
-            descriptor.windowID, .boundsIgnoreFraming))
-        let bitmap = NSBitmapImageRep(cgImage: previewImage)
-        let leftColor = try XCTUnwrap(bitmap.colorAt(x: bitmap.pixelsWide / 4,
+        let readyDeadline = Date().addingTimeInterval(3)
+        var bitmap: NSBitmapImageRep
+        var leftColor: NSColor
+        var rightColor: NSColor
+        repeat {
+            bitmap = NSBitmapImageRep(cgImage: try observedImage(descriptor.windowID))
+            leftColor = try XCTUnwrap(bitmap.colorAt(x: bitmap.pixelsWide / 4,
             y: bitmap.pixelsHigh / 4)?.usingColorSpace(.deviceRGB))
-        let rightColor = try XCTUnwrap(bitmap.colorAt(x: 3 * bitmap.pixelsWide / 4,
+            rightColor = try XCTUnwrap(bitmap.colorAt(x: 3 * bitmap.pixelsWide / 4,
             y: bitmap.pixelsHigh / 4)?.usingColorSpace(.deviceRGB))
+            if abs(leftColor.redComponent - rightColor.redComponent) > 0.3 { break }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.08))
+        } while Date() < readyDeadline
+        // The fixture census is valid only until closure. Stop replaying it
+        // before handing lifecycle ownership back to the controller.
+        proxy.onPreviewCacheReady = nil
         XCTAssertGreaterThan(abs(leftColor.redComponent - rightColor.redComponent), 0.3,
             "The proxy must contain both captured window images, not an empty placeholder")
+        if verifyRevocation {
+            proxy.setPreviewsEnabled(false)
+            proxyWindow.displayIfNeeded()
+            let cleared = NSBitmapImageRep(cgImage: try observedImage(descriptor.windowID))
+            let a = try XCTUnwrap(cleared.colorAt(x: cleared.pixelsWide / 4,
+                y: cleared.pixelsHigh / 4)?.usingColorSpace(.deviceRGB))
+            let b = try XCTUnwrap(cleared.colorAt(x: 3 * cleared.pixelsWide / 4,
+                y: cleared.pixelsHigh / 4)?.usingColorSpace(.deviceRGB))
+            XCTAssertLessThan(abs(a.redComponent - b.redComponent), 0.05)
+            XCTAssertGreaterThan(max(abs(a.redComponent - leftColor.redComponent),
+                                     abs(b.redComponent - rightColor.redComponent)), 0.15)
+            XCTAssertTrue(proxyWindow.isVisible)
+            XCTAssertEqual(controller.explicitGroupStore.groups.map(\.id), [group.id])
+            XCTAssertEqual(controller.lockedPlacements.count, zones.count)
+            return
+        }
         if let folder = ProcessInfo.processInfo.environment["TABORA_UI_SNAPSHOT_DIR"],
            let png = bitmap.representation(using: .png, properties: [:]) {
             try png.write(to: URL(fileURLWithPath: folder).appendingPathComponent("split-proxy-before-close.png"))
@@ -522,7 +710,7 @@ final class NativeWindowIntegrationTests: XCTestCase {
         XCTAssertTrue(controller.window === window)
         XCTAssertEqual(window.windowNumber, number)
         let stack = try XCTUnwrap(window.contentView?.subviews.first as? NSStackView)
-        let choices = stack.arrangedSubviews.compactMap { $0 as? NSButton }.filter { $0.action == nil }
+        let choices = descendants(stack).compactMap { $0 as? NSSwitch }
         XCTAssertEqual(choices.count, 2)
         choices.forEach { $0.state = .on }
         let secondOrigin = try primaryOrigin()
@@ -557,8 +745,7 @@ final class NativeWindowIntegrationTests: XCTestCase {
                 }
                 if presentation == .informationUpdate,
                    let folder = ProcessInfo.processInfo.environment["TABORA_UI_SNAPSHOT_DIR"],
-                   let pixels = CGWindowListCreateImage(.null, .optionIncludingWindow,
-                        CGWindowID(window.windowNumber), [.boundsIgnoreFraming, .bestResolution]),
+                   let pixels = try? observedImage(CGWindowID(window.windowNumber)),
                    let png = NSBitmapImageRep(cgImage: pixels).representation(using: .png, properties: [:]) {
                     try png.write(to: URL(fileURLWithPath: folder).appendingPathComponent("information-\(language.rawValue).png"))
                 }
@@ -588,8 +775,7 @@ final class NativeWindowIntegrationTests: XCTestCase {
                     XCTAssertLessThanOrEqual(view.frame.maxY, stack.bounds.height + 1)
                 }
                 if let folder = ProcessInfo.processInfo.environment["TABORA_UI_SNAPSHOT_DIR"] {
-                    let image = try XCTUnwrap(CGWindowListCreateImage(.null, .optionIncludingWindow,
-                        CGWindowID(window.windowNumber), [.boundsIgnoreFraming, .bestResolution]))
+                    let image = try observedImage(CGWindowID(window.windowNumber))
                     let bitmap = NSBitmapImageRep(cgImage: image)
                     let data = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
                     try data.write(to: URL(fileURLWithPath: folder)

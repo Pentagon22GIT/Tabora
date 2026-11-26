@@ -1599,6 +1599,15 @@ final class MissionControlGroupProxyController {
         }
     }
 
+    var hasDesktopProxies: Bool { !windowsByGroupID.isEmpty }
+
+    func withdrawUnsafeDesktopProxies(orderedWindowIDs: [CGWindowID]) {
+        guard !orderedWindowIDs.isEmpty else { return }
+        for window in windowsByGroupID.values {
+            window.withdrawIfAheadOfMembers(orderedWindowIDs: orderedWindowIDs)
+        }
+    }
+
     var hasPresentationRecoveryDebt: Bool {
         windowsByGroupID.values.contains { $0.needsPresentationRecovery }
     }
@@ -1711,7 +1720,10 @@ final class MissionControlGroupProxyController {
     /// proxy refresh is suppressed.
     func setPreviewsEnabled(_ enabled: Bool) {
         guard previewsAreEnabled != enabled else { return }
-        if !enabled { endTransientPreviewSession() }
+        if !enabled {
+            endTransientPreviewSession()
+            windowsByGroupID.values.forEach { $0.clearDisplayedPreviews() }
+        }
         previewCaptureGeneration &+= 1
         previewsAreEnabled = enabled
         previewQueue.cancelAllOperations()
@@ -3362,6 +3374,15 @@ private final class MissionControlGroupProxyWindow: NSWindow, NSWindowDelegate {
     }
 
 
+    func clearDisplayedPreviews() {
+        normalMembersBeforeTransientPreview = nil
+        proxyView.members = proxyView.members.map {
+            MissionControlGroupProxyMember(stableIdentity: $0.stableIdentity, frame: $0.frame,
+                                          preview: nil, icon: $0.icon)
+        }
+        proxyView.needsDisplay = true
+    }
+
     func discardTransientPreviews() {
         guard let normalMembersBeforeTransientPreview else { return }
         proxyView.members = normalMembersBeforeTransientPreview
@@ -3448,6 +3469,15 @@ private final class MissionControlGroupProxyWindow: NSWindow, NSWindowDelegate {
         ignoresMouseEvents = true
         proxyView.needsDisplay = true
         displayIfNeeded()
+    }
+
+    func withdrawIfAheadOfMembers(orderedWindowIDs: [CGWindowID]) {
+        guard isVisible, isSafelyPresented, allowsPresentationMutation,
+              proxyView.spaceMigrationQueuePosition == nil, windowNumber > 0,
+              MissionControlProxyOrderingPolicy.observation(proxyWindowID: CGWindowID(windowNumber),
+                  requiredWindowIDs: lastPresentedMemberWindowIDs, orderedWindowIDs: orderedWindowIDs) == .confirmedUnsafe,
+              currentTransitionAuthorization?(groupID) != true else { return }
+        cancelSelectionTransition()
     }
 
     func requireOrderingRevalidation() {
@@ -3588,7 +3618,12 @@ private final class MissionControlGroupProxyWindow: NSWindow, NSWindowDelegate {
             transitionToken,
             groupID: groupID,
             presentationGeneration: presentationGeneration
-        ) else { return }
+        ) else {
+            // Becoming key on the desktop can move a previously verified
+            // composite ahead of its members. Withdraw its old ordering lease.
+            if proxyView.spaceMigrationQueuePosition == nil { cancelSelectionTransition() }
+            return
+        }
         // Entering Mission Control can perturb key-window state without the
         // user choosing this proxy. Confirm the selection only after Tabora
         // is genuinely the active/frontmost application. This is a bounded
@@ -3604,6 +3639,7 @@ private final class MissionControlGroupProxyWindow: NSWindow, NSWindowDelegate {
             selectedMemberIDs
         ), selectionCandidateGeneration != 0 else {
             selectionConfirmationIsPending = false
+            if proxyView.spaceMigrationQueuePosition == nil { cancelSelectionTransition() }
             return
         }
         scheduleSelectionConfirmationSettlement(

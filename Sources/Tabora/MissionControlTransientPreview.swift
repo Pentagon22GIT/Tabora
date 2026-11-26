@@ -165,18 +165,10 @@ enum MissionControlTransientPreviewPolicy {
     }
 }
 
-/// Transient capture uses the shared admission slot, preferring a full-size
-/// source inside Mission Control and using legacy capture only as a fallback.
-/// ScreenCaptureKit is not used: earlier device testing returned transformed
-/// pixels inside an original-size transparent canvas. Dimensions alone do not
-/// prove pixel quality; full-size recovery still requires native validation.
-///
-/// One serial transaction is permitted at a time. Cancellation invalidates
-/// results immediately. Work still waiting for shared capture admission is
-/// denied before Window Server capture, and completed pixels are revalidated
-/// before derived resizing. A system capture already executing synchronously is
-/// allowed to finish, after which the physical gate reopens. No canceled session
-/// can accumulate a second capture queue behind it.
+/// Owns one transient group transaction. ScreenCaptureKit captures each member
+/// using its pre-transform aspect ratio and pixel budget. Session cancellation
+/// discards pending results. Physical screenshot capacity is returned by the
+/// capture service only when the framework call finishes.
 final class MissionControlTransientPreviewCapturer {
     typealias CaptureAuthorization = () -> Bool
     typealias PreviewProvider = (

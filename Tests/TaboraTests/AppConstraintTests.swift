@@ -190,6 +190,24 @@ final class AppConstraintTests: XCTestCase {
         let second = AppConstraintRegistry(store: ConstraintStore(fileURL: fileURL))
         XCTAssertNotNil(second.record(for: good))
         XCTAssertNil(second.record(for: bad))
+        _ = second.ensureRecord(identity: identity("third"), displayName: "Third")
+        let saved = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(contentsOf: fileURL)) as? [String: Any])
+        let savedRecords = try XCTUnwrap(saved["records"] as? [[String: Any]])
+        XCTAssertEqual(savedRecords.count, 3)
+        XCTAssertTrue(savedRecords.contains { ($0["identity"] as? [String: Any])?["bundleIdentifier"] as? String == "" })
+    }
+
+    func testUnreadableAndFutureStoresSurviveNewObservations() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        for data in [Data(), Data("{".utf8), Data(#"{"schemaVersion":2,"records":[]}"#.utf8)] {
+            try data.write(to: url)
+            let registry = AppConstraintRegistry(store: ConstraintStore(fileURL: url))
+            let observer = identity("new")
+            _ = registry.ensureRecord(identity: observer, displayName: "New")
+            XCTAssertNotNil(registry.record(for: observer))
+            XCTAssertEqual(try Data(contentsOf: url), data)
+        }
     }
 
     func testPopupOffStoresPendingCandidateWithoutActivatingIt() {
@@ -819,7 +837,8 @@ final class AppConstraintTests: XCTestCase {
     func testInitialSnapSettlementStopsImpossibleExactTargetCorrection() {
         XCTAssertTrue(
             AXFrameSettlementPolicy.shouldReturnSettledConstraintResult(
-                mode: .returnSettledConstraintResult,
+                mode: .returnSettledConstraintResult([.width]),
+                sizeMismatchAxis: .width,
                 placementIsAcceptable: false,
                 mutationWasSent: true,
                 sizeMutationSucceeded: true,
@@ -831,7 +850,8 @@ final class AppConstraintTests: XCTestCase {
         )
         XCTAssertFalse(
             AXFrameSettlementPolicy.shouldReturnSettledConstraintResult(
-                mode: .returnSettledConstraintResult,
+                mode: .returnSettledConstraintResult([.width]),
+                sizeMismatchAxis: .width,
                 placementIsAcceptable: false,
                 mutationWasSent: true,
                 sizeMutationSucceeded: true,
@@ -844,6 +864,7 @@ final class AppConstraintTests: XCTestCase {
         XCTAssertFalse(
             AXFrameSettlementPolicy.shouldReturnSettledConstraintResult(
                 mode: .requireExactTarget,
+                sizeMismatchAxis: .width,
                 placementIsAcceptable: false,
                 mutationWasSent: true,
                 sizeMutationSucceeded: true,
@@ -855,7 +876,8 @@ final class AppConstraintTests: XCTestCase {
         )
         XCTAssertFalse(
             AXFrameSettlementPolicy.shouldReturnSettledConstraintResult(
-                mode: .returnSettledConstraintResult,
+                mode: .returnSettledConstraintResult([.width]),
+                sizeMismatchAxis: .width,
                 placementIsAcceptable: false,
                 mutationWasSent: true,
                 sizeMutationSucceeded: true,
@@ -865,6 +887,22 @@ final class AppConstraintTests: XCTestCase {
                 secondsWithoutTargetProgress: 1.0
             )
         )
+    }
+
+    func testPositionOrOtherAxisCannotEndSizeCorrectionEarly() {
+        for axis: ConstraintProbeAxis? in [nil, .height] {
+            XCTAssertFalse(AXFrameSettlementPolicy.shouldReturnSettledConstraintResult(
+                mode: .returnSettledConstraintResult([.width]),
+                sizeMismatchAxis: axis,
+                placementIsAcceptable: false,
+                mutationWasSent: true,
+                sizeMutationSucceeded: true,
+                acceptedSizeIsStable: true,
+                settledAfterFinalSizeRequest: true,
+                targetProgressWasObserved: true,
+                secondsWithoutTargetProgress: 0.2
+            ))
+        }
     }
 
     func testInitialSnapKnownMinimumUsesExactTargetSettlement() {

@@ -1,6 +1,6 @@
 # 第三者コンポーネントに関する通知
 
-Taboraのアプリ本体には、外部Swift Packageや同梱された第三者バイナリ依存はありません。AppleがmacOSの一部として提供するSystem Frameworkへリンクします。試験的なDesktop間グループ移送とPreviewの全サイズ補完は、実行時にAppleの非公開SkyLight frameworkを動的解決します。これは公開API契約ではなく、macOS更新で利用不能になる可能性があります。多言語対応はアプリ内のsource resourceだけで構成し、翻訳SDK、外部翻訳service、追加fontを組み込みません。
+Taboraのアプリ本体には、外部Swift Packageや同梱された第三者バイナリ依存はありません。AppleがmacOSの一部として提供するSystem Frameworkへリンクします。Spaceの照会と試験的なDesktop間グループ移送は、実行時にAppleの非公開SkyLight frameworkを動的解決します。これは公開API契約ではなく、macOS更新で利用不能になる可能性があります。多言語対応はアプリ内のsource resourceだけで構成し、翻訳SDK、外部翻訳service、追加fontを組み込みません。
 
 - AppKit
 - ApplicationServices
@@ -8,6 +8,8 @@ Taboraのアプリ本体には、外部Swift Packageや同梱された第三者�
 - QuartzCore
 - Carbon
 - ServiceManagement
+- ScreenCaptureKit / VideoToolbox
+- SwiftUI / Foundation / Security / OSLog
 
 これらはTaboraのApache License 2.0によって再ライセンスされるものではなく、利用者のmacOSに含まれる各ライセンス条件が適用されます。
 
@@ -15,4 +17,4 @@ GitHub ActionsではGitHub提供の`actions/checkout`と`github/codeql-action`�
 
 外部依存を追加する場合は、Release前にこの文書、Package.resolved（存在する場合）、LICENSE / NOTICE、Security / Privacy文書を監査してください。
 
-全サイズ補完のSPI宣言とoption値の確認には、AltTabの`src/macos/api-wrappers/SkyLight.framework.swift`を参照しています。AltTabの実装・バイナリは組み込んでいません。非公開APIの互換性はAppleの公開保証ではありません。
+旧版で使った画像補完のSPI宣言とoption値の確認には、AltTabの`src/macos/api-wrappers/SkyLight.framework.swift`を参照しました。現行の画像取得はScreenCaptureKitを使用します。AltTabの実装・バイナリは組み込んでいません。非公開APIの互換性はAppleの公開保証ではありません。

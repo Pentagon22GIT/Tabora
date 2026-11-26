@@ -45,16 +45,16 @@
 "menu.reset_state" = "状態をリセット";
 "menu.quit" = "Taboraを終了";
 
-"settings.window.title" = "Tabora %@ 設定";
+"settings.window.title" = "Tabora 設定";
 "settings.category.general" = "一般";
-"settings.category.commands" = "コマンド";
+"settings.category.commands" = "コマンド設定";
 "settings.category.constraints" = "サイズ制約";
 "settings.category.experimental" = "試験的機能";
 
 "settings.general.launch_at_login" = "ログイン時にTaboraを起動";
-"settings.general.show_window_previews" = "配置候補にウィンドウ画像を表示";
-"settings.general.preview_note" = "画面収録の許可が必要です。画像は保存・送信しません。";
-"settings.general.window_movement" = "ウィンドウ移動";
+"settings.general.show_window_previews" = "プレビューをウィンドウ画像にする";
+"settings.general.preview_note" = "画面収録の許可が必要です。これがオフの場合はプレビューがアプリアイコンになります。";
+"settings.general.window_movement" = "ウィンドウ配置";
 "settings.general.restore_size.checkbox" = "移動時にスナップ前のサイズへ戻す";
 "settings.general.linked_resize.checkbox" = "分割ウィンドウを一緒にリサイズ";
 "settings.general.linked_resize.note" = "境界をドラッグすると、その両側のウィンドウのサイズが一緒に変わります。";
@@ -75,9 +75,9 @@
 "settings.general.drag_display.lightweight.title" = "軽量";
 "settings.general.drag_display.lightweight.detail" = "すべてアイコンで表示";
 "settings.general.drag_display.standard.title" = "標準";
-"settings.general.drag_display.standard.detail" = "操作中のウィンドウだけ内容を表示";
+"settings.general.drag_display.standard.detail" = "操作中のウィンドウだけ内容を表示。ウィンドウの状態によっては、描画がリアルタイムで追従しないことがあります。";
 "settings.general.drag_display.all.title" = "すべて表示";
-"settings.general.drag_display.all.detail" = "すべてのウィンドウ内容を表示";
+"settings.general.drag_display.all.detail" = "すべてのウィンドウ内容を表示。ウィンドウの状態によっては、描画がリアルタイムで追従しないことがあります。";
 "settings.general.drag_display.note" = "表示するウィンドウが多いほど、動作が重くなる場合があります。";
 "settings.general.drag_detection.title" = "ドラッグ判定";
 "settings.general.drag_detection.note" = "画面の端や四隅が反応する範囲を調整します。";
@@ -122,8 +122,8 @@
 "settings.experimental.api_status.available" = "現在のAPI状態: 利用可能";
 "settings.experimental.api_status.unavailable" = "現在のAPI状態: 利用不可（機能をオフにしてください）";
 "settings.general.assist.title" = "2 / 3 / 4分割Assist切り替え";
-"settings.general.assist.checkbox" = "Optionで2 / 3 / 4分割Assistを切り替える";
-"settings.general.assist.note" = "Option（⌥）で空き領域を1つの大きな枠、または2つの小さな枠に切り替えます。大きな枠に入る候補がなく、小さな2枠に別々のウィンドウが収まる場合は自動で切り替わります。";
+"settings.general.assist.checkbox" = "オプションで分割数を変更";
+"settings.general.assist.note" = "候補が表示されている領域でオプション（⌥）キーを押すと、分割数が切り替わります。";
 "settings.experimental.workspace.title" = "画面端でのSpace移動を遅延";
 "settings.experimental.workspace.note" = "macOS全体の未公開Preferenceを変更します。将来のmacOSでは動作しない可能性があり、適用時にDockが再起動します。Tabora終了時には元へ戻しません。";
 "settings.experimental.workspace.delay_button" = "Space移動を60秒まで遅延";
@@ -177,7 +177,7 @@
 "migration.proxy.window_title.waiting" = "移動待機 %d/%d";
 "migration.shadow.reserved" = "移動予約中";
 "migration.shadow.waiting" = "待機 %d/%d";
-"migration.verified_environment" = "動作確認済み: macOS 26.5.2 / 26.6.2（2026-08-30）";
+"migration.verified_environment" = "動作確認済み：macOS 26.5.2、26.6.2、27.3";
 "migration.api_unavailable.title" = "Desktop間移送を利用できません";
 "migration.api_unavailable.detail" = "Taboraがグループ移送に必要な非公開APIを呼び出せませんでした。macOSの更新でAPIが変更された可能性があります。\n\n安全のため、設定の試験的機能からこの機能をオフにすることを推奨します。\n\n現在の環境: %@\n%@\n詳細: %@";
 "migration.api_unavailable.disable" = "機能をオフにする";
@@ -252,8 +252,8 @@
 "settings.ratio.top" = "上：下";
 "settings.gesture.snap" = "8方向スナップ";
 "settings.gesture.unavailable" = "入力イベントを取得できません。Taboraのアクセシビリティ権限を確認してください。";
-"settings.replace.occupied" = "使用中の枠への置き換え";
-"settings.replace.note" = "操作前から最前面にあるグループで、指定した枠が使用中のときに置き換えます。";
+"settings.replace.occupied" = "ウィンドウの置き換え";
+"settings.replace.note" = "最前面のグループで、使用中の枠に別のウィンドウを重ねて配置すると、その枠のウィンドウが入れ替わります。";
 "settings.ratio.disconnected" = "接続中の画面を表示します。取り外した画面の分割率は、再接続時に復元されます。";
 "cleanup.ratios" = "全ディスプレイの分割率だけを削除して終了";
 "settings.gesture.title" = "トラックパッドジェスチャー";
@@ -261,11 +261,24 @@
 "settings.gesture.maximize" = "上スワイプで最大化";
 
 "settings.subdivide.title" = "グループの枠をさらに分割";
-"settings.subdivide.note" = "元の枠に含まれる隅にスナップすると、他のウィンドウを残したまま空き枠の候補を表示します。キャンセルするとグループを解消します。";
-"settings.split_lock" = "グループ内ジェスチャ";
-"settings.split_lock.note" = "今いる枠を基準に、グループ内のウィンドウを直感的に操作できます。「コマンド」で切り替えキーを設定できます。";
-"command.split_lock" = "グループ内ジェスチャを切り替える";
-"notice.split_lock.on" = "グループ内ジェスチャ：オン";
-"notice.split_lock.off" = "グループ内ジェスチャ：オフ";
+"settings.subdivide.note" = "画面の左半分・右半分・上半分・下半分を占めるウィンドウを、その枠内の隅に配置すると、枠をさらに2つに分割できます。空いた枠には、そこに配置できるウィンドウの候補が表示されます。";
+"settings.split_lock" = "相対的ジェスチャ";
+"settings.split_lock.note" = "グループ内でウィンドウを入れ替えるとき、画面上の決まった位置ではなく、操作中のウィンドウから見た方向にスワイプして相手を選びます。コマンド設定でオン・オフを切り替えるキーを割り当てられます。";
+"command.split_lock" = "相対的ジェスチャを切り替える";
+"notice.split_lock.on" = "相対的ジェスチャ：オン";
+"notice.split_lock.off" = "相対的ジェスチャ：オフ";
 "settings.section.resize" = "共有リサイズ";
 "settings.section.management" = "アプリ管理";
+
+"settings.group.application" = "アプリ";
+"settings.group.layout" = "配置とサイズ";
+"settings.group.input" = "入力と操作";
+"settings.preview.replay" = "操作例を再生";
+"settings.nav.gesture" = "ジェスチャー";
+"settings.general.restore_size.note" = "スナップしたウィンドウをつかんで移動すると、スナップ前のサイズに戻ります。グループが解除されると、つかんでいないウィンドウの復元用サイズは破棄されます。";
+"settings.gesture.maximize.note" = "上にスワイプすると、画面の上半分に配置する代わりにウィンドウを最大化します。グループ内の入れ替え操作には影響しません。";
+"key.eisu" = "英数";
+"key.kana" = "かな";
+
+"settings.gesture.reassign" = "ジェスチャーでグループを再配置";
+"settings.gesture.reassign.note" = "操作中のウィンドウがある枠に向かってスワイプすると、その枠のウィンドウを選び直せます。キャンセルすると元の配置に戻ります。";

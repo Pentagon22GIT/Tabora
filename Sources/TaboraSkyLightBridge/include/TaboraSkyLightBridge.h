@@ -1,6 +1,5 @@
 #import <ApplicationServices/ApplicationServices.h>
 #import <Foundation/Foundation.h>
-#import "TaboraWindowCapture.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -29,6 +28,7 @@ FOUNDATION_EXPORT NSString *TSLBridgeCopyMoveRuntimeDiagnosticDescription(
     void
 );
 
+FOUNDATION_EXPORT BOOL TSLBridgeCanResolveWindowID(void);
 FOUNDATION_EXPORT BOOL TSLBridgeCopyWindowID(
     AXUIElementRef element,
     uint32_t *windowID

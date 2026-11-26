@@ -132,12 +132,13 @@ enum InitialSnapConstraintSettlementPolicy {
         limits: AppConstraintLimits,
         epsilon: CGFloat
     ) -> AXFrameSettlementMode {
-        operationLocalAxes(
+        let axes = operationLocalAxes(
             currentFrame: currentFrame,
             targetFrame: targetFrame,
             limits: limits,
             epsilon: epsilon
-        ).isEmpty ? .requireExactTarget : .returnSettledConstraintResult
+        )
+        return axes.isEmpty ? .requireExactTarget : .returnSettledConstraintResult(axes)
     }
 }
 
@@ -201,6 +202,9 @@ struct HandleResizeSession {
 }
 
 struct LayoutSession: Equatable {
+    var pendingGestureGroupID: SnapGroupID?
+    var gestureSlotOriginalID: String?
+    var fixedGestureSlot: Bool { gestureSlotOriginalID != nil }
     var groupID: SnapGroupID? = nil
     let displayID: CGDirectDisplayID?
     var layoutZones: [SnapZone]
@@ -253,7 +257,7 @@ struct SnapPlacementContext {
     var authorizedSplitDisplacements = Set<String>()
     var assistSession: LayoutSession?
     var subdivisionSource: [String: SnapZone]?
-    var maximizeSourceRevision: UInt64?
+    var departureRevision: UInt64?
     var maximizeStagedDeparture: StagedGroupDeparture?
     var exchange: GroupSlotExchange?
     let multiMemberReplacementPlan: MultiMemberReplacementPlan?
@@ -659,6 +663,41 @@ final class SnapController {
     private var globalEscapeMonitor: Any?
     private var workspaceObservers: [NSObjectProtocol] = []
     private var defaultObservers: [NSObjectProtocol] = []
+    private(set) var previewAccessGranted = false
+    private var previewPermissionCheckDeadline: DispatchTime?
+
+    func reconcilePreviewAccess(preflight: @escaping () -> Bool = CGPreflightScreenCaptureAccess) {
+        guard settings.windowPreviewsEnabled else {
+            if previewPermissionCheckDeadline != nil { previewPermissionCheckDeadline = .now() }
+            applyPreviewAccess(false)
+            return
+        }
+        if let deadline = previewPermissionCheckDeadline {
+            if DispatchTime.now() >= deadline { applyPreviewAccess(false) }
+            return
+        }
+        let deadline = DispatchTime.now() + 3
+        previewPermissionCheckDeadline = deadline
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let granted = preflight()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                let isFresh = self.previewPermissionCheckDeadline == deadline && DispatchTime.now() < deadline
+                self.previewPermissionCheckDeadline = nil
+                guard self.isControllerRunning else { return }
+                self.applyPreviewAccess(isFresh && granted && self.settings.windowPreviewsEnabled)
+            }
+        }
+    }
+
+    private func applyPreviewAccess(_ granted: Bool) {
+        guard previewAccessGranted != granted else { return }
+        previewAccessGranted = granted
+        picker.setPreviewAccess(granted)
+        missionControlGroupProxyController.setPreviewsEnabled(granted && settings.groupPreviewAvailable)
+        if granted && canRefreshPresentationAfterAsyncTransaction { refreshMissionControlGroupProxies() }
+    }
+
     private var recoveryTimer: Timer?
     var isControllerRunning = false
     lazy var foregroundSelectionMonitor = ForegroundSelectionMonitor(
@@ -680,6 +719,7 @@ final class SnapController {
     private var pendingDragMousePoint: CGPoint?
     private var pendingDragStartedInLikelyDragRegion = false
     var pendingDragStartedNearResizeEdge = false
+    private var obscuredDragSource: (identity: String, groupID: SnapGroupID, revision: UInt64)?
     private var frontmostGroupIDsAtPointerDown: Set<SnapGroupID>?
     var isWindowMoveConfirmed = false
     var sourceDragWindow: ManagedWindow?
@@ -858,7 +898,7 @@ final class SnapController {
     }
 
     var groupSpaceMigrationFeatureIsEnabled: Bool {
-        settings.missionControlGroupMigrationEnabled
+        settings.groupMigrationEnabled
     }
 
     var groupSpaceMigrationRuntimeStatus: GroupSpaceMigrationRuntimeStatus {
@@ -1024,6 +1064,7 @@ final class SnapController {
     func start() {
         guard !isControllerRunning else { return }
         isControllerRunning = true
+        updateGroupPreviewSuspension()
         synchronizeManagedWindowLifecycle()
         _ = windowService.requestPermissionIfNeeded()
         if !installEventMonitors() {
@@ -1031,6 +1072,7 @@ final class SnapController {
         }
         installRecoveryObservers()
         reconcileAppConstraintLifecycle()
+        reconcilePreviewAccess()
         startRecoveryTimer()
         updateSelectionMonitoringState()
         activeWindowObserver.observeFrontmostApplication()
@@ -1050,6 +1092,8 @@ final class SnapController {
 
     func stop() {
         groupSpaceMigrationLine.shutdown()
+        if previewPermissionCheckDeadline != nil { previewPermissionCheckDeadline = .now() }
+        applyPreviewAccess(false)
         isControllerRunning = false
         permissionConstraintMeasurementProgressPanel.dismiss()
         if permissionConstraintMeasurementIsActive {
@@ -1126,7 +1170,8 @@ final class SnapController {
     }
 
     func restoreLast() {
-        guard !isConstraintMeasurementActive,
+        guard !groupSpaceMigrationLine.ownsWindowMutationTransaction,
+              !isConstraintMeasurementActive,
               !isConstraintPermissionPromptActive,
               !isRestoreTransactionActive,
               !isSnapPlacementInProgress,
@@ -1344,7 +1389,8 @@ final class SnapController {
 
     @discardableResult
     func beginConstraintMeasurement(windowIdentity: String? = nil) -> Bool {
-        guard !isConstraintMeasurementActive,
+        guard !groupSpaceMigrationLine.ownsWindowMutationTransaction,
+              !isConstraintMeasurementActive,
               !isConstraintPermissionPromptActive,
               !isRestoreTransactionActive,
               !isSnapPlacementInProgress,
@@ -1444,7 +1490,8 @@ final class SnapController {
     }
 
     func snapFocusedWindow(to zone: SnapZone, input: SnapInput = .shortcut, expecting expected: WindowServerSelectionSnapshot? = nil, optionPress: GestureOptionPress? = nil) {
-        guard !isApplicationInteractionSuppressed,
+        guard !isApplicationInteractionSuppressed, !isSnapRollbackActive,
+              !groupSpaceMigrationLine.ownsWindowMutationTransaction,
               handleResizeSession == nil, !isHandleResizeFinalizing else { return }
         guard isEnabled, ensurePermission(),
               let focusedWindow = windowService.focusedWindow(
@@ -1662,8 +1709,7 @@ final class SnapController {
             guard let self else { return }
             self.isUserSessionActive = false
             self.groupSpaceMigrationLine.cancelForEnvironmentInvalidation()
-            self.missionControlGroupProxyController
-                .setPreviewCaptureSuspended(true)
+            self.updateGroupPreviewSuspension()
             self.updateSelectionMonitoringState()
             self.cancelAssist()
             self.missionControlGroupProxyController.hideAll()
@@ -1680,8 +1726,7 @@ final class SnapController {
         ) { [weak self] _ in
             guard let self else { return }
             self.isUserSessionActive = true
-            self.missionControlGroupProxyController
-                .setPreviewCaptureSuspended(false)
+            self.updateGroupPreviewSuspension()
             self.updateSelectionMonitoringState()
             self.missionControlGroupProxyController.hideAll()
             self.groupSpaceMigrationReservationShadowObserver.resetAll()
@@ -1755,6 +1800,14 @@ final class SnapController {
         })
 
         defaultObservers.append(defaultCenter.addObserver(
+            forName: AppSettings.gestureDidChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self, self.activeSession?.pendingGestureGroupID != nil,
+                  !self.settings.canReassignByGesture || !self.settings.gestureReassignmentEnabled else { return }
+            self.picker.hide(notifyCancel: true)
+        })
+
+        defaultObservers.append(defaultCenter.addObserver(
             forName: AppSettings.didChangeNotification,
             object: nil,
             queue: .main
@@ -1763,15 +1816,17 @@ final class SnapController {
             // Preview authorization is independent of presentation ownership.
             // Assist, Snap or settings UI may suppress the normal proxy update,
             // but OFF must still revoke every queued capture immediately.
+            self.reconcilePreviewAccess()
+            self.updateGroupPreviewSuspension()
             self.missionControlGroupProxyController.setPreviewsEnabled(
-                self.settings.windowPreviewsEnabled
+                self.previewAccessGranted && self.settings.groupPreviewAvailable
             )
             self.missionControlGroupProxyController.setTransientPreviewsEnabled(
-                self.settings.missionControlLatestPreviewEnabled
+                self.settings.transientGroupPreviewEnabled
             )
             self.groupSpaceMigrationLine.settingsDidChange()
             self.missionControlGroupProxyController.hideAll()
-            if !self.settings.missionControlGroupMigrationEnabled {
+            if !self.settings.groupMigrationEnabled {
                 self.groupSpaceMigrationReservationShadowObserver.resetAll()
                 self.resetGroupSpaceMigrationForegroundIntents()
             } else {
@@ -2211,6 +2266,7 @@ final class SnapController {
     var retryGestureRegistration: (() -> Void)?
 
     private func recoverIfNeeded() {
+        reconcilePreviewAccess()
         updateSelectionMonitoringState()
         guard isEnabled else { return }
         // Recovery is deliberately low-frequency. Startup/re-enable paths own
@@ -2235,7 +2291,13 @@ final class SnapController {
         // Lifetime cleanup cannot depend on AX enumeration, scene-signature
         // changes, or a Mission Control/drag preservation lease. Reuse this
         // watchdog rather than adding another timer or AX polling loop.
-        let windowServerObservation = windowService.windowOcclusionSnapshotObservation()
+        let windowServerObservation = windowService.windowOcclusionSnapshotObservation(
+            includingOrder: missionControlGroupProxyController.hasDesktopProxies)
+        if !isPreservingGroupPresentationForWindowServerTransform,
+           !missionControlSelectionTransactionIsActive, !isSnapPlacementInProgress,
+           !groupSpaceMigrationLine.ownsWindowMutationTransaction {
+            missionControlGroupProxyController.withdrawUnsafeDesktopProxies(orderedWindowIDs: windowServerObservation.orderedWindowIDs)
+        }
         reconcileMissingExplicitGroupWindows(
             windowServerSnapshot: windowServerObservation.snapshot
         )
@@ -2373,6 +2435,12 @@ final class SnapController {
            Date().timeIntervalSince(lastInteractionAt) >= assistTimeout {
             cancelAssist()
         }
+    }
+
+    private func updateGroupPreviewSuspension() {
+        missionControlGroupProxyController.setPreviewCaptureSuspended(
+            !isUserSessionActive || !settings.linkedResizeEnabled
+        )
     }
 
     func setMissionControlPreviewMemoryLimitMiB(_ value: Int) {
@@ -2571,6 +2639,7 @@ final class SnapController {
     ) {
         // Mouse-down is a Window Server observation first. AX activation can
         // settle later, but any retry must resolve this exact physical surface.
+        obscuredDragSource = nil
         prepareUnresolvedNativeResizeCandidates(at: point)
         let snapshot = windowService.windowOcclusionSnapshot()
         let bindings = persistedManagedWindowBindings
@@ -2599,6 +2668,12 @@ final class SnapController {
             windowService.windowServerWindowIDCensus(
                 forPID: evidence.selection.pid
             )
+        if case .matched(let id) = PersistedWindowBindingPolicy.resolve(
+            pid: evidence.selection.pid, windowID: evidence.selection.windowID, bindings: bindings.map(\.identity)
+        ), let group = explicitGroupStore.group(containing: id),
+           snapGroupPresentation(group, snapshot: snapshot) == .occluded {
+            obscuredDragSource = (id, group.id, group.placementRevision)
+        }
         frontmostGroupIDsAtPointerDown =
             SnapGroupPlacementEligibilityPolicy.frontmostGroupIDs(
                 groups: explicitGroupStore.groups,
@@ -3085,9 +3160,11 @@ final class SnapController {
     private func beginActualWindowMovement(_ window: ManagedWindow, at mousePoint: CGPoint) {
         guard !hasWindowActuallyMoved else { return }
         hasWindowActuallyMoved = true
-        if !stageExplicitGroupDepartureForDrag(
-            containing: window.stableIdentity
-        ) {
+        if let source = obscuredDragSource, source.identity == window.stableIdentity,
+           let group = explicitGroupStore.group(id: source.groupID), group.placementRevision == source.revision,
+           group.memberIDs.contains(source.identity) {
+            _ = dissolveExplicitGroupForUserDeparture(containing: source.identity)
+        } else if !stageExplicitGroupDepartureForDrag(containing: window.stableIdentity) {
             lockedPlacements.removeValue(forKey: window.stableIdentity)
             removeConnections(for: window.stableIdentity)
         }
@@ -3557,6 +3634,43 @@ final class SnapController {
         invalidateGroupPresentationTransitionState(for: affectedGroupIDs)
     }
 
+    private func snapGroupPresentation(_ group: SnapGroup,
+                                          snapshot: [WindowOcclusionSnapshot],
+                                          acceptedFrames: [String: CGRect] = [:]) -> GroupFrontmostEvaluation {
+        guard group.state != .suspendedForSpaceTransition, !snapshot.isEmpty,
+              let groupScreen = self.screen(withDisplayID: group.displayID) else {
+            return .indeterminate
+        }
+        var members: [PreviewGroupVisibilityMember] = []
+        var partiallyVisible = false
+        for (id, zone) in group.layout.zonesByMemberID {
+            guard let lock = lockedPlacements[id], lock.zone == zone, lock.displayID == group.displayID,
+                  let windowID = lock.cgWindowID else { return .indeterminate }
+            let selection = WindowServerSelectionSnapshot(pid: lock.pid, windowID: windowID)
+            if let surface = snapshot.first(where: { $0.layer == 0 && $0.pid == lock.pid && $0.windowID == windowID }) {
+                let expectedFrame = acceptedFrames[id] ?? lock.appliedFrame
+                guard matchesRecordedPlacement(surface.frame, expectedFrame, on: groupScreen) else {
+                    // Mission Control can transform the compositor surface alone.
+                    // Confirm a real move only on the mismatch path.
+                    guard let actual = windowService.currentFrame(of: lock.element, pid: lock.pid),
+                          matchesRecordedPlacement(surface.frame, actual, on: groupScreen) else { return .indeterminate }
+                    return .occluded
+                }
+                members.append(.init(selection: selection, frame: expectedFrame))
+            } else {
+                partiallyVisible = true
+            }
+        }
+        guard !members.isEmpty else { return .indeterminate }
+        if partiallyVisible { return .occluded }
+        switch PreviewGroupVisibilityPolicy.physicalEvaluation(members: members, displayFrame: groupScreen.frame,
+                                                               snapshot: snapshot, completeness: .complete) {
+        case .visibleTop: return group.state == .active ? .verifiedFrontmost : .indeterminate
+        case .occluded: return .occluded
+        case .notVisible, .indeterminate: return .indeterminate
+        }
+    }
+
     func snap(
         _ window: ManagedWindow,
         to direction: SnapZone,
@@ -3567,15 +3681,48 @@ final class SnapController {
         frontmostGroupIDsBeforePlacement: Set<SnapGroupID>? = nil,
         completion: ((Bool) -> Void)? = nil
     ) {
+        guard !isSnapRollbackActive, !isHandleResizeRollbackActive,
+              !groupSpaceMigrationLine.ownsWindowMutationTransaction else {
+            completion?(false)
+            return
+        }
         if input != .gesture && input != .assist { gestureOptionPress = nil }
         var zone = direction
         var lockedExchange = false
-        let lockedGroup = input == .gesture && settings.splitLockEnabled
-            ? explicitGroupStore.group(containing: window.stableIdentity) : nil
+        let observationScene = makeSnapObservationScene()
+        let sourceGroup = explicitGroupStore.group(containing: window.stableIdentity)
+        let sourcePresentation = sourceGroup.map {
+            snapGroupPresentation($0, snapshot: observationScene.windowServerSnapshot)
+        }
+        let lockedGroup = input == .gesture && settings.splitLockEnabled && sourcePresentation == .verifiedFrontmost
+            ? sourceGroup : nil
         if let group = lockedGroup {
             guard group.state == .active, group.displayID == displayID(for: screen),
                   let source = group.layout.zonesByMemberID[window.stableIdentity] else {
                 completion?(false)
+                return
+            }
+            if source == direction, settings.canReassignByGesture, settings.gestureReassignmentEnabled,
+               SplitCoverage(group.layout.zonesByMemberID.values) == .full {
+                let layout = group.layout.zonesByMemberID
+                let visible = observationScene.visibleWindows
+                guard activeSession == nil, stagedGroupDeparture == nil,
+                      visible.contains(where: { $0.stableIdentity == window.stableIdentity }),
+                      layout.allSatisfy({ id, zone in
+                          lockedPlacements[id]?.zone == zone && lockedPlacements[id]?.displayID == group.displayID
+                      }) else {
+                    completion?(false)
+                    return
+                }
+                let peers = layout.filter { $0.key != window.stableIdentity }
+                var session = LayoutSession(displayID: group.displayID,
+                    layoutZones: Array(layout.values),
+                    occupiedZones: Dictionary(uniqueKeysWithValues: peers.map { ($0.value, $0.key) }))
+                session.gestureSlotOriginalID = window.stableIdentity
+                session.pendingGestureGroupID = group.id
+                activeSession = session
+                presentIncompleteAssist(session: session, on: screen, scene: observationScene)
+                completion?(picker.isVisible)
                 return
             }
             switch LockedGestureRoute.resolve(source: source, direction: direction, layout: group.layout.zonesByMemberID,
@@ -3592,7 +3739,6 @@ final class SnapController {
             zone = settings.gestureDestination(for: direction) ?? direction
         }
         let operationGeneration = interactionGeneration
-        let observationScene = makeSnapObservationScene()
         guard var placementContext = snapPlacementContext(
             for: window,
             zone: zone,
@@ -3601,7 +3747,8 @@ final class SnapController {
                 frontmostGroupIDsBeforePlacement,
             observationScene: observationScene,
             input: input,
-            lockedExchange: lockedExchange
+            lockedExchange: lockedExchange,
+            sourcePresentation: sourcePresentation
         ) else {
             completion?(false)
             return
@@ -3611,7 +3758,7 @@ final class SnapController {
             completion?(false)
             return
         }
-        if input == .gesture, placementContext.targetGroupID != nil, let group = explicitGroupStore.group(containing: window.stableIdentity),
+        if input == .gesture, let group = sourceGroup, placementContext.targetGroupID == group.id,
            group.layout.zonesByMemberID.contains(where: { id, occupied in
                id != window.stableIdentity && SnapPlacementLayerPolicy.conflicts(existing: occupied, incoming: zone)
            }) {
@@ -3717,6 +3864,7 @@ final class SnapController {
             )
             var mutatedIDs = Set<String>()
             var operationLimitsByIdentity: [String: AppConstraintLimits] = [:]
+            var retainedSizeRetryFrame: CGRect?
             var discoveredOperationBounds = Set<String>()
             var confirmedRejections: [ConfirmedConstraintRejection] = []
             var seenPersistentRejectionKeys = Set<String>()
@@ -3741,6 +3889,7 @@ final class SnapController {
                 item: InitialConstraintPlannedWindow,
                 observation: AXFrameMutationObservation,
                 acceptedFrame: CGRect,
+                startingSize: CGSize,
                 activeAxes: Set<ConstraintProbeAxis>,
                 operationLocalAxes: Set<ConstraintProbeAxis>
             ) -> Bool {
@@ -3765,6 +3914,7 @@ final class SnapController {
                     epsilon: epsilon
                 )
 
+                var needsIsolatedMeasurement = false
                 if observation.settlementEvidence
                     .authorizesPersistentConstraintLearning,
                    let constraintIdentity = item.appConstraintIdentity {
@@ -3784,9 +3934,11 @@ final class SnapController {
                             systemLimitedAxes: systemLimitedAxes,
                             peerLimitedAxes: [],
                             measurementEpsilon: epsilon,
-                            operationGeneration: operationGeneration
+                            operationGeneration: operationGeneration,
+                            startingSize: startingSize
                         )
                     )
+                    needsIsolatedMeasurement = probeAnalysis.requiresAxisIsolatedCalibration
                     for rejection in probeAnalysis.confirmedRejections {
                         let key = "\(rejection.identity.storageKey)|\(rejection.bound.rawValue)"
                         if seenPersistentRejectionKeys.insert(key).inserted {
@@ -3816,12 +3968,20 @@ final class SnapController {
                       observation.liveness == .alive else {
                     return false
                 }
+                let isAssistCandidateWindow = input == .assist
+                    && placementContext.assistSession != nil
+                    && item.window.stableIdentity == window.stableIdentity
+                let useSettledCandidateSize = isAssistCandidateWindow
+                    && observation.settlementEvidence == .boundedAlternative
                 let attributableLocalAxes =
                     InitialSnapConstraintSettlementPolicy
                         .attributableOperationLocalAxes(
                             requestedFrame: item.targetFrame,
                             acceptedFrame: acceptedFrame,
-                            candidateAxes: operationLocalAxes,
+                            // After the full correction interval a stable rejection can
+                            // tighten a saved limit for this placement as well.
+                            candidateAxes: useSettledCandidateSize
+                                ? activeAxes : operationLocalAxes,
                             epsilon: epsilon
                         )
                 let localBounds = OperationLocalConstraintEvidencePolicy
@@ -3835,7 +3995,7 @@ final class SnapController {
                 if let constraintIdentity = item.appConstraintIdentity,
                    ConstraintPermissionPromptPolicy
                     .shouldRequestFromOperationLocalEvidence(
-                        hasAttributableBounds: !localBounds.isEmpty,
+                        hasAttributableBounds: !localBounds.isEmpty || needsIsolatedMeasurement,
                         currentPermission: self.appConstraintRegistry
                             .record(for: constraintIdentity)?
                             .recordingPermission,
@@ -3854,6 +4014,16 @@ final class SnapController {
                             displayName: item.appConstraintDisplayName,
                             windowStableIdentity: item.window.stableIdentity
                         )
+                }
+                if localBounds.count == 1, let (bound, value) = localBounds.first,
+                   abs(value - (bound.isWidth ? startingSize.width : startingSize.height)) <= epsilon {
+                    // Keeping the pre-write dimension proves no minimum. For the
+                    // incoming candidate try a legal divider nearer its current size
+                    // once; the solver still reserves the space its peers need.
+                    guard isAssistCandidateWindow, retainedSizeRetryFrame == nil else { return false }
+                    retainedSizeRetryFrame = SplitLayoutGeometry.anchoredFrame(
+                        around: item.targetFrame, size: acceptedFrame.size, anchor: item.zone.sizeConstraintAnchor)
+                    return true
                 }
                 var addedNewEvidence = false
                 for (bound, value) in localBounds {
@@ -4152,6 +4322,7 @@ final class SnapController {
                                    item: item,
                                    observation: observation,
                                    acceptedFrame: acceptedFrame,
+                                   startingSize: currentBeforeRound.size,
                                    activeAxes: activeAxes,
                                    operationLocalAxes: operationLocalAxes
                                ) {
@@ -4176,7 +4347,7 @@ final class SnapController {
                             guard case .ready(let replanned) =
                                 self.initialConstraintSnapPlan(
                                     candidate: window,
-                                    desiredFrame: desiredTargetFrame,
+                                    desiredFrame: retainedSizeRetryFrame ?? desiredTargetFrame,
                                     zone: zone,
                                     on: screen,
                                     context: placementContext,
@@ -4191,7 +4362,7 @@ final class SnapController {
                             }
                             runRound(
                                 plan: replanned,
-                                candidateMustSettleFirst: false
+                                candidateMustSettleFirst: retainedSizeRetryFrame != nil
                             )
                             return
                         }
@@ -4243,16 +4414,40 @@ final class SnapController {
         }
     }
 
+    private func assistMemberScope(_ session: LayoutSession) -> Set<String> {
+        let members = session.groupID.flatMap { explicitGroupStore.group(id: $0)?.memberIDs } ?? []
+        return members.union(session.occupiedStableIDs)
+    }
+
+    private func assistPlacementContext(_ session: LayoutSession, candidate: String,
+                                        displayID: CGDirectDisplayID) -> SnapPlacementContext {
+        SnapPlacementContext(targetGroupID: session.groupID,
+            departingGroupID: nil, memberIDs: assistMemberScope(session).union([candidate]), displayID: displayID)
+    }
+
     private func canPlaceAssistCandidate(_ id: String, in zone: SnapZone, session: LayoutSession,
                                          displayID: CGDirectDisplayID) -> Bool {
+        let owner = session.pendingGestureGroupID ?? session.groupID
         guard activeSession == session, session.displayID == displayID, session.remainingZones.contains(zone),
-              !session.occupiedStableIDs.contains(id), explicitGroupStore.group(containing: id) == nil else {
-            return false
+              isAssistCandidate(id, in: session) else { return false }
+        if let pending = session.pendingGestureGroupID {
+            guard settings.canReassignByGesture, settings.gestureReassignmentEnabled,
+                  let source = session.gestureSlotOriginalID, let group = explicitGroupStore.group(id: pending),
+                  snapGroupPresentation(group, snapshot: windowService.windowOcclusionSnapshot()) == .verifiedFrontmost,
+                  group.state == .active, group.displayID == displayID,
+                  group.memberIDs == session.occupiedStableIDs.union([source]),
+                  group.layout.zonesByMemberID[source] == zone else { return false }
         }
         return session.occupiedZones.allSatisfy { occupied, member in
             lockedPlacements[member]?.zone == occupied && lockedPlacements[member]?.displayID == displayID
-                && explicitGroupStore.group(containing: member)?.id == session.groupID
+                && explicitGroupStore.group(containing: member)?.id == owner
         }
+    }
+
+    private func isAssistCandidate(_ id: String, in session: LayoutSession) -> Bool {
+        guard !session.occupiedStableIDs.contains(id) else { return false }
+        guard let group = explicitGroupStore.group(containing: id) else { return true }
+        return id == session.gestureSlotOriginalID && group.id == session.pendingGestureGroupID
     }
 
     private func snapPlacementContext(
@@ -4262,7 +4457,8 @@ final class SnapController {
         frontmostGroupIDsBeforePlacement: Set<SnapGroupID>? = nil,
         observationScene: SnapObservationScene? = nil,
         input: SnapInput = .drag,
-        lockedExchange: Bool = false
+        lockedExchange: Bool = false,
+        sourcePresentation: GroupFrontmostEvaluation? = nil
     ) -> SnapPlacementContext? {
         guard let currentDisplayID = displayID(for: screen) else {
             return nil
@@ -4271,24 +4467,14 @@ final class SnapController {
             let source = explicitGroupStore.group(containing: window.stableIdentity)
             var context = SnapPlacementContext(targetGroupID: nil, departingGroupID: source?.id,
                 memberIDs: [window.stableIdentity], displayID: currentDisplayID)
-            context.maximizeSourceRevision = source?.placementRevision
+            context.departureRevision = source?.placementRevision
             if stagedGroupDeparture?.draggedIdentity == window.stableIdentity {
                 context.maximizeStagedDeparture = stagedGroupDeparture
             }
             return context
         }
         if let session = activeSession {
-            let groupMembers = session.groupID.flatMap {
-                explicitGroupStore.group(id: $0)?.memberIDs
-            } ?? []
-            var context = SnapPlacementContext(
-                targetGroupID: session.groupID,
-                departingGroupID: nil,
-                memberIDs: groupMembers
-                    .union(session.occupiedStableIDs)
-                    .union([window.stableIdentity]),
-                displayID: currentDisplayID
-            )
+            var context = assistPlacementContext(session, candidate: window.stableIdentity, displayID: currentDisplayID)
             if input == .assist {
                 guard canPlaceAssistCandidate(window.stableIdentity, in: zone, session: session,
                                               displayID: currentDisplayID) else { return nil }
@@ -4301,7 +4487,15 @@ final class SnapController {
         let identity = window.stableIdentity
         let existing = explicitGroupStore.group(containing: identity)
         let stage = stagedGroupDeparture.flatMap { $0.draggedIdentity == identity ? $0 : nil }
-        if let members = existing?.memberIDs ?? stage?.memberIDs {
+        let scene = observationScene ?? makeSnapObservationScene()
+        let presentation = sourcePresentation ?? existing.map {
+            snapGroupPresentation($0, snapshot: scene.windowServerSnapshot)
+        }
+        // Only a presented source group owns group-local routes. After leaving a
+        // covered layout, use the same destination search as an ungrouped window.
+        if existing != nil && presentation == .indeterminate { return nil }
+        let departing = presentation == .occluded ? existing : nil
+        if departing == nil, let members = existing?.memberIDs ?? stage?.memberIDs {
             let placements = lockedPlacements.filter { members.contains($0.key) }
             let zones = placements.mapValues(\.zone)
             guard placements.count == members.count, let original = zones[identity],
@@ -4335,17 +4529,18 @@ final class SnapController {
             }
             // A detached drag may still target a different eligible foreground group.
         }
-        let scene = observationScene ?? makeSnapObservationScene()
         let currentDraggedSurface = window.cgWindowID.map {
             WindowServerSelectionSnapshot(pid: window.pid, windowID: $0)
         }
         let replacementEnabled = settings.occupiedReplacementEnabled
         let potentiallyRelatedGroups = explicitGroupStore.groups.filter { group in
-            guard group.displayID == currentDisplayID else { return false }
+            guard group.id != departing?.id, group.displayID == currentDisplayID else { return false }
             let hasConflict = group.layout.zonesByMemberID.values.contains {
                 SnapPlacementLayerPolicy.conflicts(existing: $0, incoming: zone)
             }
-            if hasConflict { return replacementEnabled }
+            if hasConflict {
+                return replacementEnabled
+            }
             var proposedZones = group.layout.zonesByMemberID
             proposedZones[window.stableIdentity] = zone
             let proposedConnections = SplitLayoutGeometry
@@ -4524,29 +4719,17 @@ final class SnapController {
             return $0.0.creationOrder < $1.0.creationOrder
         }
 
-        if let target = eligibleGroups.first {
-            let targetGroup = target.0
-            return SnapPlacementContext(
-                targetGroupID: targetGroup.id,
-                departingGroupID: nil,
-                memberIDs: targetGroup.memberIDs.union([window.stableIdentity]),
-                displayID: currentDisplayID,
-                multiMemberReplacementPlan: target.3
-            )
-        }
-        if sawUnresolvedAuthorizedGroup {
-            return nil
-        }
-
-
-        // No complete frontmost group can absorb this placement. Leave every
-        // existing group untouched and begin an independent split.
-        return SnapPlacementContext(
-            targetGroupID: nil,
-            departingGroupID: nil,
-            memberIDs: [window.stableIdentity],
-            displayID: currentDisplayID
+        let target = eligibleGroups.first
+        if target == nil && sawUnresolvedAuthorizedGroup { return nil }
+        var context = SnapPlacementContext(
+            targetGroupID: target?.0.id,
+            departingGroupID: departing?.id,
+            memberIDs: (target?.0.memberIDs ?? []).union([identity]),
+            displayID: currentDisplayID,
+            multiMemberReplacementPlan: target?.3
         )
+        context.departureRevision = departing?.placementRevision
+        return context
     }
 
     private func finalizeSuccessfulSnap(
@@ -4563,6 +4746,10 @@ final class SnapController {
         for snapshot in snapshots {
             pendingPlacementSnapshots.removeValue(forKey: snapshot.stableIdentity)
         }
+        let focusAfterCommit = activeSnapPlacementContext.map { context in
+            context.assistSession != nil || context.exchange != nil
+                || !context.authorizedSplitDisplacements.isEmpty || context.multiMemberReplacementPlan != nil
+        } ?? false
         guard registerLock(
             for: window,
             zone: zone,
@@ -4589,7 +4776,16 @@ final class SnapController {
                 synchronizeManagedWindowLifecycle()
             }
             setAutomaticForegroundMode(forMemberID: window.stableIdentity)
+            // Activating a different client can reorder its other windows.
+            // Order the group after activation and put the selected window last.
+            if focusAfterCommit && !windowService.isFrontmostApplication(pid: window.pid) {
+                _ = windowService.activateApplication(pid: window.pid)
+            }
             raiseSnapGroup(withMainWindow: window, on: screen)
+            if focusAfterCommit {
+                _ = windowService.raise(window)
+                verifySelectedWindowOrder(window, generation: operationGeneration)
+            }
         }
         advanceAssist(
             with: window,
@@ -4807,13 +5003,30 @@ final class SnapController {
 
     func presentIncompleteAssist(session providedSession: LayoutSession, on screen: NSScreen,
                                  visibleWindows assistVisibleWindows: [ManagedWindow]) {
+        presentIncompleteAssist(session: providedSession, on: screen,
+                                scene: makeSnapObservationScene(visibleWindows: assistVisibleWindows))
+    }
+
+    private func presentIncompleteAssist(session providedSession: LayoutSession, on screen: NSScreen,
+                                         scene: SnapObservationScene) {
+        let assistVisibleWindows = scene.visibleWindows
         // This presentation supersedes any readiness check owned by the old cards.
         isAssistPlacementPending = false
         var session = providedSession
         var remaining = session.remainingZones
+        if let pending = session.pendingGestureGroupID {
+            guard settings.canReassignByGesture, settings.gestureReassignmentEnabled,
+                  let group = explicitGroupStore.group(id: pending),
+                  snapGroupPresentation(group, snapshot: scene.windowServerSnapshot) == .verifiedFrontmost else {
+                discardIncompleteAssistGroup()
+                picker.hide()
+                stopEscapeMonitoring()
+                updateAssistLayoutModifierMonitoringState()
+                return
+            }
+        }
         let candidates = assistVisibleWindows.filter { candidate in
-            !session.occupiedStableIDs.contains(candidate.stableIdentity)
-                && explicitGroupStore.group(containing: candidate.stableIdentity) == nil
+            isAssistCandidate(candidate.stableIdentity, in: session)
         }
         guard !candidates.isEmpty else {
             discardIncompleteAssistGroup()
@@ -4822,12 +5035,9 @@ final class SnapController {
             picker.hide()
             return
         }
-        let assistMemberScope = session.groupID.flatMap {
-            explicitGroupStore.group(id: $0)?.memberIDs
-        }?.union(session.occupiedStableIDs) ?? session.occupiedStableIDs
+        let assistMemberScope = assistMemberScope(session)
         let candidatesByZone: [SnapZone: [ManagedWindow]]
         let occupiedZones = Set(session.occupiedZones.keys)
-        let scene = makeSnapObservationScene(visibleWindows: assistVisibleWindows)
         func candidatesForZones(_ zones: [SnapZone]) -> [SnapZone: [ManagedWindow]] {
             var result: [SnapZone: [ManagedWindow]] = [:]
             for zone in zones where SplitLayoutGeometry.logicalSplitTopologyIsConnectedAndNonOverlapping(
@@ -4836,8 +5046,7 @@ final class SnapController {
                 let desired = recordedSnapFrame(for: zone, on: screen, memberScope: assistMemberScope)
                 result[zone] = candidates.filter { candidate in
                     guard let displayID = session.displayID else { return true }
-                    let context = SnapPlacementContext(targetGroupID: session.groupID, departingGroupID: nil,
-                        memberIDs: assistMemberScope.union([candidate.stableIdentity]), displayID: displayID)
+                    let context = assistPlacementContext(session, candidate: candidate.stableIdentity, displayID: displayID)
                     if case .confirmedInfeasible = initialConstraintSnapPlan(candidate: candidate,
                         desiredFrame: desired, zone: zone, on: screen, context: context, observationScene: scene) {
                         return false
@@ -4847,7 +5056,7 @@ final class SnapController {
             }
             return result
         }
-        if settings.assistLayoutSwitchingEnabled,
+        if !session.fixedGestureSlot, settings.assistLayoutSwitchingEnabled,
            let threeWindowLayout = AssistCompletionLayoutPolicy
                 .threeWindowZones(occupiedZones: occupiedZones) {
             let fourWindowRemaining = AssistCompletionLayoutPolicy
@@ -4892,7 +5101,7 @@ final class SnapController {
                     == Set(AssistCompletionLayoutPolicy.fourWindowZones)
                 ? fourWindowCandidates
                 : threeWindowCandidates
-        } else if settings.assistLayoutSwitchingEnabled,
+        } else if !session.fixedGestureSlot, settings.assistLayoutSwitchingEnabled,
                   let twoWindowLayout = AssistCompletionLayoutPolicy
                     .twoWindowZones(occupiedZones: occupiedZones),
                   let threeWindowLayout = AssistCompletionLayoutPolicy
@@ -5078,6 +5287,22 @@ final class SnapController {
                         if prediction.confirmedInfeasible { NSSound.beep() }
                         return
                     }
+                    // Cancellation up to this point leaves the original group intact.
+                    // Once selected, expose the vacancy as an ordinary incomplete layout.
+                    if let original = session.gestureSlotOriginalID {
+                        guard self.stageExplicitGroupDepartureForDrag(containing: original) else {
+                            self.picker.hide(notifyCancel: true)
+                            return
+                        }
+                        self.stagedGroupDeparture = nil
+                        self.lockedPlacements.removeValue(forKey: original)
+                        self.removeConnections(for: original)
+                        if readyWindow.stableIdentity != original {
+                            self.restoreFrames.removeValue(forKey: original)
+                        }
+                        self.activeSession = LayoutSession(displayID: display,
+                            layoutZones: session.layoutZones, occupiedZones: session.occupiedZones)
+                    }
                     // Readiness ownership ends here. Hand presentation to the
                     // snap transaction before retiring the picker so the final
                     // Assist placement can perform its normal post-snap rebuild.
@@ -5085,7 +5310,6 @@ final class SnapController {
                     self.picker.hide()
                     self.stopEscapeMonitoring()
                     self.updateAssistLayoutModifierMonitoringState()
-                    self.activeSession = session
                     self.snap(
                         readyWindow,
                         to: targetZone,
@@ -5126,6 +5350,7 @@ final class SnapController {
             windowsByZone: candidatesByZone,
             zoneFrames: zoneFrames,
             backdropFrames: backdropFrames,
+            previewCandidates: candidates,
             onCancel: cancel,
             onSelect: select
         )
@@ -5134,17 +5359,18 @@ final class SnapController {
                 windowsByZone: candidatesByZone,
                 zoneFrames: zoneFrames,
                 backdropFrames: backdropFrames,
-                previewCandidateBudgetCount: candidates.count,
+                previewCandidates: candidates,
+                previewsEnabled: previewAccessGranted && settings.windowPreviewsEnabled,
                 previewProvider: {
-                    [weak self] windowID, captureIsAuthorized in
+                    [weak self] subject, captureIsAuthorized in
                     guard let self,
                           self.settings.windowPreviewsEnabled,
                           captureIsAuthorized() else { return nil }
                     return self.windowService.previewCGImage(
-                        for: windowID,
+                        for: subject.windowID,
                         capacityWait:
                             PreviewCaptureAdmissionPolicy.assistCapacityWait,
-                        expectedOwnerPID: candidates.first { $0.cgWindowID == windowID }?.pid,
+                        expectedOwnerPID: subject.pid,
                         shouldCapture: { [weak self] in
                             self?.settings.windowPreviewsEnabled == true
                                 && captureIsAuthorized()
@@ -5176,7 +5402,7 @@ final class SnapController {
               !isAssistPlacementPending,
               !isSnapPlacementInProgress,
               picker.isVisible,
-              let session = activeSession,
+              let session = activeSession, !session.fixedGestureSlot,
               AssistCompletionLayoutPolicy.layoutForModifierState(
                   occupiedZones: Set(session.occupiedZones.keys),
                   currentLayout: session.layoutZones,
@@ -5217,7 +5443,7 @@ final class SnapController {
               !isAssistPlacementPending,
               !isSnapPlacementInProgress,
               picker.isVisible,
-              var session = activeSession,
+              var session = activeSession, !session.fixedGestureSlot,
               let layout = AssistCompletionLayoutPolicy.layoutForModifierState(
                   occupiedZones: Set(session.occupiedZones.keys),
                   currentLayout: session.layoutZones,
@@ -5596,7 +5822,7 @@ final class SnapController {
             let current = explicitGroupStore.group(containing: identity)
             let staged = stagedGroupDeparture?.draggedIdentity == identity ? stagedGroupDeparture : nil
             guard current?.id == context.departingGroupID,
-                  current?.placementRevision == context.maximizeSourceRevision,
+                  current?.placementRevision == context.departureRevision,
                   staged == context.maximizeStagedDeparture else { return false }
             if let staged {
                 guard staged.memberIDs.allSatisfy({ explicitGroupStore.group(containing: $0) == nil }) else { return false }
@@ -5697,9 +5923,9 @@ final class SnapController {
                 layoutZones: Array(occupied.keys) + [vacancy], occupiedZones: occupied)
             stagedGroupDeparture = nil
         } else if let departingGroupID = context?.departingGroupID {
-            guard explicitGroupStore.group(
-                containing: window.stableIdentity
-            )?.id == departingGroupID,
+            guard let source = explicitGroupStore.group(containing: window.stableIdentity),
+                  source.id == departingGroupID,
+                  context?.departureRevision.map({ $0 == source.placementRevision }) != false,
                   dissolveExplicitGroupForUserDeparture(
                     containing: window.stableIdentity
                   ) else {
@@ -6123,7 +6349,7 @@ final class SnapController {
     func discardIncompleteAssistGroup() {
         let session = activeSession
         activeSession = nil
-        guard let session, session.groupID == nil, session.occupiedStableIDs.count > 1 else { return }
+        guard let session, session.pendingGestureGroupID == nil, session.groupID == nil, session.occupiedStableIDs.count > 1 else { return }
         var retained = lockedPlacements
         for (zone, identity) in session.occupiedZones {
             guard let lock = retained[identity], lock.zone == zone, lock.displayID == session.displayID,
@@ -6180,6 +6406,7 @@ final class SnapController {
         isWindowMoveConfirmed = false
         sourceDragWindow = nil
         frontmostGroupIDsAtPointerDown = nil
+        obscuredDragSource = nil
         deferredPointerDragResolution = nil
         windowServerIDsAtDragStart.removeAll()
         detachedWindowServerCensusAtDragStart = .unknown

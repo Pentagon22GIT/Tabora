@@ -34,9 +34,15 @@ final class DisplaySplitRatioView: NSStackView {
         self.settings = settings
         displayKey = key
         super.init(frame: .zero)
-        orientation = .vertical
-        alignment = .leading
-        addArrangedSubview(NSTextField(labelWithString: screen.localizedName))
+        orientation = .horizontal
+        alignment = .centerY
+        let controls = NSStackView()
+        controls.orientation = .vertical
+        controls.alignment = .leading
+        controls.spacing = 6
+        let title = NSTextField(labelWithString: screen.localizedName)
+        title.font = .systemFont(ofSize: 13, weight: .semibold)
+        controls.addArrangedSubview(title)
         let ratio = settings.splitRatio(for: key)
         let grid = NSGridView(views: [
             [NSTextField(labelWithString: L10n.text("settings.ratio.left")), left, leftValue],
@@ -49,17 +55,22 @@ final class DisplaySplitRatioView: NSStackView {
             slider.target = self
             slider.action = #selector(changed(_:))
             slider.isContinuous = true
-            slider.widthAnchor.constraint(equalToConstant: 140).isActive = true
+            slider.widthAnchor.constraint(greaterThanOrEqualToConstant: 140).isActive = true
             slider.setAccessibilityLabel(L10n.text(label))
         }
         for label in [leftValue, topValue] {
             label.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
             label.widthAnchor.constraint(greaterThanOrEqualToConstant: 58).isActive = true
         }
-        diagram.widthAnchor.constraint(equalToConstant: 72).isActive = true
-        let aspect = screen.frame.height / max(1, screen.frame.width)
-        diagram.heightAnchor.constraint(equalToConstant: min(72, max(28, 72 * aspect))).isActive = true
-        addArrangedSubview(NSStackView(views: [diagram, grid]))
+        diagram.widthAnchor.constraint(equalToConstant: 112).isActive = true
+        diagram.heightAnchor.constraint(equalToConstant: 68).isActive = true
+        spacing = 20
+        controls.addArrangedSubview(grid)
+        addArrangedSubview(diagram)
+        addArrangedSubview(controls)
+        controls.trailingAnchor.constraint(equalTo: trailingAnchor).isActive = true
+        grid.widthAnchor.constraint(equalTo: controls.widthAnchor).isActive = true
+        grid.column(at: 1).xPlacement = .fill
         render(ratio)
     }
 

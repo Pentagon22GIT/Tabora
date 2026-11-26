@@ -73,13 +73,14 @@ final class ExperimentalWorkspaceSettings {
             guard let self else { return }
             let result: Result<Double?, Error>
             do {
-                let originalValue = try self.readEdgeDelaySynchronously()
+                let original = try self.storedValue()
+                let originalValue = try self.delay(from: original)
                 let expectedValue = self.expectedValue(for: mutation)
                 if self.valuesMatch(originalValue, expectedValue) {
                     result = .success(originalValue)
                 } else {
                     do {
-                        try self.apply(mutation)
+                        try self.write(expectedValue.map(NSNumber.init(value:)))
                         try self.restartDock()
                         let verified = try self.readEdgeDelaySynchronously()
                         guard self.valuesMatch(verified, expectedValue) else {
@@ -89,7 +90,7 @@ final class ExperimentalWorkspaceSettings {
                     } catch {
                         let primaryError = error
                         do {
-                            try self.apply(self.mutation(for: originalValue))
+                            try self.write(original)
                             try self.restartDock()
                             let rolledBack = try self.readEdgeDelaySynchronously()
                             guard self.valuesMatch(rolledBack, originalValue) else {
@@ -122,10 +123,6 @@ final class ExperimentalWorkspaceSettings {
         }
     }
 
-    private func mutation(for value: Double?) -> WorkspaceEdgeDelayMutation {
-        value.map(WorkspaceEdgeDelayMutation.set) ?? .remove
-    }
-
     private func valuesMatch(_ lhs: Double?, _ rhs: Double?) -> Bool {
         switch (lhs, rhs) {
         case (nil, nil): return true
@@ -135,90 +132,64 @@ final class ExperimentalWorkspaceSettings {
         }
     }
 
-    private func apply(_ mutation: WorkspaceEdgeDelayMutation) throws {
-        let arguments: [String]
-        switch mutation {
-        case .set(let value):
-            arguments = [
-                "write",
-                "com.apple.dock",
-                "workspaces-edge-delay",
-                "-float",
-                String(value)
-            ]
-        case .remove:
-            arguments = [
-                "delete",
-                "com.apple.dock",
-                "workspaces-edge-delay"
-            ]
+    private let dockDomain: CFString
+    private let restartDock: () throws -> Void
+
+    init(domain: String = "com.apple.dock", restartDock: @escaping () throws -> Void = ExperimentalWorkspaceSettings.restartSystemDock) {
+        self.dockDomain = domain as CFString
+        self.restartDock = restartDock
+    }
+
+    private let delayKey = "workspaces-edge-delay" as CFString
+
+    private func synchronize() throws {
+        guard CFPreferencesSynchronize(dockDomain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost) else {
+            throw WorkspaceEdgeDelayError.commandFailed("")
         }
-        _ = try run(
-            executable: "/usr/bin/defaults",
-            arguments: arguments,
-            acceptsFailure: mutation.isRemoval
-        )
+    }
+
+    private func write(_ value: CFPropertyList?) throws {
+        CFPreferencesSetValue(delayKey, value, dockDomain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost)
+        try synchronize()
     }
 
     private func readEdgeDelaySynchronously() throws -> Double? {
-        let result = try run(
-            executable: "/usr/bin/defaults",
-            arguments: [
-                "read",
-                "com.apple.dock",
-                "workspaces-edge-delay"
-            ],
-            acceptsFailure: true
-        )
-        guard result.status == 0 else { return nil }
-        let value = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty else { return nil }
-        guard let number = Double(value), number.isFinite, number >= 0 else {
+        try delay(from: storedValue())
+    }
+
+    private func storedValue() throws -> CFPropertyList? {
+        try synchronize()
+        return CFPreferencesCopyValue(delayKey, dockDomain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost)
+    }
+
+    private func delay(from stored: CFPropertyList?) throws -> Double? {
+        guard let value = stored else { return nil }
+        // Older defaults writes may have stored a numeric string.
+        let parsed: Double?
+        if let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() {
+            parsed = number.doubleValue
+        } else {
+            parsed = (value as? String).flatMap(Double.init)
+        }
+        guard let parsed, parsed.isFinite, parsed >= 0 else {
             throw WorkspaceEdgeDelayError.invalidStoredValue
         }
-        return number
+        return parsed
     }
 
-    private func restartDock() throws {
-        _ = try run(
-            executable: "/usr/bin/killall",
-            arguments: ["Dock"]
-        )
-    }
-
-    private func run(
-        executable: String,
-        arguments: [String],
-        acceptsFailure: Bool = false
-    ) throws -> (status: Int32, output: String) {
+    private static func restartSystemDock() throws {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = arguments
-        let outputPipe = Pipe()
-        process.standardOutput = outputPipe
-        process.standardError = outputPipe
-        do {
-            try process.run()
-        } catch {
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
+        process.arguments = ["Dock"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        let finished = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in finished.signal() }
+        try process.run()
+        guard finished.wait(timeout: .now() + 3) == .success else {
+            if process.isRunning { process.terminate() }
             throw WorkspaceEdgeDelayError.commandFailed("")
         }
-        // Drain the pipe while the child can still make progress. Waiting for
-        // exit first can deadlock if a future command fills the pipe buffer.
-        let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        let output = String(data: data, encoding: .utf8) ?? ""
-        if !acceptsFailure, process.terminationStatus != 0 {
-            throw WorkspaceEdgeDelayError.commandFailed(
-                output.trimmingCharacters(in: .whitespacesAndNewlines)
-            )
-        }
-        return (process.terminationStatus, output)
-    }
-}
-
-private extension WorkspaceEdgeDelayMutation {
-    var isRemoval: Bool {
-        if case .remove = self { return true }
-        return false
+        guard process.terminationStatus == 0 else { throw WorkspaceEdgeDelayError.commandFailed("") }
     }
 }

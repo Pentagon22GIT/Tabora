@@ -45,16 +45,16 @@
 "menu.reset_state" = "重置狀態";
 "menu.quit" = "結束 Tabora";
 
-"settings.window.title" = "Tabora %@ 設定";
+"settings.window.title" = "Tabora 設定";
 "settings.category.general" = "一般";
-"settings.category.commands" = "快速鍵";
+"settings.category.commands" = "快速鍵設定";
 "settings.category.constraints" = "大小限制";
 "settings.category.experimental" = "實驗性功能";
 
 "settings.general.launch_at_login" = "登入時打開 Tabora";
-"settings.general.show_window_previews" = "在佈局建議中顯示視窗影像";
-"settings.general.preview_note" = "需要「螢幕錄製」權限。影像不會被儲存或傳送。";
-"settings.general.window_movement" = "視窗移動";
+"settings.general.show_window_previews" = "使用視窗影像作為預覽";
+"settings.general.preview_note" = "需要螢幕錄製權限。關閉後，預覽會顯示 App 圖像。";
+"settings.general.window_movement" = "視窗配置";
 "settings.general.restore_size.checkbox" = "移動時回復貼齊前的大小";
 "settings.general.linked_resize.checkbox" = "同時調整分割視窗大小";
 "settings.general.linked_resize.note" = "拖移邊界即可同時調整兩側視窗的大小。";
@@ -75,9 +75,9 @@
 "settings.general.drag_display.lightweight.title" = "輕量";
 "settings.general.drag_display.lightweight.detail" = "所有視窗均顯示為圖示";
 "settings.general.drag_display.standard.title" = "標準";
-"settings.general.drag_display.standard.detail" = "僅顯示正在操作的視窗內容";
+"settings.general.drag_display.standard.detail" = "僅顯示正在操作的視窗內容。視窗內容可能因視窗狀態而無法即時更新。";
 "settings.general.drag_display.all.title" = "全部顯示";
-"settings.general.drag_display.all.detail" = "顯示所有視窗內容";
+"settings.general.drag_display.all.detail" = "顯示所有視窗內容。視窗內容可能因視窗狀態而無法即時更新。";
 "settings.general.drag_display.note" = "顯示的視窗內容越多，效能越可能受到影響。";
 "settings.general.drag_detection.title" = "拖移偵測";
 "settings.general.drag_detection.note" = "調整螢幕邊緣與角落的回應範圍。";
@@ -122,8 +122,8 @@
 "settings.experimental.api_status.available" = "目前 API 狀態：可用";
 "settings.experimental.api_status.unavailable" = "目前 API 狀態：無法使用（請關閉此功能）";
 "settings.general.assist.title" = "切換 2/3/4 分佈局輔助";
-"settings.general.assist.checkbox" = "按住 Option 鍵切換 2/3/4 分佈局輔助";
-"settings.general.assist.note" = "按 Option（⌥）在一個大區域與兩個小區域間切換。若沒有視窗適合大區域，但兩個不同視窗可同時放入小區域，Tabora 會自動切換。";
+"settings.general.assist.checkbox" = "使用 Option 鍵更改分割數";
+"settings.general.assist.note" = "在顯示候選視窗的區域按 Option（⌥）鍵即可切換分割數。";
 "settings.experimental.workspace.title" = "延遲螢幕邊緣的空間切換";
 "settings.experimental.workspace.note" = "更改一項未公開的 macOS 全域偏好設定。此設定可能在未來的 macOS 版本中失效，套用時會重新啟動 Dock。結束 Tabora 時不會回復原值。";
 "settings.experimental.workspace.delay_button" = "將空間切換最多延遲 60 秒";
@@ -177,7 +177,7 @@
 "migration.proxy.window_title.waiting" = "等待移動 %d/%d";
 "migration.shadow.reserved" = "已預約移動";
 "migration.shadow.waiting" = "等待 %d/%d";
-"migration.verified_environment" = "已驗證環境：macOS 26.5.2 / 26.6.2（2026-08-30）";
+"migration.verified_environment" = "已驗證：macOS 26.5.2、26.6.2 和 27.3";
 "migration.api_unavailable.title" = "無法在桌面之間移動群組";
 "migration.api_unavailable.detail" = "Tabora 無法取用移動群組所需的非公開 API。macOS 更新可能已更改此 API。\n\n為了安全，建議在「設定」的「實驗性功能」中關閉此功能。\n\n目前系統：%@\n%@\n詳細資訊：%@";
 "migration.api_unavailable.disable" = "關閉此功能";
@@ -252,8 +252,8 @@
 "settings.ratio.top" = "上 : 下";
 "settings.gesture.snap" = "八向貼齊";
 "settings.gesture.unavailable" = "無法接收輸入事件。請檢查 Tabora 的輔助使用權限。";
-"settings.replace.occupied" = "取代已佔用區域的視窗";
-"settings.replace.note" = "當目標群組從操作開始一直位於最前方且指定位置已被佔用時取代。";
+"settings.replace.occupied" = "取代視窗";
+"settings.replace.note" = "將視窗拖放到最前方群組中已使用的位置，即可取代該位置的視窗。";
 "settings.ratio.disconnected" = "顯示已連接的顯示器。重新連接後會還原其分割比例。";
 "cleanup.ratios" = "只刪除所有顯示器的分割比例並結束";
 "settings.gesture.title" = "觸控式軌跡板手勢";
@@ -261,11 +261,24 @@
 "settings.gesture.maximize" = "向上滑動時最大化";
 
 "settings.subdivide.title" = "進一步分割群組內的區域";
-"settings.subdivide.note" = "將視窗貼齊原區域內的角落時，其他視窗會留在原位，可選擇一個視窗填入空位。取消將解散群組。";
-"settings.split_lock" = "群組內手勢";
-"settings.split_lock.note" = "以目前區域為基準，更直覺地操作群組內的視窗。可在「快速鍵」中設定切換鍵。";
-"command.split_lock" = "切換群組內手勢";
-"notice.split_lock.on" = "群組內手勢已開啟";
-"notice.split_lock.off" = "群組內手勢已關閉";
+"settings.subdivide.note" = "將佔據左、右、上或下半部螢幕的視窗拖到該區域內的角落，即可將區域一分為二。空位會顯示可放入的候選視窗。";
+"settings.split_lock" = "相對手勢";
+"settings.split_lock.note" = "在群組內交換視窗時，以目前視窗為起點，朝目標視窗的方向滑動。你可以在指令設定中指定快捷鍵來切換此選項。";
+"command.split_lock" = "切換相對手勢";
+"notice.split_lock.on" = "相對手勢已開啟";
+"notice.split_lock.off" = "相對手勢已關閉";
 "settings.section.resize" = "連動調整大小";
 "settings.section.management" = "App 管理";
+
+"settings.group.application" = "應用程式";
+"settings.group.layout" = "配置與大小";
+"settings.group.input" = "輸入與操作";
+"settings.preview.replay" = "重播範例";
+"settings.nav.gesture" = "手勢";
+"settings.general.restore_size.note" = "拖移已貼齊的視窗時，視窗會恢復貼齊前的大小。群組解散後，其他視窗用來還原大小的紀錄會被清除。";
+"settings.gesture.maximize.note" = "向上滑動會將視窗最大化，而非放到螢幕上半部。這不會影響群組內的視窗互換。";
+"key.eisu" = "英數";
+"key.kana" = "假名";
+
+"settings.gesture.reassign" = "使用手勢重新配置群組視窗";
+"settings.gesture.reassign.note" = "朝目前視窗所在的區域滑動，即可重新選擇該區域的視窗。取消會保留原有配置。";

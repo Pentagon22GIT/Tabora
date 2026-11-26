@@ -8,8 +8,8 @@ Contributionを歓迎します。別途明示しない限り、提出されたCo
 git switch main
 git pull --ff-only origin main
 git switch -c feature/short-description
-zsh -n Scripts/*.sh
-swift test
+for script in Scripts/*.sh Scripts/*.zsh .github/*.sh; do zsh -n "$script" || exit 1; done
+./Scripts/test.sh all
 ./Scripts/build-community.sh
 ```
 
@@ -26,15 +26,7 @@ branchは目的に応じて`feature/`、`fix/`、`docs/`、`security/`を使用�
 - 秘密鍵、Token、個人情報、実画面の機密情報を含めないでください。
 - Official Bundle IDやOfficial署名identityをCommunity buildへ使用しないでください。
 
-最低限:
-
-```zsh
-zsh -n Scripts/*.sh
-swift test
-./Scripts/build-community.sh
-```
-
-安全性に関係する変更では、`.github/workflows/safety-invariants.yml`が対象とするテスト群も確認してください。
+CI と同じ区分をローカルで確認するには `Scripts/test.sh ci` と `Scripts/test.sh safety` を使います。実ウィンドウ・AX の検証は対話可能な macOS 上で `Scripts/test.sh windows` を実行します。配布前の確認項目は [リリース手順](Documentation/RELEASE_PROCESS.md) にまとめています。
 
 ## セキュリティ問題
 

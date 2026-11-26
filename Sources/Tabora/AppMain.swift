@@ -2,7 +2,7 @@ import AppKit
 import ApplicationServices
 
 @main
-final class TaboraApp: NSObject, NSApplicationDelegate {
+final class TaboraApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var applicationHasStarted = false
     private var needsInitialSetup = false
     private var needsAppInformationNotice = false
@@ -142,18 +142,18 @@ final class TaboraApp: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         menu.addItem(withTitle: L10n.text("menu.pause"), action: #selector(toggleEnabled(_:)), keyEquivalent: "")
         menu.addItem(.separator())
-        menu.addItem(withTitle: L10n.text("zone.left_half"), action: #selector(snapLeft), keyEquivalent: "")
-        menu.addItem(withTitle: L10n.text("zone.right_half"), action: #selector(snapRight), keyEquivalent: "")
-        menu.addItem(withTitle: L10n.text("zone.top_half"), action: #selector(snapTop), keyEquivalent: "")
-        menu.addItem(withTitle: L10n.text("zone.bottom_half"), action: #selector(snapBottom), keyEquivalent: "")
+        menu.addItem(withTitle: L10n.text("zone.left_half"), action: #selector(snapLeft), keyEquivalent: "").representedObject = ShortcutAction.leftHalf
+        menu.addItem(withTitle: L10n.text("zone.right_half"), action: #selector(snapRight), keyEquivalent: "").representedObject = ShortcutAction.rightHalf
+        menu.addItem(withTitle: L10n.text("zone.top_half"), action: #selector(snapTop), keyEquivalent: "").representedObject = ShortcutAction.topHalf
+        menu.addItem(withTitle: L10n.text("zone.bottom_half"), action: #selector(snapBottom), keyEquivalent: "").representedObject = ShortcutAction.bottomHalf
         menu.addItem(.separator())
-        menu.addItem(withTitle: L10n.text("zone.top_left"), action: #selector(snapTopLeft), keyEquivalent: "")
-        menu.addItem(withTitle: L10n.text("zone.top_right"), action: #selector(snapTopRight), keyEquivalent: "")
-        menu.addItem(withTitle: L10n.text("zone.bottom_left"), action: #selector(snapBottomLeft), keyEquivalent: "")
-        menu.addItem(withTitle: L10n.text("zone.bottom_right"), action: #selector(snapBottomRight), keyEquivalent: "")
-        menu.addItem(withTitle: L10n.text("zone.maximize"), action: #selector(maximize), keyEquivalent: "")
+        menu.addItem(withTitle: L10n.text("zone.top_left"), action: #selector(snapTopLeft), keyEquivalent: "").representedObject = ShortcutAction.topLeft
+        menu.addItem(withTitle: L10n.text("zone.top_right"), action: #selector(snapTopRight), keyEquivalent: "").representedObject = ShortcutAction.topRight
+        menu.addItem(withTitle: L10n.text("zone.bottom_left"), action: #selector(snapBottomLeft), keyEquivalent: "").representedObject = ShortcutAction.bottomLeft
+        menu.addItem(withTitle: L10n.text("zone.bottom_right"), action: #selector(snapBottomRight), keyEquivalent: "").representedObject = ShortcutAction.bottomRight
+        menu.addItem(withTitle: L10n.text("zone.maximize"), action: #selector(maximize), keyEquivalent: "").representedObject = ShortcutAction.maximize
         menu.addItem(.separator())
-        menu.addItem(withTitle: L10n.text("command.restore_last"), action: #selector(restoreLast), keyEquivalent: "")
+        menu.addItem(withTitle: L10n.text("command.restore_last"), action: #selector(restoreLast), keyEquivalent: "").representedObject = ShortcutAction.restoreLast
         menu.addItem(withTitle: L10n.text("menu.clear_locks"), action: #selector(clearLocks), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(
@@ -169,7 +169,26 @@ final class TaboraApp: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         menu.addItem(withTitle: L10n.text("menu.quit"), action: #selector(quit), keyEquivalent: "q")
         menu.items.forEach { $0.target = self }
+        menu.delegate = self
         statusItem.menu = menu
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        Self.updateShortcutHints(in: menu, bindings: AppSettings.shared.shortcuts)
+    }
+
+    static func updateShortcutHints(in menu: NSMenu, bindings: [ShortcutAction: ShortcutBinding]) {
+        for item in menu.items {
+            guard let action = item.representedObject as? ShortcutAction else { continue }
+            let binding = bindings[action]
+            let equivalent = binding?.menuKeyEquivalent
+            item.keyEquivalent = equivalent ?? ""
+            item.keyEquivalentModifierMask = NSEvent.ModifierFlags(rawValue: UInt(binding?.modifiers ?? 0))
+            item.allowsAutomaticKeyEquivalentLocalization = false
+            item.allowsAutomaticKeyEquivalentMirroring = false
+            item.title = action.title
+            if equivalent == nil, let binding { item.title += "  " + binding.displayText }
+        }
     }
 
     private func configureGesture() {

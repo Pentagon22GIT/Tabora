@@ -10,8 +10,8 @@
 
 - [ ] `git diff`で意図しない変更がないことを確認した
 - [ ] 秘密鍵、Token、個人情報、実画面の機密情報を含めていない
-- [ ] `zsh -n Scripts/*.sh`が成功した
-- [ ] `swift test`が成功した
+- [ ] 各シェルスクリプトの構文検査が成功した
+- [ ] `./Scripts/test.sh all`が成功した
 - [ ] `./Scripts/build-community.sh`が成功した
 - [ ] 権限、保存、通信、署名、更新経路への影響を確認した
 - [ ] 必要なREADME／SECURITY／Privacy／Threat Modelを更新した

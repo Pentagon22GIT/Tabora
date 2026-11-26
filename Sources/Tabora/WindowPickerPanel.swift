@@ -3,7 +3,7 @@ import CoreGraphics
 
 typealias PickerPreviewCaptureAuthorization = () -> Bool
 typealias PickerPreviewProvider = (
-    CGWindowID?,
+    WindowServerSelectionSnapshot,
     @escaping PickerPreviewCaptureAuthorization
 ) -> CGImage?
 
@@ -24,10 +24,18 @@ enum PickerPreviewWorkPolicy {
     }
 }
 
+private extension ManagedWindow {
+    var previewSubject: WindowServerSelectionSnapshot? {
+        cgWindowID.map { WindowServerSelectionSnapshot(pid: pid, windowID: $0) }
+    }
+}
+
 private final class PreviewImageLoader {
     private static let maximumPreviewPixelSize = CGSize(width: 680, height: 420)
+    var isEnabled = true
     private let provider: PickerPreviewProvider
-    private let perImageByteBudget: Int
+    private var perImageByteBudget: Int
+    private var candidateIDs: Set<WindowServerSelectionSnapshot>
     private static let queue: OperationQueue = {
         let queue = OperationQueue()
         queue.name = "dev.pent.Tabora.preview-loader"
@@ -39,25 +47,34 @@ private final class PreviewImageLoader {
     // state: a slow Window Server capture may continue off-main, but the picker
     // must fall back to its placeholder instead of waiting behind it.
     private let presentationTimeout: TimeInterval = 0.45
-    private var cache: [String: NSImage] = [:]
-    private var completed: Set<String> = []
-    private var placeholderDelivered: Set<String> = []
-    private var pending: [String: [(NSImage?) -> Void]] = [:]
-    private var operations: [String: Operation] = [:]
+    private var cache: [WindowServerSelectionSnapshot: NSImage] = [:]
+    private var completed: Set<WindowServerSelectionSnapshot> = []
+    private var placeholderDelivered: Set<WindowServerSelectionSnapshot> = []
+    private var pending: [WindowServerSelectionSnapshot: [(NSImage?) -> Void]] = [:]
+    private var operations: [WindowServerSelectionSnapshot: Operation] = [:]
     private var generation: UInt64 = 0
 
     init(
         provider: @escaping PickerPreviewProvider,
-        candidateCount: Int
+        candidateIDs: Set<WindowServerSelectionSnapshot>
     ) {
+        self.candidateIDs = candidateIDs
         self.provider = provider
         perImageByteBudget = PickerPreviewWorkPolicy.perImageByteBudget(
-            candidateCount: candidateCount
+            candidateCount: candidateIDs.count
         )
     }
 
+    func updateCandidates(_ ids: Set<WindowServerSelectionSnapshot>) {
+        guard ids != candidateIDs else { return }
+        cancel()
+        candidateIDs = ids
+        perImageByteBudget = PickerPreviewWorkPolicy.perImageByteBudget(candidateCount: ids.count)
+    }
+
     func request(_ window: ManagedWindow, completion: @escaping (NSImage?) -> Void) {
-        let key = window.stableIdentity
+        guard isEnabled else { return }
+        guard let key = window.previewSubject else { completion(nil); return }
         if completed.contains(key) {
             completion(cache[key])
             return
@@ -67,7 +84,6 @@ private final class PreviewImageLoader {
             return
         }
         pending[key] = [completion]
-        let windowID = window.cgWindowID
         let timeout = presentationTimeout
         let requestGeneration = generation
 
@@ -76,15 +92,13 @@ private final class PreviewImageLoader {
         }
         startCapture(
             key: key,
-            windowID: windowID,
             generation: requestGeneration,
             attempt: 0
         )
     }
 
     private func startCapture(
-        key: String,
-        windowID: CGWindowID?,
+        key: WindowServerSelectionSnapshot,
         generation: UInt64,
         attempt: Int
     ) {
@@ -99,7 +113,7 @@ private final class PreviewImageLoader {
                 [weak operation] in
                 operation?.isCancelled == false
             }
-            let source = provider(windowID, captureIsAuthorized)
+            let source = provider(key, captureIsAuthorized)
             // Picker cancellation invalidates presentation immediately. A
             // request that was waiting for the shared capture slot must not
             // become a late WindowServer capture or a retry after cancellation.
@@ -115,7 +129,6 @@ private final class PreviewImageLoader {
                 self?.finishRequest(
                     key: key,
                     imageRef: imageRef,
-                    windowID: windowID,
                     generation: generation,
                     attempt: attempt
                 )
@@ -135,7 +148,7 @@ private final class PreviewImageLoader {
         pending.removeAll()
     }
 
-    private func deliverTimeoutPlaceholder(key: String, generation: UInt64) {
+    private func deliverTimeoutPlaceholder(key: WindowServerSelectionSnapshot, generation: UInt64) {
         guard self.generation == generation,
               !completed.contains(key),
               placeholderDelivered.insert(key).inserted else { return }
@@ -147,9 +160,8 @@ private final class PreviewImageLoader {
     }
 
     private func finishRequest(
-        key: String,
+        key: WindowServerSelectionSnapshot,
         imageRef: CGImage?,
-        windowID: CGWindowID?,
         generation: UInt64,
         attempt: Int
     ) {
@@ -165,7 +177,6 @@ private final class PreviewImageLoader {
             ) { [weak self] in
                 self?.startCapture(
                     key: key,
-                    windowID: windowID,
                     generation: generation,
                     attempt: attempt + 1
                 )
@@ -297,7 +308,8 @@ final class WindowPickerPanel: NSObject {
         windowsByZone: [SnapZone: [ManagedWindow]],
         zoneFrames: [SnapZone: CGRect],
         backdropFrames: [CGRect] = [],
-        previewCandidateBudgetCount: Int? = nil,
+        previewCandidates: [ManagedWindow]? = nil,
+        previewsEnabled: Bool = true,
         previewProvider: @escaping PickerPreviewProvider,
         onCancel: @escaping () -> Void,
         onSelect: @escaping (ManagedWindow, SnapZone) -> Void
@@ -308,18 +320,12 @@ final class WindowPickerPanel: NSObject {
         self.onSelect = onSelect
         self.onCancel = onCancel
         selectionPending = false
-        let visibleUniqueCandidateCount = Set(
-            windowsByZone.values.flatMap { windows in
-                windows.map(\.stableIdentity)
-            }
-        ).count
+        let candidates = previewCandidates ?? windowsByZone.values.flatMap { $0 }
         let previewLoader = PreviewImageLoader(
             provider: previewProvider,
-            candidateCount: max(
-                previewCandidateBudgetCount ?? visibleUniqueCandidateCount,
-                visibleUniqueCandidateCount
-            )
+            candidateIDs: Set(candidates.compactMap(\.previewSubject))
         )
+        previewLoader.isEnabled = previewsEnabled
         self.previewLoader = previewLoader
 
         buildPanels(
@@ -338,12 +344,15 @@ final class WindowPickerPanel: NSObject {
         windowsByZone: [SnapZone: [ManagedWindow]],
         zoneFrames: [SnapZone: CGRect],
         backdropFrames: [CGRect] = [],
+        previewCandidates: [ManagedWindow]? = nil,
         onCancel: @escaping () -> Void,
         onSelect: @escaping (ManagedWindow, SnapZone) -> Void
     ) -> Bool {
         guard let previewLoader,
               windowsByZone.values.contains(where: { !$0.isEmpty }),
               !zoneFrames.isEmpty else { return false }
+        let candidates = previewCandidates ?? windowsByZone.values.flatMap { $0 }
+        previewLoader.updateCandidates(Set(candidates.compactMap(\.previewSubject)))
         panels.forEach { $0.orderOut(nil) }
         panels.removeAll()
         self.onSelect = onSelect
@@ -402,6 +411,14 @@ final class WindowPickerPanel: NSObject {
         }
         if panels.isEmpty {
             hide(notifyCancel: true)
+        }
+    }
+
+    func setPreviewAccess(_ enabled: Bool) {
+        previewLoader?.isEnabled = enabled
+        previewLoader?.cancel()
+        for panel in panels {
+            (panel.contentView as? PickerZoneView)?.resetPreviews(enabled: enabled)
         }
     }
 
@@ -568,6 +585,13 @@ private final class PickerZoneView: NSView {
         canvas.loadInitialPreviews(count: 12, using: previewLoader)
     }
 
+    func resetPreviews(enabled: Bool) {
+        canvas.clearPreviews()
+        if enabled {
+            canvas.loadPreviews(near: scrollView.contentView.bounds, prefetchCount: 6, using: previewLoader)
+        }
+    }
+
     private func handlePreviewScroll() {
         let origin = scrollView.contentView.bounds.origin
         guard origin != lastPreviewScrollOrigin else { return }
@@ -595,6 +619,8 @@ private final class CenteredCardCanvas: NSView {
         cards.append(card)
         addSubview(card)
     }
+
+    func clearPreviews() { cards.forEach { $0.clearPreview() } }
 
     func loadInitialPreviews(count: Int, using loader: PreviewImageLoader) {
         cards.prefix(max(count, 0)).forEach { $0.loadPreview(using: loader) }
@@ -727,6 +753,12 @@ private final class WindowCardButton: NSButton {
         addSubview(previewView)
         addSubview(placeholderIconView)
         addSubview(titleField)
+    }
+
+    func clearPreview() {
+        didRequestPreview = false
+        previewView.image = nil
+        placeholderIconView.isHidden = false
     }
 
     func loadPreview(using loader: PreviewImageLoader) {

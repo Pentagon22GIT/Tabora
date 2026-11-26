@@ -7,7 +7,7 @@ import TaboraSkyLightBridge
 /// AX/Window Server matching fallback and never infer that a window vanished.
 struct RuntimeWindowIDResolver {
     var isAvailable: Bool {
-        TSLBridgeCopyCapabilities().contains(.resolveWindowID)
+        TSLBridgeCanResolveWindowID()
     }
 
     func resolve(_ element: AXUIElement) -> CGWindowID? {

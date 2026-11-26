@@ -45,16 +45,16 @@
 "menu.reset_state" = "重置状态";
 "menu.quit" = "退出 Tabora";
 
-"settings.window.title" = "Tabora %@ 设置";
+"settings.window.title" = "Tabora 设置";
 "settings.category.general" = "通用";
-"settings.category.commands" = "快捷键";
+"settings.category.commands" = "快捷键设置";
 "settings.category.constraints" = "大小限制";
 "settings.category.experimental" = "实验性功能";
 
 "settings.general.launch_at_login" = "登录时打开 Tabora";
-"settings.general.show_window_previews" = "在布局建议中显示窗口图像";
-"settings.general.preview_note" = "需要“屏幕录制”权限。图像不会被存储或发送。";
-"settings.general.window_movement" = "窗口移动";
+"settings.general.show_window_previews" = "使用窗口图像作为预览";
+"settings.general.preview_note" = "需要屏幕录制权限。关闭后，预览将显示 App 图标。";
+"settings.general.window_movement" = "窗口布局";
 "settings.general.restore_size.checkbox" = "移动时恢复吸附前的大小";
 "settings.general.linked_resize.checkbox" = "同时调整分屏窗口大小";
 "settings.general.linked_resize.note" = "拖动边界可同时调整两侧窗口的大小。";
@@ -75,9 +75,9 @@
 "settings.general.drag_display.lightweight.title" = "轻量";
 "settings.general.drag_display.lightweight.detail" = "所有窗口均显示为图标";
 "settings.general.drag_display.standard.title" = "标准";
-"settings.general.drag_display.standard.detail" = "仅显示正在操作的窗口内容";
+"settings.general.drag_display.standard.detail" = "仅显示正在操作的窗口内容。根据窗口状态，内容可能无法实时更新。";
 "settings.general.drag_display.all.title" = "全部显示";
-"settings.general.drag_display.all.detail" = "显示所有窗口内容";
+"settings.general.drag_display.all.detail" = "显示所有窗口内容。根据窗口状态，内容可能无法实时更新。";
 "settings.general.drag_display.note" = "显示的窗口内容越多，性能越可能受到影响。";
 "settings.general.drag_detection.title" = "拖移检测";
 "settings.general.drag_detection.note" = "调整屏幕边缘和角落的响应范围。";
@@ -122,8 +122,8 @@
 "settings.experimental.api_status.available" = "当前 API 状态：可用";
 "settings.experimental.api_status.unavailable" = "当前 API 状态：不可用（请关闭此功能）";
 "settings.general.assist.title" = "切换 2/3/4 分布局辅助";
-"settings.general.assist.checkbox" = "按住 Option 键切换 2/3/4 分布局辅助";
-"settings.general.assist.note" = "按 Option（⌥）在一个大区域和两个小区域之间切换。如果没有窗口适合大区域，但两个不同窗口可同时放入小区域，Tabora 会自动切换。";
+"settings.general.assist.checkbox" = "使用 Option 键更改分区数";
+"settings.general.assist.note" = "在显示候选窗口的区域按 Option（⌥）键即可切换分区数。";
 "settings.experimental.workspace.title" = "延迟屏幕边缘的空间切换";
 "settings.experimental.workspace.note" = "更改一项未公开的 macOS 全局偏好设置。此设置可能在未来的 macOS 版本中失效，应用时会重新启动程序坞。退出 Tabora 时不会恢复原值。";
 "settings.experimental.workspace.delay_button" = "将空间切换最多延迟 60 秒";
@@ -177,7 +177,7 @@
 "migration.proxy.window_title.waiting" = "等待移动 %d/%d";
 "migration.shadow.reserved" = "已预约移动";
 "migration.shadow.waiting" = "等待 %d/%d";
-"migration.verified_environment" = "已验证环境：macOS 26.5.2 / 26.6.2（2026-08-30）";
+"migration.verified_environment" = "已验证：macOS 26.5.2、26.6.2 和 27.3";
 "migration.api_unavailable.title" = "无法在桌面之间移动群组";
 "migration.api_unavailable.detail" = "Tabora 无法访问移动群组所需的非公开 API。macOS 更新可能已更改此 API。\n\n为确保安全，建议在“设置”的“实验性功能”中关闭此功能。\n\n当前系统：%@\n%@\n详细信息：%@";
 "migration.api_unavailable.disable" = "关闭此功能";
@@ -252,8 +252,8 @@
 "settings.ratio.top" = "上 : 下";
 "settings.gesture.snap" = "八方向贴靠";
 "settings.gesture.unavailable" = "无法接收输入事件。请检查 Tabora 的辅助功能权限。";
-"settings.replace.occupied" = "替换已占用区域中的窗口";
-"settings.replace.note" = "当目标组从操作开始一直位于最前方且目标位置已被占用时替换。";
+"settings.replace.occupied" = "替换窗口";
+"settings.replace.note" = "将窗口拖放到最前方窗口组中已占用的位置，即可替换该位置的窗口。";
 "settings.ratio.disconnected" = "仅显示已连接的显示器。重新连接后会恢复其分割比例。";
 "cleanup.ratios" = "仅删除所有显示器的分割比例并退出";
 "settings.gesture.title" = "触控板手势";
@@ -261,11 +261,24 @@
 "settings.gesture.maximize" = "向上轻扫时最大化";
 
 "settings.subdivide.title" = "进一步拆分组内区域";
-"settings.subdivide.note" = "贴靠到原区域内的角落时，其他窗口保留在原位，可选择一个窗口填入空位。取消将解散窗口组。";
-"settings.split_lock" = "组内手势";
-"settings.split_lock.note" = "以当前区域为基准，更直观地操作组内窗口。可在“快捷键”中设置切换键。";
-"command.split_lock" = "切换组内手势";
-"notice.split_lock.on" = "组内手势已开启";
-"notice.split_lock.off" = "组内手势已关闭";
+"settings.subdivide.note" = "将占据左、右、上或下半屏的窗口拖到其区域内的角落，可将该区域一分为二。空出的位置会显示可放入的候选窗口。";
+"settings.split_lock" = "相对手势";
+"settings.split_lock.note" = "在组内交换窗口时，以当前窗口为起点，朝目标窗口的方向轻扫。你可以在命令设置中指定快捷键来开关此选项。";
+"command.split_lock" = "切换相对手势";
+"notice.split_lock.on" = "相对手势已开启";
+"notice.split_lock.off" = "相对手势已关闭";
 "settings.section.resize" = "联动调整大小";
 "settings.section.management" = "应用管理";
+
+"settings.group.application" = "应用";
+"settings.group.layout" = "布局与大小";
+"settings.group.input" = "输入与操作";
+"settings.preview.replay" = "重播示例";
+"settings.nav.gesture" = "手势";
+"settings.general.restore_size.note" = "拖动已吸附的窗口时，窗口会恢复吸附前的大小。窗口组解散后，其他窗口用于恢复大小的记录会被清除。";
+"settings.gesture.maximize.note" = "向上轻扫会将窗口最大化，而非放到上半屏。这不会影响组内窗口互换。";
+"key.eisu" = "英数";
+"key.kana" = "假名";
+
+"settings.gesture.reassign" = "使用手势重新分配分组窗口";
+"settings.gesture.reassign.note" = "向当前窗口所在区域轻扫，重新选择该区域的窗口。取消会保留原有布局。";

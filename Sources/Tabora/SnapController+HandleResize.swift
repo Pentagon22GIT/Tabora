@@ -1031,6 +1031,10 @@ extension SnapController {
         interaction presentedInteraction: ResizeHandleInteraction,
         at point: CGPoint
     ) {
+        guard !isSnapRollbackActive, !groupSpaceMigrationLine.ownsWindowMutationTransaction else {
+            rejectHandleResizeStart()
+            return
+        }
         if activeSession?.groupID == nil && (activeSession?.occupiedStableIDs.count ?? 0) > 1 {
             discardIncompleteAssistGroup()
             picker.hide()
@@ -1554,7 +1558,8 @@ extension SnapController {
                             ),
                         peerLimitedAxes: [],
                         measurementEpsilon: measurementEpsilon,
-                        operationGeneration: session.operationGeneration
+                        operationGeneration: session.operationGeneration,
+                        startingSize: participant.originalFrame.size
                     )
                     if observation.settlementEvidence
                         .authorizesPersistentConstraintLearning {

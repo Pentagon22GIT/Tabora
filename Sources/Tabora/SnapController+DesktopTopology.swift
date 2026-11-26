@@ -46,8 +46,7 @@ extension SnapController {
 
     func beginMissionControlTransientPreviewSessionIfNeeded() {
         guard !missionControlGroupProxyController.hasTransientPreviewSession,
-              settings.windowPreviewsEnabled,
-              settings.missionControlLatestPreviewEnabled,
+              settings.transientGroupPreviewEnabled,
               let topology = windowSpaceBackend.managedDisplaySpaceTopology()
         else { return }
 

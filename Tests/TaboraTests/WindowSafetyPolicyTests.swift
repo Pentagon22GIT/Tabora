@@ -10,7 +10,7 @@ final class WindowSafetyPolicyTests: XCTestCase {
             return nil
         }
 
-        XCTAssertNil(provider(nil, { true }))
+        XCTAssertNil(provider(WindowServerSelectionSnapshot(pid: 1, windowID: 1), { true }))
         XCTAssertTrue(forwardedAuthorization?() == true)
     }
 

@@ -67,8 +67,10 @@ cd "$ROOT"
   fail "出力先は未使用の絶対パスを指定してください。TABORA_BUILD_OUTPUT_DIRで変更できます。"
 /bin/mkdir -p "${OUTPUT_DIR:h}"
 /bin/mkdir "$OUTPUT_DIR"
-typeset -a SWIFT_BUILD_ARGS
-SWIFT_BUILD_ARGS=(-c release --scratch-path "$OUTPUT_DIR/swift-build")
+# Pass the SDK to the final linker as well as the Swift compiler. AppKit uses
+# the linked SDK to select the native appearance of controls.
+source "$SCRIPT_DIR/macos-link-settings.zsh"
+SWIFT_BUILD_ARGS=(-c release --scratch-path "$OUTPUT_DIR/swift-build" "${MACOS_LINK_FLAGS[@]}")
 if [[ "$EDITION" == "official" ]]; then
   SWIFT_BUILD_ARGS+=(--arch arm64 --arch x86_64)
 fi
@@ -77,6 +79,21 @@ fi
 readonly BIN_DIR="$("$SWIFT_BIN" build "${SWIFT_BUILD_ARGS[@]}" --show-bin-path)"
 readonly BIN="$BIN_DIR/Tabora"
 [[ -f "$BIN" ]] || fail "ビルド済み実行ファイルが見つかりません。"
+
+# AppKit selects native control behavior from the executable's linked SDK.
+# Check each slice, since a universal bundle has one Info.plist for both.
+readonly SELECTED_SDK="$(/usr/bin/xcrun --sdk macosx --show-sdk-version)"
+architectures="$(/usr/bin/lipo -archs "$BIN")" || fail "実行ファイルのアーキテクチャを取得できません。"
+[[ -n "$architectures" ]] || fail "実行ファイルに検証対象のアーキテクチャがありません。"
+for arch in ${=architectures}; do
+  /usr/bin/xcrun vtool -arch "$arch" -show-build "$BIN" | \
+    /usr/bin/awk -v minimum="$MINIMUM_MACOS_VERSION" -v sdk="$SELECTED_SDK" '
+      function normalized(v) { sub(/(\.0)+$/, "", v); return v }
+      $1 == "minos" { minOK = normalized($2) == normalized(minimum) }
+      $1 == "sdk" { sdkOK = normalized($2) == normalized(sdk) }
+      END { exit !(minOK && sdkOK) }
+    ' || fail "$arch の最低OSまたはリンクしたSDKがビルド設定と一致しません。"
+done
 
 /bin/mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 /bin/cp "$BIN" "$APP/Contents/MacOS/Tabora"
@@ -100,7 +117,7 @@ done
 /usr/bin/plutil -insert CFBundleDevelopmentRegion -string ja "$INFO_PLIST"
 /usr/bin/plutil -insert CFBundleLocalizations -json \
   '["ja","en","ko","zh-Hans","zh-Hant"]' "$INFO_PLIST"
-/usr/bin/plutil -insert LSMinimumSystemVersion -string 13.0 "$INFO_PLIST"
+/usr/bin/plutil -insert LSMinimumSystemVersion -string "$MINIMUM_MACOS_VERSION" "$INFO_PLIST"
 /usr/bin/plutil -insert LSUIElement -bool YES "$INFO_PLIST"
 /usr/bin/plutil -insert LSMultipleInstancesProhibited -bool YES "$INFO_PLIST"
 /usr/bin/plutil -insert NSHighResolutionCapable -bool YES "$INFO_PLIST"
@@ -109,7 +126,7 @@ done
 /usr/bin/plutil -insert NSAccessibilityUsageDescription -string \
   "ウィンドウを移動・サイズ変更してスナップ配置するために使用します。" "$INFO_PLIST"
 /usr/bin/plutil -insert NSScreenCaptureUsageDescription -string \
-  "利用者が有効にした場合に、配置候補のプレビュー画像を表示するために使用します。" "$INFO_PLIST"
+  "有効にすると、配置候補とMission Controlのグループにウィンドウのプレビュー画像を表示します。" "$INFO_PLIST"
 /usr/bin/plutil -insert TaboraEdition -string "$EDITION" "$INFO_PLIST"
 /usr/bin/plutil -insert TaboraSourceRevision -string "$SOURCE_REVISION" "$INFO_PLIST"
 if [[ "$SOURCE_DIRTY" == "true" ]]; then

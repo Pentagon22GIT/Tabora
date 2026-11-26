@@ -91,7 +91,7 @@ enum AXFrameSettlementMode {
     /// size boundary. Once a different accepted frame is stably observed,
     /// return that new evidence instead of reissuing the same impossible size
     /// mutation. A caller may then authorize a new geometry plan.
-    case returnSettledConstraintResult
+    case returnSettledConstraintResult(Set<ConstraintProbeAxis>)
 }
 
 enum AXFrameSettlementPolicy {
@@ -102,6 +102,7 @@ enum AXFrameSettlementPolicy {
     /// take this path.
     static func shouldReturnSettledConstraintResult(
         mode: AXFrameSettlementMode,
+        sizeMismatchAxis: ConstraintProbeAxis?,
         placementIsAcceptable: Bool,
         mutationWasSent: Bool,
         sizeMutationSucceeded: Bool,
@@ -110,8 +111,9 @@ enum AXFrameSettlementPolicy {
         targetProgressWasObserved: Bool,
         secondsWithoutTargetProgress: TimeInterval
     ) -> Bool {
-        return mode == .returnSettledConstraintResult
-            && !placementIsAcceptable
+        guard case .returnSettledConstraintResult(let axes) = mode,
+              let sizeMismatchAxis, axes.contains(sizeMismatchAxis) else { return false }
+        return !placementIsAcceptable
             && mutationWasSent
             && sizeMutationSucceeded
             && acceptedSizeIsStable
@@ -225,6 +227,7 @@ struct WindowOcclusionSnapshot {
 }
 
 struct WindowOcclusionSnapshotObservation {
+    var orderedWindowIDs: [CGWindowID] = []
     let snapshot: [WindowOcclusionSnapshot]
     let completeness: WindowDiscoveryCompleteness
 
@@ -1088,7 +1091,7 @@ final class AXWindowService {
         Set(visibleWindows().map(\.stableIdentity))
     }
 
-    func windowOcclusionSnapshotObservation()
+    func windowOcclusionSnapshotObservation(includingOrder: Bool = false)
         -> WindowOcclusionSnapshotObservation {
         let currentPID = ProcessInfo.processInfo.processIdentifier
         guard let info = CGWindowListCopyWindowInfo(
@@ -1124,6 +1127,7 @@ final class AXWindowService {
             )
         }
         return WindowOcclusionSnapshotObservation(
+            orderedWindowIDs: includingOrder ? info.compactMap { ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value } : [],
             snapshot: snapshot,
             completeness: .complete
         )
@@ -1670,6 +1674,7 @@ final class AXWindowService {
     func setFrameReliably(
         _ targetFrame: CGRect,
         for window: AXUIElement,
+        whileAuthorized: @escaping () -> Bool = { true },
         completion: @escaping (Bool) -> Void
     ) {
         let operation = beginFrameOperation(for: window)
@@ -1678,6 +1683,7 @@ final class AXWindowService {
             for: window,
             operationKey: operation.key,
             generation: operation.generation,
+            whileAuthorized: whileAuthorized,
             completion: { [weak self] succeeded in
                 self?.finishFrameOperation(
                     key: operation.key,
@@ -1694,9 +1700,13 @@ final class AXWindowService {
         operationKey: String,
         generation: Int,
         attempt: Int = 0,
+        whileAuthorized: @escaping () -> Bool,
         completion: @escaping (Bool) -> Void
     ) {
-        guard isCurrentFrameOperation(key: operationKey, generation: generation) else { return }
+        guard whileAuthorized(), isCurrentFrameOperation(key: operationKey, generation: generation) else {
+            completion(false)
+            return
+        }
 
         if let actualFrame = frame(of: window),
            framesMatch(actualFrame, targetFrame) {
@@ -1710,8 +1720,11 @@ final class AXWindowService {
         let delayIndex = Swift.min(attempt, preparationDelays.count - 1)
 
         DispatchQueue.main.asyncAfter(deadline: .now() + preparationDelays[delayIndex]) { [weak self] in
-            guard let self,
-                  self.isCurrentFrameOperation(key: operationKey, generation: generation) else { return }
+            guard let self, whileAuthorized(),
+                  self.isCurrentFrameOperation(key: operationKey, generation: generation) else {
+                completion(false)
+                return
+            }
 
             _ = self.setSize(targetFrame.size, for: window)
             _ = self.setPosition(
@@ -1721,8 +1734,11 @@ final class AXWindowService {
             )
 
             DispatchQueue.main.asyncAfter(deadline: .now() + settleDelays[delayIndex]) { [weak self] in
-                guard let self,
-                      self.isCurrentFrameOperation(key: operationKey, generation: generation) else { return }
+                guard let self, whileAuthorized(),
+                      self.isCurrentFrameOperation(key: operationKey, generation: generation) else {
+                    completion(false)
+                    return
+                }
 
                 if let actualFrame = self.frame(of: window),
                    self.framesMatch(actualFrame, targetFrame) {
@@ -1741,6 +1757,7 @@ final class AXWindowService {
                     operationKey: operationKey,
                     generation: generation,
                     attempt: nextAttempt,
+                    whileAuthorized: whileAuthorized,
                     completion: completion
                 )
             }
@@ -2059,8 +2076,13 @@ final class AXWindowService {
                 return
             }
 
-            if AXFrameSettlementPolicy.shouldReturnSettledConstraintResult(
+            let widthMismatch = abs(actualFrame.width - targetFrame.width) > 1
+            let heightMismatch = abs(actualFrame.height - targetFrame.height) > 1
+            let mismatchAxis: ConstraintProbeAxis? = widthMismatch == heightMismatch
+                ? nil : (widthMismatch ? .width : .height)
+            if anchorIsCorrect, AXFrameSettlementPolicy.shouldReturnSettledConstraintResult(
                 mode: settlementMode,
+                sizeMismatchAxis: mismatchAxis,
                 placementIsAcceptable: placementIsAcceptable,
                 mutationWasSent: mutationWasSent,
                 sizeMutationSucceeded: latestSizeMutationSucceeded,
@@ -2069,6 +2091,8 @@ final class AXWindowService {
                 targetProgressWasObserved: targetProgressWasObserved,
                 secondsWithoutTargetProgress: now - lastTargetProgressAt
             ) {
+                // Only an anchored, single-axis mismatch can feed the early
+                // size replan. Let ordinary geometry correction finish otherwise.
                 // This is a new semantic observation, not a failed retry. The
                 // caller owns whether the accepted frame authorizes a replan.
                 timer.invalidate()
@@ -2877,6 +2901,7 @@ final class AXWindowService {
     func previewCGImage(
         for windowID: CGWindowID?,
         capacityWait: TimeInterval,
+        isGroupPreview: Bool = false,
         resolution: PreviewCaptureResolution = .nominal,
         fullSizeRequest: PreviewFullSizeRequest? = nil,
         expectedOwnerPID: pid_t? = nil,
@@ -2885,7 +2910,7 @@ final class AXWindowService {
         WindowPreviewCaptureService.capture(
             for: windowID,
             capacityWait: capacityWait,
-            resolution: resolution,
+            isGroupPreview: isGroupPreview, resolution: resolution,
             fullSizeRequest: fullSizeRequest,
             expectedOwnerPID: expectedOwnerPID,
             shouldCapture: shouldCapture

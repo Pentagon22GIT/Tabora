@@ -63,18 +63,17 @@ final class MissionControlGroupProxyTests: XCTestCase {
         XCTAssertTrue(forwardedAuthorization?() == true)
     }
 
-    func testPreviewAuthorizationIsRecheckedAfterCaptureAdmission() {
-        var authorizationChecks = 0
-        let image = AXWindowService().previewCGImage(
-            for: 1,
-            capacityWait: 0.1,
-            shouldCapture: {
-                authorizationChecks += 1
-                return false
-            }
-        )
-        XCTAssertNil(image)
-        XCTAssertEqual(authorizationChecks, 1)
+    func testDisabledPreviewIsRejectedBeforeDiscovery() {
+        let finished = expectation(description: "Background provider rejected")
+        DispatchQueue.global().async {
+            var checks = 0
+            let image = WindowPreviewCaptureService.capture(for: 1, capacityWait: 0.1,
+                expectedOwnerPID: getpid(), shouldCapture: { checks += 1; return false })
+            XCTAssertNil(image)
+            XCTAssertEqual(checks, 1)
+            finished.fulfill()
+        }
+        wait(for: [finished], timeout: 2)
     }
 
     func testSettledGeometryRefreshUsesBoundedWork() {

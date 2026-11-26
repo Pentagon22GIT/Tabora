@@ -10,3 +10,4 @@ DerivedData/
 *.mobileprovision
 Config/*.local.*
 !.gitkeep
+.vscode/

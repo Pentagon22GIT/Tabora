@@ -74,9 +74,11 @@ final class ConstraintMeasurementEngine {
             completion(true)
             return
         }
+        let cancellationGeneration = generation
         windowService.cancelFrameOperation(for: snapshot.element)
         windowService.restore(snapshot) { [weak self] restored in
-            self?.activeSnapshot = nil
+            guard let self, self.generation == cancellationGeneration else { completion(false); return }
+            self.activeSnapshot = nil
             completion(restored)
         }
     }
@@ -108,6 +110,8 @@ final class ConstraintMeasurementEngine {
                 phase: phase
             ))
         }
+
+        var probesForCurrentBound = 0
 
         func boundProgress(
             index: Int,
@@ -175,64 +179,72 @@ final class ConstraintMeasurementEngine {
             restoreThenContinue(nextIndex)
         }
 
-        func measureMinimum(
-            _ bound: AppConstraintBound,
-            index: Int,
-            probeLengths: [CGFloat],
-            probeIndex: Int
-        ) {
-            guard measurementGeneration == self.generation else { return }
-            guard probeLengths.indices.contains(probeIndex) else {
+        func probeBound(_ bound: AppConstraintBound, index: Int, lengths: ArraySlice<CGFloat>,
+                        lastAccepted: CGFloat, rejected: CGFloat? = nil, verifiedMotion: Bool = false) {
+            guard measurementGeneration == generation else { return }
+            let initial = bound.isWidth ? original.frame.width : original.frame.height
+            let requested: CGFloat
+            if let rejected {
+                requested = floor((lastAccepted + rejected) / 2)
+                if abs(lastAccepted - rejected) <= max(1, epsilon)
+                    || requested <= min(lastAccepted, rejected) || requested >= max(lastAccepted, rejected) {
+                    if verifiedMotion || abs(lastAccepted - initial) > epsilon {
+                        recordAndContinue(.confirmed(lastAccepted), bound: bound, nextIndex: index + 1)
+                        return
+                    }
+                    // It may have started exactly at the limit. Approach from
+                    // another reachable size before calling that a measurement.
+                    let visible = bound.isWidth ? screenFrame.width : screenFrame.height
+                    let offset = max(8, 4 * epsilon)
+                    let alternate = bound.isMinimum ? min(visible, initial + offset) : max(1, initial - offset)
+                    guard abs(alternate - initial) > epsilon else {
+                        recordAndContinue(.indeterminate, bound: bound, nextIndex: index + 1)
+                        return
+                    }
+                    let target = Self.targetFrame(for: bound, activeLength: alternate,
+                                                  originalFrame: original.frame, screenFrame: screenFrame)
+                    windowService.setFrameAnchoredObserved(target, sizeConstraintAnchor: CGPoint(x: 0.5, y: 0.5),
+                        requiredCommitSizeAxes: bound.isWidth ? [.width] : [.height],
+                        for: original.element, pid: original.pid) { observation in
+                        guard measurementGeneration == self.generation else { return }
+                        guard Self.observationAcceptedRequestedActiveLength(bound: bound, observation: observation, epsilon: epsilon) else {
+                            recordAndContinue(.indeterminate, bound: bound, nextIndex: index + 1)
+                            return
+                        }
+                        probeBound(bound, index: index, lengths: [], lastAccepted: alternate,
+                                   rejected: rejected, verifiedMotion: true)
+                    }
+                    return
+                }
+            } else if let next = lengths.first {
+                requested = next
+            } else {
                 recordAndContinue(.noMeasurableBound, bound: bound, nextIndex: index + 1)
                 return
             }
-            let probeFraction = Double(probeIndex)
-                / Double(max(probeLengths.count, 1))
-            report(
-                boundProgress(index: index, fractionWithinBound: probeFraction),
-                phase: .measuring(bound)
-            )
-            let target = Self.targetFrame(
-                for: bound,
-                activeLength: probeLengths[probeIndex],
-                originalFrame: original.frame,
-                screenFrame: screenFrame
-            )
-            self.windowService.setFrameAnchoredObserved(
-                target,
-                sizeConstraintAnchor: CGPoint(x: 0.5, y: 0.5),
+            probesForCurrentBound += 1
+            let withinBound = 1 - 1 / Double(probesForCurrentBound)
+            report(boundProgress(index: index, fractionWithinBound: withinBound), phase: .measuring(bound))
+            let target = Self.targetFrame(for: bound, activeLength: requested,
+                                         originalFrame: original.frame, screenFrame: screenFrame)
+            windowService.setFrameAnchoredObserved(target, sizeConstraintAnchor: CGPoint(x: 0.5, y: 0.5),
                 requiredCommitSizeAxes: bound.isWidth ? [.width] : [.height],
-                for: original.element,
-                pid: original.pid
-            ) { observation in
+                for: original.element, pid: original.pid) { observation in
                 guard measurementGeneration == self.generation else { return }
-                guard let classification = Self.minimumProbeOutcome(
-                    for: bound,
-                    observation: observation,
-                    epsilon: epsilon
-                ) else {
-                    recordAndContinue(.indeterminate, bound: bound, nextIndex: index + 1)
-                    return
-                }
-                switch classification {
-                case .confirmed:
-                    recordAndContinue(classification, bound: bound, nextIndex: index + 1)
-                case .noMeasurableBound:
-                    report(
-                        boundProgress(
-                            index: index,
-                            fractionWithinBound: Double(probeIndex + 1)
-                                / Double(max(probeLengths.count, 1))
-                        ),
-                        phase: .measuring(bound)
-                    )
-                    measureMinimum(
-                        bound,
-                        index: index,
-                        probeLengths: probeLengths,
-                        probeIndex: probeIndex + 1
-                    )
-                case .indeterminate:
+                if Self.observationAcceptedRequestedActiveLength(bound: bound, observation: observation, epsilon: epsilon) {
+                    probeBound(bound, index: index, lengths: lengths.dropFirst(), lastAccepted: requested, rejected: rejected, verifiedMotion: verifiedMotion)
+                } else if let size = Self.confirmedValue(for: bound, observation: observation,
+                                                          epsilon: epsilon, screenFrame: screenFrame) {
+                    if abs(size - lastAccepted) <= epsilon {
+                        // A refused write can leave the previous size untouched.
+                        // Probe between the last reachable and refused sizes.
+                        probeBound(bound, index: index, lengths: [], lastAccepted: lastAccepted, rejected: requested, verifiedMotion: verifiedMotion)
+                    } else if size >= min(lastAccepted, requested), size <= max(lastAccepted, requested) {
+                        recordAndContinue(.confirmed(size), bound: bound, nextIndex: index + 1)
+                    } else {
+                        recordAndContinue(.indeterminate, bound: bound, nextIndex: index + 1)
+                    }
+                } else {
                     recordAndContinue(.indeterminate, bound: bound, nextIndex: index + 1)
                 }
             }
@@ -253,57 +265,16 @@ final class ConstraintMeasurementEngine {
             }
 
             let bound = bounds[index]
+            probesForCurrentBound = 0
             report(
                 boundProgress(index: index, fractionWithinBound: 0),
                 phase: .measuring(bound)
             )
-            if bound.isMinimum {
-                let originalLength = bound.isWidth
-                    ? original.frame.width : original.frame.height
-                let probeLengths = Self.minimumProbeLengths(
-                    originalLength: originalLength,
-                    epsilon: epsilon
-                )
-                measureMinimum(
-                    bound,
-                    index: index,
-                    probeLengths: probeLengths,
-                    probeIndex: 0
-                )
-                return
-            }
-
-            let target = Self.targetFrame(
-                for: bound,
-                activeLength: bound.isWidth ? screenFrame.width : screenFrame.height,
-                originalFrame: original.frame,
-                screenFrame: screenFrame
-            )
-            self.windowService.setFrameAnchoredObserved(
-                target,
-                sizeConstraintAnchor: CGPoint(x: 0.5, y: 0.5),
-                requiredCommitSizeAxes: bound.isWidth ? [.width] : [.height],
-                for: original.element,
-                pid: original.pid
-            ) { observation in
-                guard measurementGeneration == self.generation else { return }
-                if let value = Self.confirmedValue(
-                    for: bound,
-                    observation: observation,
-                    epsilon: epsilon,
-                    screenFrame: screenFrame
-                ) {
-                    recordAndContinue(.confirmed(value), bound: bound, nextIndex: index + 1)
-                } else if Self.observationAcceptedRequestedActiveLength(
-                    bound: bound,
-                    observation: observation,
-                    epsilon: epsilon
-                ) {
-                    recordAndContinue(.noMeasurableBound, bound: bound, nextIndex: index + 1)
-                } else {
-                    recordAndContinue(.indeterminate, bound: bound, nextIndex: index + 1)
-                }
-            }
+            let originalLength = bound.isWidth ? original.frame.width : original.frame.height
+            let lengths = bound.isMinimum
+                ? Self.minimumProbeLengths(originalLength: originalLength, epsilon: epsilon)
+                : [bound.isWidth ? screenFrame.width : screenFrame.height]
+            probeBound(bound, index: index, lengths: lengths[...], lastAccepted: originalLength)
         }
 
         report(0.02, phase: .preparing)
@@ -353,35 +324,6 @@ final class ConstraintMeasurementEngine {
               activeAccepted < usableLength - epsilon
         else { return nil }
         return activeAccepted
-    }
-
-    private static func minimumProbeOutcome(
-        for bound: AppConstraintBound,
-        observation: AXFrameMutationObservation,
-        epsilon: CGFloat
-    ) -> ConstraintMeasurementBoundOutcome? {
-        guard bound.isMinimum,
-              observation.mutationWasSent,
-              observation.sizeMutationSucceeded,
-              observation.acceptedFrameIsSettled,
-              observation.liveness == .alive,
-              let accepted = observation.acceptedFrame else { return nil }
-        let requested = observation.requestedFrame
-        let activeRequested = bound.isWidth ? requested.width : requested.height
-        let activeAccepted = bound.isWidth ? accepted.width : accepted.height
-        let orthogonalRequested = bound.isWidth ? requested.height : requested.width
-        let orthogonalAccepted = bound.isWidth ? accepted.height : accepted.width
-        guard abs(orthogonalAccepted - orthogonalRequested) <= epsilon else {
-            return nil
-        }
-        if activeAccepted > activeRequested + epsilon,
-           activeRequested > SystemGeometryPolicy.minimumWindowLength + epsilon {
-            guard observation.settlementEvidence
-                .authorizesPersistentConstraintLearning else { return nil }
-            return .confirmed(activeAccepted)
-        }
-        guard abs(activeAccepted - activeRequested) <= epsilon else { return nil }
-        return .noMeasurableBound
     }
 
     private static func observationAcceptedRequestedActiveLength(

@@ -31,9 +31,21 @@ typedef struct {
     TSLSSpaceGetTypeFunction spaceGetType;
     TSLSLSCopyManagedDisplayForSpaceFunction copyManagedDisplayForSpace;
     TSLSLSCopyManagedDisplaySpacesFunction copyManagedDisplaySpaces;
-    TSLAXUIElementGetWindowFunction axGetWindow;
     TSLBridgeCapability capabilities;
 } TSLRuntime;
+
+static TSLAXUIElementGetWindowFunction TSLWindowIDResolver(void) {
+    static TSLAXUIElementGetWindowFunction resolve;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        resolve = (TSLAXUIElementGetWindowFunction)dlsym(RTLD_DEFAULT, "_AXUIElementGetWindow");
+    });
+    return resolve;
+}
+
+BOOL TSLBridgeCanResolveWindowID(void) {
+    return TSLWindowIDResolver() != NULL;
+}
 
 static TSLRuntime TSLLoadRuntime(void) {
     TSLRuntime runtime = {0};
@@ -68,13 +80,6 @@ static TSLRuntime TSLLoadRuntime(void) {
             runtime.skyLightHandle,
             "SLSCopyManagedDisplaySpaces"
         );
-    runtime.axGetWindow = (TSLAXUIElementGetWindowFunction)dlsym(
-        RTLD_DEFAULT,
-        "_AXUIElementGetWindow"
-    );
-    if (runtime.axGetWindow) {
-        runtime.capabilities |= TSLBridgeCapabilityResolveWindowID;
-    }
     if (runtime.mainConnectionID && runtime.copySpacesForWindows) {
         runtime.capabilities |= TSLBridgeCapabilityReadWindowSpaces;
     }
@@ -102,6 +107,7 @@ static const TSLRuntime *TSLSharedRuntime(void) {
 TSLBridgeCapability TSLBridgeCopyCapabilities(void) {
     const TSLRuntime *runtime = TSLSharedRuntime();
     TSLBridgeCapability capabilities = runtime->capabilities;
+    if (TSLBridgeCanResolveWindowID()) { capabilities |= TSLBridgeCapabilityResolveWindowID; }
     if (TSLMoveRuntimeIsAvailable()) {
         capabilities |= TSLBridgeCapabilityDispatchBridgedMove;
     }
@@ -120,12 +126,12 @@ BOOL TSLBridgeCopyWindowID(AXUIElementRef element, uint32_t *windowID) {
     if (!element || !windowID) {
         return NO;
     }
-    const TSLRuntime *runtime = TSLSharedRuntime();
-    if (!runtime->axGetWindow) {
+    TSLAXUIElementGetWindowFunction resolve = TSLWindowIDResolver();
+    if (!resolve) {
         return NO;
     }
     uint32_t resolvedWindowID = 0;
-    AXError result = runtime->axGetWindow(element, &resolvedWindowID);
+    AXError result = resolve(element, &resolvedWindowID);
     if (result != kAXErrorSuccess || resolvedWindowID == 0) {
         return NO;
     }

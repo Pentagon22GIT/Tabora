@@ -11,6 +11,9 @@ final class ConstraintStore {
     private let fileURL: URL
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
+    // Set only after distinguishing first launch from a failed or incompatible read.
+    private var canSave = false
+    private var unreadableRecords: [Any] = []
 
     init(fileURL: URL? = nil) {
         if let fileURL {
@@ -34,7 +37,15 @@ final class ConstraintStore {
     }
 
     func loadRecords() -> [AppConstraintRecord] {
-        guard let data = try? Data(contentsOf: fileURL), !data.isEmpty else {
+        canSave = false
+        unreadableRecords.removeAll()
+        let data: Data
+        do {
+            data = try Data(contentsOf: fileURL)
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            canSave = true
+            return []
+        } catch {
             return []
         }
 
@@ -47,6 +58,7 @@ final class ConstraintStore {
             return []
         }
 
+        canSave = true
         return rawRecords.compactMap { raw -> AppConstraintRecord? in
             guard JSONSerialization.isValidJSONObject(raw),
                   let recordData = try? JSONSerialization.data(withJSONObject: raw),
@@ -54,6 +66,7 @@ final class ConstraintStore {
                       AppConstraintRecord.self,
                       from: recordData
                   ), Self.isValid(record) else {
+                unreadableRecords.append(raw)
                 return nil
             }
             return record
@@ -61,6 +74,7 @@ final class ConstraintStore {
     }
 
     func saveRecords(_ records: [AppConstraintRecord]) throws {
+        guard canSave else { throw CocoaError(.fileReadCorruptFile) }
         let directory = fileURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(
             at: directory,
@@ -72,7 +86,13 @@ final class ConstraintStore {
                 $0.identity.storageKey < $1.identity.storageKey
             }
         )
-        let data = try encoder.encode(envelope)
+        var data = try encoder.encode(envelope)
+        if !unreadableRecords.isEmpty {
+            var root = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+            guard let encoded = root["records"] as? [Any] else { throw CocoaError(.coderInvalidValue) }
+            root["records"] = encoded + unreadableRecords
+            data = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
+        }
         try data.write(to: fileURL, options: [.atomic])
     }
 
@@ -364,7 +384,7 @@ final class AppConstraintRegistry {
         case .candidate(var candidate):
             let candidateValue = CGFloat(candidate.value)
             if abs(candidateValue - accepted) <= rejection.measurementEpsilon {
-                candidate.observations += 1
+                if candidate.observations < Int.max { candidate.observations += 1 }
                 candidate.lastObservedAt = Date()
                 candidate.value = Double(bound.isMinimum
                     ? max(candidateValue, accepted)

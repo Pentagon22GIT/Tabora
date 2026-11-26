@@ -45,16 +45,16 @@
 "menu.reset_state" = "Reset State";
 "menu.quit" = "Quit Tabora";
 
-"settings.window.title" = "Tabora %@ Settings";
+"settings.window.title" = "Tabora Settings";
 "settings.category.general" = "General";
-"settings.category.commands" = "Shortcuts";
+"settings.category.commands" = "Shortcut Settings";
 "settings.category.constraints" = "Size Constraints";
 "settings.category.experimental" = "Experimental";
 
 "settings.general.launch_at_login" = "Open Tabora at Login";
-"settings.general.show_window_previews" = "Show Window Images in Layout Suggestions";
-"settings.general.preview_note" = "Screen Recording permission is required. Images are never saved or sent.";
-"settings.general.window_movement" = "Window Movement";
+"settings.general.show_window_previews" = "Use window images for previews";
+"settings.general.preview_note" = "Requires Screen Recording permission. When off, previews show app icons.";
+"settings.general.window_movement" = "Window Layout";
 "settings.general.restore_size.checkbox" = "Restore Pre-Snap Size When Moving";
 "settings.general.linked_resize.checkbox" = "Resize Split Windows Together";
 "settings.general.linked_resize.note" = "Drag a shared edge to resize the windows on both sides.";
@@ -75,9 +75,9 @@
 "settings.general.drag_display.lightweight.title" = "Lightweight";
 "settings.general.drag_display.lightweight.detail" = "Show icons for all windows";
 "settings.general.drag_display.standard.title" = "Standard";
-"settings.general.drag_display.standard.detail" = "Show content only for the window being dragged";
+"settings.general.drag_display.standard.detail" = "Show content only for the window being dragged. Depending on the window, its contents may not update in real time.";
 "settings.general.drag_display.all.title" = "Show All";
-"settings.general.drag_display.all.detail" = "Show content for every window";
+"settings.general.drag_display.all.detail" = "Show content for every window. Depending on the window, its contents may not update in real time.";
 "settings.general.drag_display.note" = "Showing more window content may reduce performance.";
 "settings.general.drag_detection.title" = "Drag Detection";
 "settings.general.drag_detection.note" = "Adjust how close the pointer must be to screen edges and corners.";
@@ -122,8 +122,8 @@
 "settings.experimental.api_status.available" = "Current API Status: Available";
 "settings.experimental.api_status.unavailable" = "Current API Status: Unavailable (Turn This Feature Off)";
 "settings.general.assist.title" = "Switch Between 2-, 3-, and 4-Way Assist";
-"settings.general.assist.checkbox" = "Hold Option to Switch Between 2-, 3-, and 4-Way Assist";
-"settings.general.assist.note" = "Use Option (⌥) to switch between one large slot and two smaller slots. If no window fits the large slot but two different windows fit the smaller slots together, Tabora switches automatically.";
+"settings.general.assist.checkbox" = "Change the split count with Option";
+"settings.general.assist.note" = "Press Option (⌥) in the area showing window choices to change the number of slots.";
 "settings.experimental.workspace.title" = "Delay Space Switching at Screen Edges";
 "settings.experimental.workspace.note" = "Changes an undocumented macOS-wide preference. It may stop working in future macOS releases, and applying it restarts the Dock. Tabora does not restore the original value when it quits.";
 "settings.experimental.workspace.delay_button" = "Delay Space Switching for Up to 60 Seconds";
@@ -177,7 +177,7 @@
 "migration.proxy.window_title.waiting" = "Waiting to Move %d/%d";
 "migration.shadow.reserved" = "Move Reserved";
 "migration.shadow.waiting" = "Waiting %d/%d";
-"migration.verified_environment" = "Verified on macOS 26.5.2 / 26.6.2 (2026-08-30)";
+"migration.verified_environment" = "Verified on macOS 26.5.2, 26.6.2, and 27.3";
 "migration.api_unavailable.title" = "Can’t Move Groups Between Desktops";
 "migration.api_unavailable.detail" = "Tabora couldn’t access the private API required to move groups. The API may have changed in a macOS update.\n\nFor safety, turn this feature off under Experimental in Settings.\n\nCurrent System: %@\n%@\nDetails: %@";
 "migration.api_unavailable.disable" = "Turn Feature Off";
@@ -252,8 +252,8 @@
 "settings.ratio.top" = "Top : Bottom";
 "settings.gesture.snap" = "Eight-direction snap";
 "settings.gesture.unavailable" = "Input monitoring is unavailable. Check Accessibility access for Tabora.";
-"settings.replace.occupied" = "Replace windows in occupied slots";
-"settings.replace.note" = "Replaces an occupied slot when its group stays frontmost throughout the snap.";
+"settings.replace.occupied" = "Replace a window";
+"settings.replace.note" = "Drop a window onto an occupied slot in the frontmost group to replace the window in that slot.";
 "settings.ratio.disconnected" = "Connected displays are shown. Each display retains its proportions when disconnected.";
 "cleanup.ratios" = "Delete only split proportions for all displays and quit";
 "settings.gesture.title" = "Trackpad gestures";
@@ -261,11 +261,24 @@
 "settings.gesture.maximize" = "Maximize on upward swipe";
 
 "settings.subdivide.title" = "Subdivide a group slot";
-"settings.subdivide.note" = "Snap to a corner within the original slot to keep the other windows in place and choose a window for the vacant slot. Cancel to dissolve the group.";
-"settings.split_lock" = "In-Group Gestures";
-"settings.split_lock.note" = "Use the current slot as a reference when navigating a group. Assign a toggle key in Shortcuts.";
-"command.split_lock" = "Toggle In-Group Gestures";
-"notice.split_lock.on" = "In-Group Gestures On";
-"notice.split_lock.off" = "In-Group Gestures Off";
+"settings.subdivide.note" = "Drag a window occupying the left, right, top, or bottom half to a corner within its slot to split the slot in two. The empty slot shows windows you can place there.";
+"settings.split_lock" = "Relative gestures";
+"settings.split_lock.note" = "When swapping windows in a group, swipe toward the other window from the current window’s position. In Commands, you can assign a shortcut to toggle this behavior.";
+"command.split_lock" = "Toggle relative gestures";
+"notice.split_lock.on" = "Relative Gestures On";
+"notice.split_lock.off" = "Relative Gestures Off";
 "settings.section.resize" = "Shared resizing";
 "settings.section.management" = "App management";
+
+"settings.group.application" = "Application";
+"settings.group.layout" = "Layout and size";
+"settings.group.input" = "Input and controls";
+"settings.preview.replay" = "Replay example";
+"settings.nav.gesture" = "Gestures";
+"settings.general.restore_size.note" = "When you drag a snapped window, it returns to its pre-snap size. When the group dissolves, the saved sizes of the other windows are discarded.";
+"settings.gesture.maximize.note" = "Swipe up to maximize the window instead of placing it in the top half. Swaps within a group are unaffected.";
+"key.eisu" = "Eisu";
+"key.kana" = "Kana";
+
+"settings.gesture.reassign" = "Reassign a group slot";
+"settings.gesture.reassign.note" = "Swipe toward the current window’s slot to choose its occupant again. Cancel to keep the original layout.";

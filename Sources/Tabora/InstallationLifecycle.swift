@@ -49,8 +49,8 @@ final class InitialSetupWindowController: NSWindowController, NSWindowDelegate {
     private let presentation: InstallationPresentation
     private let defaults: UserDefaults
     private let languagePopup = NSPopUpButton()
-    private let login = NSButton(checkboxWithTitle: "", target: nil, action: nil)
-    private let previews = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+    private let login = NSSwitch()
+    private let previews = NSSwitch()
 
     init(language: AppLanguage = AppLanguage.selected(),
          presentation: InstallationPresentation = .initialSetup,
@@ -58,9 +58,13 @@ final class InitialSetupWindowController: NSWindowController, NSWindowDelegate {
         self.language = language
         self.presentation = presentation
         self.defaults = defaults
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 560),
-                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 540),
+                              styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
         super.init(window: window)
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.titlebarSeparatorStyle = .none
+        window.backgroundColor = .controlBackgroundColor
         window.isReleasedWhenClosed = false
         window.delegate = self
         window.center()
@@ -75,7 +79,7 @@ final class InitialSetupWindowController: NSWindowController, NSWindowDelegate {
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 16
+        stack.spacing = 14
         stack.translatesAutoresizingMaskIntoConstraints = false
         let content = NSView()
         window.contentView = content
@@ -86,20 +90,20 @@ final class InitialSetupWindowController: NSWindowController, NSWindowDelegate {
         NSLayoutConstraint.activate([
             footer.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 28),
             footer.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -28),
-            footer.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -24),
+            footer.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -22),
             footer.heightAnchor.constraint(equalToConstant: 32),
             stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 28),
             stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -28),
-            stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 28),
+            stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 52),
             stack.bottomAnchor.constraint(lessThanOrEqualTo: footer.topAnchor, constant: -20)
         ])
         func label(_ key: String, heading: Bool = false) {
             let view = NSTextField(wrappingLabelWithString: text(key))
             let paragraph = NSMutableParagraphStyle()
-            paragraph.lineSpacing = heading ? 2 : 4
+            paragraph.lineSpacing = heading ? 1 : 2
             view.attributedStringValue = NSAttributedString(string: text(key), attributes: [
-                .font: NSFont.systemFont(ofSize: heading ? 22 : 14, weight: heading ? .semibold : .regular),
-                .foregroundColor: NSColor.labelColor,
+                .font: NSFont.systemFont(ofSize: heading ? 21 : 13, weight: heading ? .semibold : .regular),
+                .foregroundColor: heading ? NSColor.labelColor : NSColor.secondaryLabelColor,
                 .paragraphStyle: paragraph
             ])
             view.maximumNumberOfLines = 0
@@ -113,8 +117,9 @@ final class InitialSetupWindowController: NSWindowController, NSWindowDelegate {
                 languagePopup.selectItem(at: AppLanguage.allCases.firstIndex(of: language) ?? 0)
                 languagePopup.target = self
                 languagePopup.action = #selector(changeLanguage)
-                stack.addArrangedSubview(languagePopup)
                 label("setup.welcome", heading: true)
+                stack.addArrangedSubview(languagePopup)
+                stack.setCustomSpacing(20, after: languagePopup)
                 label("setup.about")
             } else {
                 label("information.title", heading: true)
@@ -134,11 +139,25 @@ final class InitialSetupWindowController: NSWindowController, NSWindowDelegate {
                                   action: #selector(openAccessibility))
             access.bezelStyle = .rounded
             stack.addArrangedSubview(access)
-            login.title = text("settings.general.launch_at_login")
-            previews.title = text("settings.general.show_window_previews")
+            stack.setCustomSpacing(24, after: access)
             label("setup.optional")
-            stack.addArrangedSubview(login)
-            stack.addArrangedSubview(previews)
+            for (key, toggle) in [("settings.general.launch_at_login", login), ("settings.general.show_window_previews", previews)] {
+                let title = NSTextField(labelWithString: text(key))
+                toggle.controlSize = .small
+                toggle.setAccessibilityLabel(title.stringValue)
+                let row = NSStackView()
+                row.alignment = .centerY
+                row.addView(title, in: .leading)
+                row.addView(toggle, in: .trailing)
+                stack.addArrangedSubview(row)
+                row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+                if toggle === login {
+                    let separator = NSBox()
+                    separator.boxType = .separator
+                    stack.addArrangedSubview(separator)
+                    separator.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+                }
+            }
         }
         let next = NSButton(title: text(presentation == .review ? "information.close" : presentation == .informationUpdate ? "information.confirm" : step == 0 ? "setup.continue" : "setup.finish"),
                             target: self, action: #selector(advance))

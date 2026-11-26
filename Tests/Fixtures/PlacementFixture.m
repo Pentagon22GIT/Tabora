@@ -19,6 +19,12 @@ int main(void) {
         if ([NSProcessInfo.processInfo.arguments containsObject:@"four"]) {
             frames = [frames arrayByAddingObject:[NSValue valueWithRect:NSOffsetRect(loose, 60, 60)]];
         }
+        BOOL candidateOnly = [NSProcessInfo.processInfo.arguments containsObject:@"candidate-only"];
+        BOOL wideCandidate = candidateOnly && NSProcessInfo.processInfo.arguments.count >= 4;
+        if (candidateOnly) {
+            NSRect initial = wideCandidate ? NSRectFromString(NSProcessInfo.processInfo.arguments[2]) : left;
+            frames = @[[NSValue valueWithRect:initial]];
+        }
         NSMutableArray<NSWindow *> *windows = [NSMutableArray new];
         for (NSUInteger i = 0; i < frames.count; i++) {
             NSWindow *window = [[NSWindow alloc] initWithContentRect:loose
@@ -26,6 +32,7 @@ int main(void) {
                 backing:NSBackingStoreBuffered defer:NO];
             window.tabbingMode = NSWindowTabbingModeDisallowed;
             window.title = [NSString stringWithFormat:@"Tabora placement fixture %lu", i];
+            if (candidateOnly) window.title = @"Tabora external candidate fixture";
             BOOL overlap = [NSProcessInfo.processInfo.arguments containsObject:@"overlap"];
             if (overlap) window.title = @"Identical fixture";
             [window setFrame:overlap ? loose : frames[i].rectValue display:YES];
@@ -36,6 +43,13 @@ int main(void) {
                 window.minSize = NSMakeSize(ceil(NSWidth(screen) * 0.60), 100);
                 [window setFrame:NSMakeRect(NSMinX(screen), NSMinY(screen), NSWidth(screen) * 0.75,
                                            NSHeight(screen) * 0.65) display:YES];
+            }
+            if (wideCandidate) {
+                window.minSize = NSMakeSize([NSProcessInfo.processInfo.arguments[3] doubleValue], 160);
+                if (NSProcessInfo.processInfo.arguments.count == 6) {
+                    window.maxSize = NSMakeSize([NSProcessInfo.processInfo.arguments[4] doubleValue],
+                                                [NSProcessInfo.processInfo.arguments[5] doubleValue]);
+                }
             }
             [window orderFront:nil];
             [windows addObject:window];

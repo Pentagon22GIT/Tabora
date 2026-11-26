@@ -3,6 +3,20 @@ import XCTest
 @testable import Tabora
 
 final class WindowPreviewCaptureTests: XCTestCase {
+    func testStalledGroupAndTransientWorkLeavePickerCapacityAndRecoverOnCompletion() throws {
+        for stalledGroup in [true, false] {
+            let lanes = PreviewCaptureLanes()
+            let first = try XCTUnwrap(lanes.acquire(group: stalledGroup, transient: false, wait: 0))
+            let second = try XCTUnwrap(lanes.acquire(group: stalledGroup, transient: false, wait: 0))
+            let transient = try XCTUnwrap(lanes.acquire(group: true, transient: true, wait: 0))
+            XCTAssertNil(lanes.acquire(group: stalledGroup, transient: false, wait: 0))
+            XCTAssertNil(lanes.acquire(group: true, transient: true, wait: 0))
+            let independent = try XCTUnwrap(lanes.acquire(group: !stalledGroup, transient: false, wait: 0))
+            for slot in [first, second, transient, independent] { slot.signal() }
+            try XCTUnwrap(lanes.acquire(group: stalledGroup, transient: false, wait: 0)).signal()
+        }
+    }
+
     private let request = PreviewFullSizeRequest(
         ownerPID: 42,
         windowSize: CGSize(width: 800, height: 500),
@@ -71,105 +85,31 @@ final class WindowPreviewCaptureTests: XCTestCase {
         XCTAssertEqual(calls, 0)
     }
 
-    func testNormalCaptureDoesNotCallFullSizeSource() throws {
-        let source = try image(800, 500)
-        var calls = 0
-        let result = PreviewCaptureRoutingPolicy.capture(
-            fullSizeRequest: nil, shouldCapture: { true },
-            legacy: { source }, fullSize: { calls += 1; return nil }
-        )
-        XCTAssertTrue(result === source)
-        XCTAssertEqual(calls, 0)
-    }
-
-    func testTransientPrefersFullSizeSourceWithoutComparingLegacyCanvas() throws {
-        let full = try image(800, 500)
-        var calls: [String] = []
-        let result = try XCTUnwrap(PreviewCaptureRoutingPolicy.capture(
-            fullSizeRequest: request, shouldCapture: { true },
-            legacy: { calls.append("legacy"); return full },
-            fullSize: { calls.append("fullSize"); return full }
-        ))
-        XCTAssertTrue(result === full)
-        XCTAssertEqual(calls, ["fullSize"])
-        let member = MissionControlTransientPreviewMemberPlan(
-            stableIdentity: "member", pid: 42, windowID: 10,
-            relativeFrame: CGRect(origin: .zero, size: request.windowSize),
-            targetPixelSize: MissionControlPreviewPixelSize(width: 400, height: 250),
-            byteBudget: 400 * 250 * 4
-        )
-        let rendered = try XCTUnwrap(MissionControlTransientPreviewCapturer
-            .makePreviewImage(from: result, member: member))
-        XCTAssertEqual(rendered.width, 400)
-        XCTAssertEqual(rendered.height, 250)
-        XCTAssertLessThanOrEqual(rendered.bytesPerRow * rendered.height, member.byteBudget)
-    }
-
-    func testUnavailableIncompatibleOrSmallerFullSizeSourceUsesLegacyFallback() throws {
-        let source = try image(160, 100)
-        for candidate in [nil, try image(80, 50), try image(500, 800)] as [CGImage?] {
-            var calls: [String] = []
-            let result = PreviewCaptureRoutingPolicy.capture(
-                fullSizeRequest: request, shouldCapture: { true },
-                legacy: { calls.append("legacy"); return source },
-                fullSize: { calls.append("fullSize"); return candidate }
-            )
-            XCTAssertTrue(result === source)
-            XCTAssertEqual(calls, ["fullSize", "legacy"])
-        }
-    }
-
-    func testEqualCanvasSizeDoesNotRejectFullSizePixelsOrDisableSmallHotImages() throws {
-        let candidate = try image(160, 100)
-        // Deliberately distinct image objects with identical dimensions.
-        for original in [nil, try image(160, 100), try image(100, 160)] as [CGImage?] {
-            let result = PreviewCaptureRoutingPolicy.capture(
-                fullSizeRequest: request, shouldCapture: { true },
-                legacy: { original }, fullSize: { candidate }
-            )
-            XCTAssertTrue(result === candidate)
-        }
-    }
-
-    func testCancellationBeforeBetweenAndAfterCallsNeverPublishes() throws {
-        let small = try image(160, 100)
-        let full = try image(800, 500)
-        for cancelAt in 0...2 {
-            var authorized = cancelAt != 0
-            var legacyCalls = 0
-            var fullSizeCalls = 0
-            let result = PreviewCaptureRoutingPolicy.capture(
-                fullSizeRequest: request, shouldCapture: { authorized },
-                legacy: {
-                    legacyCalls += 1
-                    authorized = false
-                    return full
-                },
-                fullSize: {
-                    fullSizeCalls += 1
-                    if cancelAt == 1 { authorized = false }
-                    return small
-                }
-            )
-            XCTAssertNil(result)
-            XCTAssertEqual(fullSizeCalls, cancelAt == 0 ? 0 : 1)
-            XCTAssertEqual(legacyCalls, cancelAt == 2 ? 1 : 0)
-        }
-    }
-
-    func testTransparentFullSizeCanvasNeverDisplacesVisibleFallback() throws {
-        let context = try XCTUnwrap(CGContext(data: nil, width: 800, height: 500,
-            bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
-        let transparent = try XCTUnwrap(context.makeImage())
-        XCTAssertNil(PreviewImageContentPolicy.windowContent(in: transparent, expectedSize: request.windowSize))
+    func testSingleSourceRejectsCancelledTransparentAndIncompatibleFrames() throws {
         let visible = try image(160, 100)
-        XCTAssertNotNil(PreviewImageContentPolicy.windowContent(in: visible, expectedSize: request.windowSize))
-        let result = PreviewCaptureRoutingPolicy.capture(fullSizeRequest: request,
-            shouldCapture: { true }, legacy: { visible }, fullSize: { transparent })
-        XCTAssertTrue(result === visible)
-        XCTAssertNil(PreviewCaptureRoutingPolicy.capture(fullSizeRequest: request,
-            shouldCapture: { true }, legacy: { nil }, fullSize: { transparent }))
+        let wrong = try image(100, 160)
+        let context = try XCTUnwrap(CGContext(data: nil, width: 800, height: 500,
+            bitsPerComponent: 8, bytesPerRow: 3200, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        for candidate in [try XCTUnwrap(context.makeImage()), wrong] {
+            XCTAssertNil(PreviewCaptureValidation.image(candidate, request: request, expectedSize: request.windowSize, shouldCapture: { true }))
+        }
+        for cancelAt in [1, 2, 3] {
+            var checks = 0
+            let result = PreviewCaptureValidation.image(visible, request: request, expectedSize: request.windowSize) {
+                checks += 1
+                return checks < cancelAt
+            }
+            XCTAssertEqual(result != nil, cancelAt == 3)
+        }
+    }
+
+    func testOutputSizeHonorsSourceScaleCacheTargetAndMemoryBounds() {
+        XCTAssertEqual(WindowPreviewCaptureService.pixelSize(size: request.windowSize, scale: 2, target: request.targetPixelSize), request.targetPixelSize)
+        XCTAssertEqual(WindowPreviewCaptureService.pixelSize(size: request.windowSize, scale: 1, target: nil), request.windowSize)
+        XCTAssertEqual(WindowPreviewCaptureService.pixelSize(size: request.windowSize, scale: 2, target: CGSize(width: 400, height: 300)), CGSize(width: 400, height: 250))
+        XCTAssertNil(WindowPreviewCaptureService.pixelSize(size: .zero, scale: 2, target: nil))
+        XCTAssertEqual(WindowPreviewCaptureService.pixelSize(size: CGSize(width: 100000, height: 100000), scale: 2, target: nil), CGSize(width: 4096, height: 4096))
     }
 
     func testReducedTileOnNominalCanvasCannotReplaceUsableSource() throws {
@@ -179,11 +119,7 @@ final class WindowPreviewCaptureTests: XCTestCase {
         ctx.setFillColor(CGColor(gray: 1, alpha: 1))
         ctx.fill(CGRect(x: 17, y: 112, width: 551, height: 366))
         let tile = try XCTUnwrap(ctx.makeImage())
-        let good = try image(800, 500)
-        XCTAssertTrue(PreviewCaptureRoutingPolicy.capture(fullSizeRequest: request,
-            shouldCapture: { true }, legacy: { good }, fullSize: { tile }) === good)
-        let recovered = try XCTUnwrap(PreviewCaptureRoutingPolicy.capture(fullSizeRequest: request,
-            shouldCapture: { true }, legacy: { tile }, fullSize: { tile }))
+        let recovered = try XCTUnwrap(PreviewCaptureValidation.image(tile, request: request, expectedSize: request.windowSize, shouldCapture: { true }))
         XCTAssertEqual(Double(recovered.width), 551, accuracy: 17)
         XCTAssertEqual(Double(recovered.height), 366, accuracy: 11)
         var alpha = [UInt8](repeating: 0, count: 32 * 32 * 4)
@@ -195,32 +131,4 @@ final class WindowPreviewCaptureTests: XCTestCase {
         XCTAssertGreaterThan(stride(from: 3, to: alpha.count, by: 4).filter { alpha[$0] > 200 }.count, 950)
     }
 
-    func testTransparentFallbackCannotReplaceVisibleReducedCandidate() throws {
-        let context = try XCTUnwrap(CGContext(data: nil, width: 800, height: 500,
-            bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
-        let transparent = try XCTUnwrap(context.makeImage())
-        let visible = try image(160, 100)
-        let result = PreviewCaptureRoutingPolicy.capture(fullSizeRequest: request,
-            shouldCapture: { true }, legacy: { transparent }, fullSize: { visible })
-        XCTAssertTrue(result === visible)
-        XCTAssertNil(PreviewCaptureRoutingPolicy.capture(fullSizeRequest: request,
-            shouldCapture: { true }, legacy: { transparent }, fullSize: { transparent }))
-    }
-
-    func testInvalidPlanDoesNotLaunchPrivateCapture() throws {
-        let source = try image(160, 100)
-        for size in [CGSize.zero, CGSize(width: CGFloat.infinity, height: 500)] {
-            let invalid = PreviewFullSizeRequest(
-                ownerPID: 42, windowSize: size, targetPixelSize: request.targetPixelSize
-            )
-            XCTAssertFalse(invalid.isValid)
-            let result = PreviewCaptureRoutingPolicy.capture(
-                fullSizeRequest: invalid, shouldCapture: { true },
-                legacy: { source },
-                fullSize: { XCTFail("Invalid plan launched capture"); return nil }
-            )
-            XCTAssertTrue(result === source)
-        }
-    }
 }

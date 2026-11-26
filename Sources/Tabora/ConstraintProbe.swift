@@ -21,6 +21,7 @@ struct ConstraintProbeContext {
     let peerLimitedAxes: Set<ConstraintProbeAxis>
     let measurementEpsilon: CGFloat
     let operationGeneration: Int
+    var startingSize: CGSize? = nil
 }
 
 struct ConstraintProbeAnalysis {
@@ -97,6 +98,7 @@ enum ConstraintProbe {
 
         var result: [ConfirmedConstraintRejection] = []
         if context.activeAxes.contains(.width), widthMismatch,
+           context.startingSize.map({ abs($0.width - context.acceptedFrame.width) > context.measurementEpsilon }) ?? true,
            !context.screenLimitedAxes.contains(.width),
            !context.systemLimitedAxes.contains(.width),
            !context.peerLimitedAxes.contains(.width),
@@ -117,6 +119,7 @@ enum ConstraintProbe {
             ))
         }
         if context.activeAxes.contains(.height), heightMismatch,
+           context.startingSize.map({ abs($0.height - context.acceptedFrame.height) > context.measurementEpsilon }) ?? true,
            !context.screenLimitedAxes.contains(.height),
            !context.systemLimitedAxes.contains(.height),
            !context.peerLimitedAxes.contains(.height),

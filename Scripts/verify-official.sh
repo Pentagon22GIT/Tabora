@@ -22,6 +22,8 @@ readonly CERTIFICATE_SHA1="$(/usr/libexec/PlistBuddy -c 'Print :CertificateSHA1'
 [[ "$CERTIFICATE_SHA1" != "0000000000000000000000000000000000000000" ]] || fail "証明書SHA-1が未設定です。"
 
 readonly ACTUAL_BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")"
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist")" == "$(<"$ROOT/BUILD_NUMBER")" ]] || fail "ビルド番号が一致しません。"
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" == "$(<"$ROOT/VERSION")" ]] || fail "バージョンが一致しません。"
 readonly ACTUAL_EDITION="$(/usr/libexec/PlistBuddy -c 'Print :TaboraEdition' "$APP/Contents/Info.plist")"
 readonly ACTUAL_SOURCE_REVISION="$(/usr/libexec/PlistBuddy -c 'Print :TaboraSourceRevision' "$APP/Contents/Info.plist")"
 readonly ACTUAL_SOURCE_DIRTY="$(/usr/libexec/PlistBuddy -c 'Print :TaboraSourceDirty' "$APP/Contents/Info.plist")"

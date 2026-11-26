@@ -1,3 +1,4 @@
+import Carbon
 import AppKit
 import ServiceManagement
 
@@ -12,8 +13,23 @@ struct ShortcutBinding: Codable, Equatable {
         if flags.contains(.option) { text += "⌥" }
         if flags.contains(.shift) { text += "⇧" }
         if flags.contains(.command) { text += "⌘" }
-        text += keyName(for: UInt16(keyCode))
+        guard let code = UInt16(exactly: keyCode) else {
+            return text + L10n.format("key.unknown", Int(keyCode))
+        }
+        text += keyName(for: code)
         return text
+    }
+
+    var menuKeyEquivalent: String? {
+        guard let code = UInt16(exactly: keyCode) else { return nil }
+        let special: [UInt16: UInt32] = [36: 13, 48: 9, 49: 32, 51: 8, 53: 27, 71: 0xf739,
+            76: 3, 114: 0xf746, 115: 0xf729, 116: 0xf72c, 117: 0xf728, 119: 0xf72b,
+            121: 0xf72d, 123: 0xf702, 124: 0xf703, 125: 0xf701, 126: 0xf700]
+        if let value = special[code], let scalar = UnicodeScalar(value) { return String(scalar) }
+        let name = keyName(for: code)
+        if name.first == "F", let number = UInt32(name.dropFirst()), (1...19).contains(number),
+           let scalar = UnicodeScalar(0xf703 + number) { return String(scalar) }
+        return name.count == 1 ? name.lowercased() : nil
     }
 
     private func keyName(for code: UInt16) -> String {
@@ -22,20 +38,24 @@ struct ShortcutBinding: Codable, Equatable {
             123: "←", 124: "→", 125: "↓", 126: "↑"
         ]
         if let name = names[code] { return name }
-        guard let event = NSEvent.keyEvent(
-            with: .keyDown,
-            location: .zero,
-            modifierFlags: [],
-            timestamp: 0,
-            windowNumber: 0,
-            context: nil,
-            characters: "",
-            charactersIgnoringModifiers: "",
-            isARepeat: false,
-            keyCode: code
-        ) else { return L10n.format("key.unknown", Int(code)) }
-        let value = event.charactersIgnoringModifiers?.uppercased() ?? ""
-        return value.isEmpty ? L10n.format("key.unknown", Int(code)) : value
+        let functionKeys: [UInt16] = [122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111, 105, 107, 113, 106, 64, 79, 80, 90]
+        if let index = functionKeys.firstIndex(of: code) { return "F" + String(index + 1) }
+        let navigation: [UInt16: String] = [71: "⌧", 76: "⌤", 102: L10n.text("key.eisu"), 104: L10n.text("key.kana"), 114: "Help", 115: "↖", 116: "⇞", 117: "⌦", 119: "↘", 121: "⇟"]
+        if let name = navigation[code] { return name }
+        let source = TISCopyCurrentKeyboardLayoutInputSource().takeRetainedValue()
+        guard let property = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData) else {
+            return L10n.format("key.unknown", Int(code))
+        }
+        let data = Unmanaged<CFData>.fromOpaque(property).takeUnretainedValue()
+        let layout = UnsafeRawPointer(CFDataGetBytePtr(data)!).assumingMemoryBound(to: UCKeyboardLayout.self)
+        var state: UInt32 = 0
+        var length = 0
+        var characters = [UniChar](repeating: 0, count: 8)
+        let status = UCKeyTranslate(layout, code, UInt16(kUCKeyActionDisplay), 0,
+                                    UInt32(LMGetKbdType()), OptionBits(kUCKeyTranslateNoDeadKeysMask),
+                                    &state, characters.count, &length, &characters)
+        guard status == noErr, length > 0 else { return L10n.format("key.unknown", Int(code)) }
+        return String(decoding: characters.prefix(length), as: UTF16.self).uppercased()
     }
 }
 
@@ -220,8 +240,22 @@ final class AppSettings {
 
     var splitLockEnabled: Bool {
         get { defaults.bool(forKey: "splitLockEnabled") }
-        set { defaults.set(newValue, forKey: "splitLockEnabled") }
+        set {
+            guard newValue != splitLockEnabled else { return }
+            defaults.set(newValue, forKey: "splitLockEnabled")
+            NotificationCenter.default.post(name: Self.gestureDidChange, object: self)
+        }
     }
+
+    var gestureReassignmentEnabled: Bool {
+        get { defaults.bool(forKey: "gestureReassignmentEnabled") }
+        set {
+            guard newValue != gestureReassignmentEnabled else { return }
+            defaults.set(newValue, forKey: "gestureReassignmentEnabled")
+            NotificationCenter.default.post(name: Self.gestureDidChange, object: self)
+        }
+    }
+
 
     var groupSubdivisionEnabled: Bool {
         get { defaults.object(forKey: "groupSubdivisionEnabled") as? Bool ?? true }
@@ -494,7 +528,7 @@ final class AppSettings {
 
     var enabledShortcuts: [ShortcutAction: ShortcutBinding] {
         var bindings = shortcuts
-        if !gestureSnapEnabled { bindings.removeValue(forKey: .toggleSplitLock) }
+        if !shortcutAvailable(.toggleSplitLock) { bindings.removeValue(forKey: .toggleSplitLock) }
         return bindings
     }
 

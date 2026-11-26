@@ -15,7 +15,7 @@ enum GroupSpaceMigrationForegroundFlushOwnershipPolicy {
 private final class GroupMigrationFrameBatch {
     private var pending: Set<String>
     private var allSucceeded = true
-    private var didFinish = false
+    private(set) var didFinish = false
     private let completion: (Bool) -> Void
 
     init(memberIDs: Set<String>, completion: @escaping (Bool) -> Void) {
@@ -200,7 +200,7 @@ extension SnapController: GroupSpaceMigrationHost {
         groupID: SnapGroupID,
         presentedMemberIDs: Set<String>
     ) {
-        guard settings.missionControlGroupMigrationEnabled,
+        guard settings.groupMigrationEnabled,
               groupSpaceMigrationLine.owns(groupID: groupID),
               groupSpaceMigrationLine.presentationIsFrozenForQueuedMigration(
                   groupID: groupID
@@ -263,7 +263,7 @@ extension SnapController: GroupSpaceMigrationHost {
                 proxyConfirmationIsPending: missionControlGroupProxyController
                     .hasPendingSelectionConfirmation
               ),
-              settings.missionControlGroupMigrationEnabled,
+              settings.groupMigrationEnabled,
               isEnabled, isControllerRunning else {
             return
         }
@@ -295,7 +295,7 @@ extension SnapController: GroupSpaceMigrationHost {
                 proxyConfirmationIsPending: missionControlGroupProxyController
                     .hasPendingSelectionConfirmation
               ),
-              settings.missionControlGroupMigrationEnabled,
+              settings.groupMigrationEnabled,
               isEnabled, isControllerRunning else { return }
 
         let intents = GroupSpaceMigrationForegroundIntentPolicy
@@ -630,7 +630,7 @@ extension SnapController: GroupSpaceMigrationHost {
         // recovery mutation finishes before application UI is presented.
         DispatchQueue.main.async { [weak self] in
             guard let self,
-                  self.settings.missionControlGroupMigrationEnabled else {
+                  self.settings.groupMigrationEnabled else {
                 return
             }
             self.onGroupSpaceMigrationAPIUnavailable?(notice)
@@ -675,7 +675,11 @@ extension SnapController: GroupSpaceMigrationHost {
             }
         )
         func runLane(_ identities: [String], at index: Int = 0) {
-            guard identities.indices.contains(index) else { return }
+            guard !batch.didFinish, identities.indices.contains(index) else { return }
+            guard groupSpaceMigrationLine.activeTransaction?.capture.transactionID == capture.transactionID else {
+                batch.expire()
+                return
+            }
             let identity = identities[index]
             guard let member = membersByIdentity[identity],
                   let frame = frames[identity] else {
@@ -683,7 +687,9 @@ extension SnapController: GroupSpaceMigrationHost {
                 runLane(identities, at: index + 1)
                 return
             }
-            windowService.setFrameReliably(frame, for: member.element) {
+            windowService.setFrameReliably(frame, for: member.element, whileAuthorized: {
+                !batch.didFinish && self.groupSpaceMigrationLine.activeTransaction?.capture.transactionID == capture.transactionID
+            }) {
                 succeeded in
                 batch.resolve(memberID: identity, succeeded: succeeded)
                 runLane(identities, at: index + 1)

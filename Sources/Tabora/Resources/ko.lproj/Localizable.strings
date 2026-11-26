@@ -45,16 +45,16 @@
 "menu.reset_state" = "상태 재설정";
 "menu.quit" = "Tabora 종료";
 
-"settings.window.title" = "Tabora %@ 설정";
+"settings.window.title" = "Tabora 설정";
 "settings.category.general" = "일반";
-"settings.category.commands" = "단축키";
+"settings.category.commands" = "단축키 설정";
 "settings.category.constraints" = "크기 제한";
 "settings.category.experimental" = "실험적 기능";
 
 "settings.general.launch_at_login" = "로그인 시 Tabora 열기";
-"settings.general.show_window_previews" = "배치 제안에 윈도우 이미지 표시";
-"settings.general.preview_note" = "화면 기록 권한이 필요합니다. 이미지는 저장하거나 전송하지 않습니다.";
-"settings.general.window_movement" = "윈도우 이동";
+"settings.general.show_window_previews" = "미리보기에 창 이미지 사용";
+"settings.general.preview_note" = "화면 기록 권한이 필요합니다. 끄면 미리보기에 앱 아이콘이 표시됩니다.";
+"settings.general.window_movement" = "윈도우 배치";
 "settings.general.restore_size.checkbox" = "이동할 때 스냅 전 크기로 복원";
 "settings.general.linked_resize.checkbox" = "분할 윈도우 함께 크기 조절";
 "settings.general.linked_resize.note" = "경계를 드래그하면 양쪽 윈도우의 크기가 함께 바뀝니다.";
@@ -75,9 +75,9 @@
 "settings.general.drag_display.lightweight.title" = "경량";
 "settings.general.drag_display.lightweight.detail" = "모든 윈도우를 아이콘으로 표시";
 "settings.general.drag_display.standard.title" = "표준";
-"settings.general.drag_display.standard.detail" = "조작 중인 윈도우만 내용 표시";
+"settings.general.drag_display.standard.detail" = "조작 중인 윈도우만 내용 표시. 창 상태에 따라 내용이 실시간으로 갱신되지 않을 수 있습니다.";
 "settings.general.drag_display.all.title" = "모두 표시";
-"settings.general.drag_display.all.detail" = "모든 윈도우의 내용 표시";
+"settings.general.drag_display.all.detail" = "모든 윈도우의 내용 표시. 창 상태에 따라 내용이 실시간으로 갱신되지 않을 수 있습니다.";
 "settings.general.drag_display.note" = "표시하는 윈도우 내용이 많을수록 성능이 저하될 수 있습니다.";
 "settings.general.drag_detection.title" = "드래그 감지";
 "settings.general.drag_detection.note" = "화면 가장자리와 모서리가 반응하는 범위를 조절합니다.";
@@ -122,8 +122,8 @@
 "settings.experimental.api_status.available" = "현재 API 상태: 사용 가능";
 "settings.experimental.api_status.unavailable" = "현재 API 상태: 사용 불가(이 기능을 끄십시오)";
 "settings.general.assist.title" = "2/3/4분할 Assist 전환";
-"settings.general.assist.checkbox" = "Option 키로 2/3/4분할 Assist 전환";
-"settings.general.assist.note" = "Option(⌥)으로 빈 영역을 큰 칸 하나 또는 작은 칸 두 개로 전환합니다. 큰 칸에 맞는 윈도우가 없고 작은 두 칸에 서로 다른 윈도우를 함께 배치할 수 있으면 자동으로 전환합니다.";
+"settings.general.assist.checkbox" = "Option 키로 분할 수 변경";
+"settings.general.assist.note" = "창 후보가 표시된 영역에서 Option(⌥) 키를 누르면 분할 수가 바뀝니다.";
 "settings.experimental.workspace.title" = "화면 가장자리의 Space 전환 지연";
 "settings.experimental.workspace.note" = "문서화되지 않은 macOS 전체 환경설정을 변경합니다. 향후 macOS에서 작동하지 않을 수 있으며, 적용 시 Dock이 재시동됩니다. Tabora를 종료해도 원래 값으로 복원하지 않습니다.";
 "settings.experimental.workspace.delay_button" = "Space 전환을 최대 60초 지연";
@@ -177,7 +177,7 @@
 "migration.proxy.window_title.waiting" = "이동 대기 중 %d/%d";
 "migration.shadow.reserved" = "이동 예약됨";
 "migration.shadow.waiting" = "대기 %d/%d";
-"migration.verified_environment" = "동작 확인됨: macOS 26.5.2 / 26.6.2(2026-08-30)";
+"migration.verified_environment" = "동작 확인: macOS 26.5.2, 26.6.2, 27.3";
 "migration.api_unavailable.title" = "그룹을 데스크탑 간에 이동할 수 없음";
 "migration.api_unavailable.detail" = "Tabora가 그룹 이동에 필요한 비공개 API에 접근할 수 없습니다. macOS 업데이트로 API가 변경되었을 수 있습니다.\n\n안전을 위해 설정의 실험적 기능에서 이 기능을 끄는 것이 좋습니다.\n\n현재 시스템: %@\n%@\n세부사항: %@";
 "migration.api_unavailable.disable" = "기능 끄기";
@@ -252,8 +252,8 @@
 "settings.ratio.top" = "위 : 아래";
 "settings.gesture.snap" = "8방향 스냅";
 "settings.gesture.unavailable" = "입력 이벤트를 받을 수 없습니다. Tabora의 손쉬운 사용 권한을 확인하세요.";
-"settings.replace.occupied" = "사용 중인 영역의 윈도우 교체";
-"settings.replace.note" = "스냅 전부터 맨 앞에 있는 그룹에서 지정한 칸이 사용 중이면 교체합니다.";
+"settings.replace.occupied" = "창 교체";
+"settings.replace.note" = "맨 앞 그룹에서 사용 중인 칸에 다른 창을 놓으면 해당 칸의 창이 교체됩니다.";
 "settings.ratio.disconnected" = "연결된 화면을 표시합니다. 연결을 해제해도 분할 비율은 유지됩니다.";
 "cleanup.ratios" = "모든 화면의 분할 비율만 삭제하고 종료";
 "settings.gesture.title" = "트랙패드 제스처";
@@ -261,11 +261,24 @@
 "settings.gesture.maximize" = "위로 쓸어올려 최대화";
 
 "settings.subdivide.title" = "그룹 영역 추가 분할";
-"settings.subdivide.note" = "원래 영역 안의 모서리에 스냅하면 다른 창을 유지하고 빈 영역에 배치할 창을 선택할 수 있습니다. 취소하면 그룹이 해제됩니다.";
-"settings.split_lock" = "그룹 내 제스처";
-"settings.split_lock.note" = "현재 영역을 기준으로 그룹 안의 윈도우를 직관적으로 조작할 수 있습니다. 단축키 설정에서 전환 키를 지정할 수 있습니다.";
-"command.split_lock" = "그룹 내 제스처 전환";
-"notice.split_lock.on" = "그룹 내 제스처 켜짐";
-"notice.split_lock.off" = "그룹 내 제스처 꺼짐";
+"settings.subdivide.note" = "화면의 왼쪽, 오른쪽, 위쪽 또는 아래쪽 절반을 차지하는 창을 해당 칸 안의 모서리에 놓으면 칸이 둘로 나뉩니다. 빈 칸에는 배치할 수 있는 창 후보가 표시됩니다.";
+"settings.split_lock" = "상대 제스처";
+"settings.split_lock.note" = "그룹 안에서 창을 교환할 때 현재 창을 기준으로 상대 창이 있는 방향으로 쓸어넘깁니다. 명령 설정에서 이 동작을 켜거나 끄는 단축키를 지정할 수 있습니다.";
+"command.split_lock" = "상대 제스처 전환";
+"notice.split_lock.on" = "상대 제스처 켜짐";
+"notice.split_lock.off" = "상대 제스처 꺼짐";
 "settings.section.resize" = "공유 크기 조절";
 "settings.section.management" = "앱 관리";
+
+"settings.group.application" = "앱";
+"settings.group.layout" = "배치 및 크기";
+"settings.group.input" = "입력 및 조작";
+"settings.preview.replay" = "예시 재생";
+"settings.nav.gesture" = "제스처";
+"settings.general.restore_size.note" = "스냅된 창을 끌면 스냅 전 크기로 돌아갑니다. 그룹이 해제되면 끌지 않은 창의 복원용 크기 정보는 삭제됩니다.";
+"settings.gesture.maximize.note" = "위로 쓸어올리면 창을 화면 위쪽 절반에 배치하는 대신 최대화합니다. 그룹 안에서 창을 교환하는 동작에는 영향을 주지 않습니다.";
+"key.eisu" = "영숫자";
+"key.kana" = "가나";
+
+"settings.gesture.reassign" = "제스처로 그룹 재배치";
+"settings.gesture.reassign.note" = "현재 창의 영역을 향해 쓸어넘겨 그 자리에 놓을 창을 다시 선택합니다. 취소하면 원래 배치가 유지됩니다.";

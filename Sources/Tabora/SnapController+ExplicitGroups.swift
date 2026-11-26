@@ -1026,7 +1026,7 @@ extension SnapController {
             if case .suspendedForSpaceTransition = $0.state { return false }
             return true
         }
-        let previewsEnabled = settings.windowPreviewsEnabled
+        let previewsEnabled = settings.groupPreviewAvailable && previewAccessGranted
         var previewVisibilityEvaluationByGroupID:
             [SnapGroupID: PreviewGroupVisibilityEvaluation] = [:]
         let foregroundPresentationIsSettling =
@@ -1125,7 +1125,7 @@ extension SnapController {
             previewVisibilityEvaluationByGroupID:
                 previewVisibilityEvaluationByGroupID,
             previewsEnabled: previewsEnabled,
-            transientPreviewsEnabled: settings.missionControlLatestPreviewEnabled,
+            transientPreviewsEnabled: settings.transientGroupPreviewEnabled,
             previewCacheByteLimit: AppSettings
                 .missionControlPreviewMemoryByteLimit(
                     settings.missionControlPreviewMemoryLimitMiB
@@ -1133,17 +1133,17 @@ extension SnapController {
             previewProvider: {
                 [weak self] windowID, captureIsAuthorized in
                 guard let self,
-                      self.settings.windowPreviewsEnabled,
+                      self.settings.groupPreviewAvailable,
                       captureIsAuthorized() else { return nil }
                 return self.windowService.previewCGImage(
                     for: windowID,
                     capacityWait:
                         PreviewCaptureAdmissionPolicy
                             .missionControlCapacityWait,
-                    resolution: .best,
+                    isGroupPreview: true, resolution: .best,
                     expectedOwnerPID: windowsByIdentity.values.first { $0.cgWindowID == windowID }?.pid,
                     shouldCapture: { [weak self] in
-                        self?.settings.windowPreviewsEnabled == true
+                        self?.settings.groupPreviewAvailable == true
                             && captureIsAuthorized()
                     }
                 )
@@ -1151,8 +1151,7 @@ extension SnapController {
             transientPreviewProvider: {
                 [weak self] member, captureIsAuthorized in
                 guard let self,
-                      self.settings.windowPreviewsEnabled,
-                      self.settings.missionControlLatestPreviewEnabled,
+                      self.settings.transientGroupPreviewEnabled,
                       captureIsAuthorized() else { return nil }
                 return self.windowService.previewCGImage(
                     for: member.windowID,
@@ -1170,8 +1169,7 @@ extension SnapController {
                         )
                     ),
                     shouldCapture: { [weak self] in
-                        self?.settings.windowPreviewsEnabled == true
-                            && self?.settings.missionControlLatestPreviewEnabled == true
+                        self?.settings.transientGroupPreviewEnabled == true
                             && captureIsAuthorized()
                     }
                 )

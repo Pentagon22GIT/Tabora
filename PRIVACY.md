@@ -48,17 +48,17 @@ App Constraint recordは次のローカルJSONへ保存します。
 
 Preview取得・Mission Control安定判定のデバッグ診断機能は、Debug / Releaseのいずれにも含めません。診断専用の取得時間計測も行わず、画像取得情報や安定判定情報を統合ログへ出力する処理はありません。アプリ独自の画像ファイル、診断ログファイル、不具合レポートファイルを自動作成する処理はありません。設定保存とメモリ内の画像キャッシュは従来どおりです。Appleが生成・管理するOS側のレポートや、配布アプリに含まれない開発者用リリースツールの記録は、このアプリ本体の処理とは別です。
 
-「配置候補にウィンドウ画像を表示」を有効にした場合だけ、画面収録権限を使用して配置候補およびMission Control連携で表示する対象ウィンドウのプレビュー画像を取得します。
+「プレビューをウィンドウ画像にする」を有効にした場合だけ、画面収録権限を使用して配置候補およびMission Control連携で表示する対象ウィンドウのプレビュー画像を取得します。
 
 - 初期状態では任意機能です。
 - 表示用のメモリキャッシュで扱います。
 - キャッシュはboundedな派生データとして破棄可能です。
 - 配置候補はpanelが必要とした対象を取得します。Mission Controlの通常Preview cacheは新規member、確定resize/display移動、確定HOT→COLD-visibleだけをtriggerとして更新し、Space等でGroupが不可視になった`COLD-not-visible`だけでは画像を取得しません。時間経過やcache ageを理由とした定期取得も行いません。
-- 初期OFFの試験的設定「Mission Control内で最新の画像に切り替える」とプレビュー表示を両方有効にし、Mission Controlを開いた場合だけ、開始時に可視だったSpace上のgroupについて、変形geometryが安定した後にSkyLightの全サイズ取得で一時画像を取得する場合があります。全透明・寸法不足・縦横比不一致・取得失敗の時だけ、Core Graphicsの対象window直接取得を一度fallbackとして使用します。全サイズ取得の前後で画面収録許可と対象windowのownerを確認し、新たな権限promptや別windowへの代替取得は行いません。この画像はMission Control表示/選択handoff専用で通常Preview cacheへ保存せず、session終了またはhandoff終了でメモリから破棄します。
+- 初期OFFの試験的設定「Mission Control内で最新の画像に切り替える」とプレビュー表示を両方有効にし、Mission Controlを開いた場合だけ、開始時に可視だったSpace上のgroupについて、変形geometryが安定した後にScreenCaptureKitで対象ウィンドウの一時画像を取得します。画面収録許可、設定、PID、ウィンドウIDを照合し、許可や所有者が変わった結果は破棄します。別ウィンドウや画面全体への切り替え、ファイル保存、音声取得は行いません。この画像はMission Control表示/選択handoff専用で通常Preview cacheへ保存せず、session終了またはhandoff終了でメモリから破棄します。
 - 内部更新をOFFにすると取得sessionを失効し、一時画像を破棄します。通常時のプレビューは維持します。内部更新の取得が空の場合は同じ認可session内だけで1回再試行します。
-- Mission Control一時画像には通常Preview cacheとは別のbounded memory limitとsessionあたりの取得上限を設け、直接window取得transactionを同時に1本へ制限します。連続開閉で旧要求が未完了の場合は新しい取得を重ねず、session失効後はglobal capture admission待機後と画像縮小処理前にも認可を再確認して、不要な取得・派生処理を可能な限り早く棄却します。
+- Mission Control一時画像には通常Preview cacheとは別のbounded memory limitとsessionあたりの取得上限を設け、直接window取得transactionを同時に1本へ制限します。連続開閉で旧要求が未完了の場合は新しい取得を重ねず、session失効後は専用取得枠の待機後と画像縮小処理前にも認可を再確認して、不要な取得・派生処理を可能な限り早く棄却します。
 - 設定画面のメモリ上限は、通常キャッシュとMission Control中だけの一時キャッシュを合わせた合計値です。表示値の半分を通常キャッシュ枠、残り半分を一時キャッシュ枠として使用し、初期表示64 MiBでは各32 MiBです。
-- 通常Preview取得の実Window Server並列数は既存global gateに従います。1秒ごとの画像取得、directory scan、画像ファイルscanは行いません。
+- 物理取得枠は配置候補・通常Preview・Mission Control一時画像に各1件あり、配置候補と通常Previewには追加の共有枠1件があります。画像表示中の権限取り消しを検知するため、画像設定がオンの間は既存の復旧タイマーで許可状態を確認します。1秒ごとの画像取得、directory scan、画像ファイルscanは行いません。
 - group memberのresize後は最新geometryを時間差の複数観測で確認してから通常Previewを再取得します。連続resizeは物理windowごとの最新候補へまとめます。
 - 設定をOFFにした時点で待機中の取得と再適用予約を失効し、取得直前にも現在の設定を確認します。
 - ディスクへ保存する処理はありません。
@@ -80,7 +80,7 @@ Official (`dev.pent.Tabora`) と Community (`dev.pent.Tabora.community`) は別B
 
 ## 実験的workspace設定
 
-利用者が実験的なSpace edge delay設定を操作した場合、Taboraは`/usr/bin/defaults`でmacOS Dockの`workspaces-edge-delay`を読み書きし、適用時に`/usr/bin/killall Dock`を実行します。これはmacOS全体の設定変更であり、設定画面上でも明示します。Tabora終了時に自動復元する処理はありません。
+利用者が実験的なSpace edge delay設定を操作した場合、TaboraはCFPreferencesで現在のユーザーのDock設定にある`workspaces-edge-delay`を読み書きし、適用時に`/usr/bin/killall Dock`を実行します。これはmacOS全体の設定変更であり、設定画面上でも明示します。Tabora終了時に自動復元する処理はありません。
 
 ## ネットワーク通信
 

@@ -18,16 +18,8 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Window observation safety
-        run: swift test --filter WindowSafetyPolicyTests
-
-      - name: Split and group safety
-        run: |
-          swift test --filter SplitLayoutTests
-          swift test --filter SnapGroupTests
-
-      - name: Mission Control authorization safety
-        run: swift test --filter MissionControlGroupProxyTests
+      - name: Window, group, capture, and migration safety
+        run: ./Scripts/test.sh safety
 
       - name: Product identity guard
         run: |

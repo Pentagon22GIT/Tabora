@@ -962,6 +962,28 @@ extension SnapController {
         windowService.focus(mainWindow)
     }
 
+    /// Some apps reorder sibling windows after activation. Allow one correction
+    /// while the committed selection still owns the interaction.
+    func verifySelectedWindowOrder(_ window: ManagedWindow, generation: Int) {
+        guard let windowID = window.cgWindowID,
+              let group = explicitGroupStore.group(containing: window.stableIdentity) else { return }
+        let click = CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown)
+        let key = CGEventSource.counterForEventType(.combinedSessionState, eventType: .keyDown)
+        DispatchQueue.main.asyncAfter(deadline: .now() + groupRaiseVerificationDelay) { [weak self] in
+            guard let self, self.interactionGeneration == generation,
+                  self.canRefreshPresentationAfterAsyncTransaction, self.isUserSessionActive,
+                  !self.isSnapPlacementInProgress, self.activeSession == nil,
+                  self.dragWindow == nil, self.handleResizeSession == nil,
+                  self.explicitGroupStore.group(id: group.id)?.placementRevision == group.placementRevision,
+                  click == CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown),
+                  key == CGEventSource.counterForEventType(.combinedSessionState, eventType: .keyDown),
+                  let current = self.windowService.windowServerSelectionSnapshot(),
+                  current.pid == window.pid, current.windowID != windowID,
+                  self.lockedPlacements[window.stableIdentity]?.cgWindowID == windowID else { return }
+            _ = self.windowService.raise(window)
+        }
+    }
+
     func raiseSnapGroup(
         withMainWindow mainWindow: ManagedWindow,
         on screen: NSScreen,
